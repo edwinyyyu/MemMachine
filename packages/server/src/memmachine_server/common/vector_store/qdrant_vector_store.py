@@ -441,13 +441,15 @@ class QdrantVectorStoreParams(BaseModel):
         client (AsyncQdrantClient):
             Async Qdrant client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            The registry of the Qdrant deployment the client reaches.
-            Every store on that deployment, in any process, uses it, and no
-            other store does. The caller starts it before handing it over.
+            The collection registry for the Qdrant server or cluster the client
+            connects to. Every store connected to that Qdrant, in any process,
+            must use this registry, and a store connected to another Qdrant
+            must use another: a store purges the registry's deleted collections
+            through its own client. The caller starts it before handing it
+            over.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
-
     """
 
     client: InstanceOf[AsyncQdrantClient] = Field(
@@ -456,7 +458,13 @@ class QdrantVectorStoreParams(BaseModel):
     )
     collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
-        description="The registry of the deployment the client reaches",
+        description=(
+            "The collection registry for the Qdrant server or cluster the client "
+            "connects to. Every store connected to that Qdrant, in any process, "
+            "must use this registry, and a store connected to another Qdrant "
+            "must use another: a store purges the registry's deleted collections "
+            "through its own client. The caller starts it before handing it over"
+        ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -471,8 +479,8 @@ class QdrantVectorStore(VectorStore):
     payload, inside a native collection shared by the logical collections of
     one namespace and configuration. The `VectorStoreCollectionRegistry` the
     store is given mints incarnations and arbitrates creation, deletion and
-    reclamation across processes. Any process sharing the Qdrant deployment
-    and the registry may serve any collection.
+    reclamation across processes. Any process connected to the same Qdrant,
+    with the same registry, may serve any collection.
 
     On a single node, queries reflect a write as soon as it returns.
     """

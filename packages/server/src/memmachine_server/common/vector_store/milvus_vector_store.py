@@ -440,40 +440,63 @@ class MilvusVectorStoreParams(BaseModel):
     Parameters for MilvusVectorStore.
 
     Attributes:
-        client (AsyncMilvusClient): Milvus client instance.
+        client (AsyncMilvusClient):
+            Async Milvus client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            The registry of the Milvus deployment the client reaches.
-            Every store on that deployment, in any process, uses it, and no
-            other store does. The caller starts it before handing it over.
+            The collection registry for the Milvus database the client connects
+            to, its server and db_name. Every store connected to that database,
+            in any process, must use this registry, and a store connected to
+            another must use another: a store purges the registry's deleted
+            collections through its own client. The caller starts it before
+            handing it over.
         request_timeout_seconds (int):
             Seconds any request to Milvus may take (default: 30).
         max_varchar_length (int):
             Bytes a declared string property can hold: the length of its
             VARCHAR field, at most the server's proxy.maxVarCharLength
-            (default: 65535, Milvus's own limit).
+            (default: 65535).
         purge_batch_size (int):
             The most entities one purge round lists and deletes, at most the
-            server's quotaAndLimits.limits.maxQueryResultWindow
-            (default: 10000).
-        metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
+            server's quotaAndLimits.limits.maxQueryResultWindow (default:
+            10000).
+        metrics_factory (MetricsFactory | None):
+            An instance of MetricsFactory for collecting usage metrics
+            (default: None).
     """
 
     client: InstanceOf[AsyncMilvusClient] = Field(
         ...,
-        description="Milvus client instance",
+        description="Async Milvus client instance",
     )
     collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
-        description="The registry of the deployment the client reaches",
+        description=(
+            "The collection registry for the Milvus database the client connects "
+            "to, its server and db_name. Every store connected to that database, "
+            "in any process, must use this registry, and a store connected to "
+            "another must use another: a store purges the registry's deleted "
+            "collections through its own client. The caller starts it before "
+            "handing it over"
+        ),
     )
     request_timeout_seconds: int = Field(
         30, gt=0, description="Seconds any request to Milvus may take"
     )
     max_varchar_length: int = Field(
-        65535, gt=0, description="Bytes a declared string property can hold"
+        65535,
+        gt=0,
+        description=(
+            "Bytes a declared string property can hold: the length of its "
+            "VARCHAR field, at most the server's proxy.maxVarCharLength"
+        ),
     )
     purge_batch_size: int = Field(
-        10000, gt=0, description="The most entities one purge round lists and deletes"
+        10000,
+        gt=0,
+        description=(
+            "The most entities one purge round lists and deletes, at most the "
+            "server's quotaAndLimits.limits.maxQueryResultWindow"
+        ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -489,8 +512,8 @@ class MilvusVectorStore(VectorStore):
     collections of one namespace and configuration. The
     `VectorStoreCollectionRegistry` the store is given mints incarnations
     and arbitrates creation, deletion and reclamation across processes. Any
-    process sharing the Milvus deployment and the registry may serve any
-    collection.
+    process connected to the same Milvus database, with the same registry, may
+    serve any collection.
 
     Reads run at Milvus's default consistency level, Bounded: a query
     reflects every write that returned at least the server's

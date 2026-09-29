@@ -40,11 +40,13 @@ wrote it.
   `unregister` and `claim_purgeable_incarnation`.
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
   supports PostgreSQL and SQLite, the dialects the segment store supports, and
-  refuses any other dialect at construction with a `ValueError`.
-- A registry belongs to one vector store, and so to the one vector deployment
-  that store's client reaches. Every store on that deployment, in any process,
-  uses it; no store on another deployment does, because a store reclaims its
-  registry's tombstones through its own client.
+  its params refuse any other dialect.
+- Every store whose client connects to the same backend data, the same Qdrant
+  server or cluster or the same Milvus database, must share one registry, in
+  any process; a store connected to other data must not. A store reclaims its
+  registry's tombstones through its own client: a round run through a client
+  that cannot reach the records finds none, removes the tombstone, and leaves
+  the records behind.
 - The caller owns the registry's lifecycle. The database manager builds and
   starts each Qdrant and Milvus store's registry before it opens the store's
   client, and hands the started registry to the store in its params. The store

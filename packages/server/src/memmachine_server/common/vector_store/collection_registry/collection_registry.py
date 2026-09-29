@@ -8,8 +8,10 @@ every process sharing it: registration mints an incarnation no live or
 queued collection carries, unregistration makes the collection unreachable
 when it returns, and a purge claim goes to one purger at a time.
 
-A registry belongs to one vector database deployment: every store that
-reaches the deployment uses it, and no other store does.
+Every store whose client connects to the same backend data (the same Qdrant
+server or cluster, or the same Milvus database) must share one registry, and
+a store connected to other data must not: a store purges the registry's
+deleted collections through its own client.
 """
 
 from abc import ABC, abstractmethod

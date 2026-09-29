@@ -140,39 +140,48 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
         engine (AsyncEngine):
             Async SQLAlchemy engine, on PostgreSQL or SQLite.
         vector_store_name (str):
-            The vector store whose collections the registry holds; it must
-            match `[a-z0-9_]+` and be at most 32 bytes.
+            The name the registry's rows are kept under: registry objects with
+            the same name on the same database are one registry. It must match
+            [a-z0-9_]+ and be at most 32 bytes.
         tombstone_retention_seconds (int):
             Seconds a deleted collection's records are kept before its purge
             starts, on the database clock. It must exceed, by orders of
-            magnitude, the longest a write to the backend can be in flight
-            and the delay before the store's reads reflect a write.
+            magnitude, the longest a write to the backend can be in flight and
+            the delay before the store's reads reflect a write.
         purge_retry_backoff_seconds (int):
             Seconds before a tombstone whose purge round raised is claimed
-            again, doubled for each further consecutive failure
-            (default: 30).
+            again, doubled for each further consecutive failure (default: 30).
         max_purge_retry_backoff_seconds (int):
-            The longest that backoff grows to (default: 3600).
+            The longest the purge retry backoff grows to (default: 3600).
     """
 
     engine: InstanceOf[AsyncEngine] = Field(
         ..., description="Async SQLAlchemy engine, on PostgreSQL or SQLite"
     )
     vector_store_name: str = Field(
-        ..., description="The vector store whose collections the registry holds"
+        ...,
+        description=(
+            "The name the registry's rows are kept under: registry objects with "
+            "the same name on the same database are one registry. It must match "
+            "[a-z0-9_]+ and be at most 32 bytes"
+        ),
     )
     tombstone_retention_seconds: int = Field(
         ...,
         ge=0,
         description=(
-            "Seconds a deleted collection's records are kept before its purge starts"
+            "Seconds a deleted collection's records are kept before its purge "
+            "starts, on the database clock. It must exceed, by orders of "
+            "magnitude, the longest a write to the backend can be in flight and "
+            "the delay before the store's reads reflect a write"
         ),
     )
     purge_retry_backoff_seconds: int = Field(
         30,
         gt=0,
         description=(
-            "Seconds before a tombstone whose purge round raised is claimed again"
+            "Seconds before a tombstone whose purge round raised is claimed "
+            "again, doubled for each further consecutive failure"
         ),
     )
     max_purge_retry_backoff_seconds: int = Field(
