@@ -431,6 +431,24 @@ class TestUpsertAndQuery:
         assert captured_kwargs["data"] == [collection._build_entity(record)]
 
     @pytest.mark.asyncio
+    async def test_a_query_may_ask_for_more_results_than_the_minimum_ef(
+        self, collection
+    ):
+        records = [
+            _make_record(vector=_normalize([1.0, float(i), 0.0])) for i in range(3)
+        ]
+        await collection.upsert(records=records)
+        await _settle(collection)
+
+        [result] = await collection.query(
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=100
+        )
+
+        assert {match.record_uuid for match in result.matches} == {
+            record.uuid for record in records
+        }
+
+    @pytest.mark.asyncio
     async def test_upsert_and_query_basic(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         v2 = _normalize([0.0, 1.0, 0.0])

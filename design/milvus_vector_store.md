@@ -23,14 +23,20 @@ registry](vector_store_collection_registry.md),
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
   HNSW indexes; the store's HNSW_SQ is one.
-- **Vector index:** HNSW_SQ, 4-bit codes with FP16 refinement, M=16,
-  efConstruction=200; searched with ef=64 and refine_k=2. That is what
-  AUTOINDEX resolves to on CPU from Milvus 2.6.10; naming it builds the same
-  index on every deployment, whatever the server's `autoIndex.params.build`
-  says. (Accepted: no index configurability for now.)
-- **Declared properties:** each has a scalar index (VARCHAR with INVERTED;
-  INT64 and DOUBLE with STL_SORT; BOOL with BITMAP; a datetime as TIMESTAMPTZ
-  with STL_SORT). A TIMESTAMPTZ field holds only the instant, which is all a
+- **Vector index:** HNSW_SQ, 4-bit codes with FP16 refinement, M=18,
+  efConstruction=240: what AUTOINDEX builds on CPU from Milvus 2.6.10
+  (`autoIndex.params.build`, `autoindex_param_nocuda.go`). Naming it builds
+  the same index on every deployment, whatever the server's AUTOINDEX
+  configuration says, and the search parameters are for it. A search runs
+  with `ef = max(limit, 64)` and `refine_k = 2`: knowhere refuses an `ef`
+  below the result count, and Milvus never raises it. (Accepted: no index or
+  search configurability for now.)
+- **Declared properties:** each has a scalar AUTOINDEX, which Milvus
+  resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
+  otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
+  a TIMESTAMPTZ field. Milvus caps a collection at `proxy.maxFieldNum` fields
+  (64 on 2.6, 256 on 3.0), so a configuration declares at most 59 properties
+  on 2.6, one fewer per datetime. A TIMESTAMPTZ field holds only the instant, which is all a
   filter compares; the datetime's UTC offset is stored beside it so the stored
   record is the one written, as the other stores keep it, though nothing in
   the store reads it back. Undeclared properties go in the JSON field, still
@@ -80,8 +86,22 @@ Measured on Milvus 3.0.2 at 600k vectors (768 dimensions; tenants of 200k,
 CPU (855 against 448 CPU-seconds) for about 0.2 GB more memory, with search
 throughput unchanged; under isolation, HNSW_SQ against fp32 HNSW took 0.8 GB
 less memory and 2.9 against 3.7 ms of CPU per search on the 200k tenant, at
-similar recall; the explicit search parameters raised recall over the previous
-AUTOINDEX, which set none (1.00 against 0.85 on 100-row tenants).
+similar recall.
+
+The search parameters, measured on Milvus 2.6.24 (180k vectors of 384
+dimensions from a mixture of 64 clusters; tenants of 100k, 10k, 1k and 100
+rows; 100 queries per tenant size; recall@k against exact search within the
+tenant; one run). M=16, efConstruction=200 and AUTOINDEX's M=18,
+efConstruction=240 gave the same recall to within 0.01 everywhere:
+
+| Search parameters | Recall@10 (100k / 10k / 1k / 100) | Recall@100 |
+|---|---|---|
+| none (knowhere's: `ef = max(k, 16)`, `refine_k = 1`) | 0.73 / 0.78 / 0.93 / 0.84 | 0.88 / 0.93 / 0.86 / 1.00 |
+| `refine_k = 2` | 0.84 / 0.95 / 1.00 / 0.98 | 0.99 / 1.00 / 1.00 / 1.00 |
+| `ef = 64`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | every query refused |
+| `ef = max(k, 64)`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | 0.99 / 1.00 / 1.00 / 1.00 |
+
+Search latency stayed between 1 and 2.3 ms p50 in every row.
 
 ## The composite key
 

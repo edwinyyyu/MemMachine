@@ -81,7 +81,8 @@ _UUID_LENGTH = 36
 """The length of a UUID's hyphenated text form (RFC 9562), the form stored."""
 _PRIMARY_ID_LENGTH = 2 * _UUID_LENGTH + 1
 """The length of a primary key, `"{incarnation}:{record_uuid}"`."""
-_FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
+_FALSE_EXPR = f"{_ID_FIELD} in []"
+"""A Milvus expression no entity satisfies; Milvus refuses a bare `false`."""
 
 _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
     bool: DataType.BOOL,
@@ -90,29 +91,23 @@ _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
     str: DataType.VARCHAR,
     datetime: DataType.TIMESTAMPTZ,
 }
-# Term lookups on strings, a bitmap for two values, sorted order for ranges.
-_DECLARED_INDEX_TYPES: dict[type[PropertyValue], str] = {
-    bool: "BITMAP",
-    int: "STL_SORT",
-    float: "STL_SORT",
-    str: "INVERTED",
-    datetime: "STL_SORT",
-}
 
-# The vector index: HNSW with 4-bit codes, rescored against half-precision
-# copies of the vectors. The collection isolates tenants by partition key,
-# which only the HNSW family supports, so each tenant's search walks an index
-# of its own group of tenants rather than every tenant's rows.
+# The index AUTOINDEX builds on CPU from Milvus 2.6.10, named so every
+# deployment builds it: partition-key isolation needs the HNSW family, and
+# the search parameters below are for this index.
 _VECTOR_INDEX_TYPE = "HNSW_SQ"
 _VECTOR_INDEX_PARAMS: dict[str, Any] = {
-    "M": 16,
-    "efConstruction": 200,
+    "M": 18,
+    "efConstruction": 240,
     "sq_type": "SQ4U",
     "refine": True,
     "refine_type": "FP16",
 }
-# `refine_k` rescores that many candidates per result.
-_SEARCH_PARAMS: dict[str, Any] = {"ef": 64, "refine_k": 2}
+# A search keeps at least this many candidates, and one per result when it
+# asks for more: knowhere refuses an ef below the result count.
+_MIN_SEARCH_EF = 64
+# Candidates per result rescored against the half-precision vectors.
+_SEARCH_REFINE_K = 2
 
 # Consecutive lost creation races before open-or-create gives up: every
 # retry requires another process to have created and then deleted the
@@ -388,7 +383,12 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 data=query_vectors,
                 filter=filter_expr,
                 limit=limit,
-                search_params={"params": _SEARCH_PARAMS},
+                search_params={
+                    "params": {
+                        "ef": max(limit, _MIN_SEARCH_EF),
+                        "refine_k": _SEARCH_REFINE_K,
+                    }
+                },
                 output_fields=[_RECORD_UUID_FIELD],
                 anns_field=_VECTOR_FIELD,
                 timeout=self._request_timeout_seconds,
@@ -603,11 +603,11 @@ class MilvusVectorStore(VectorStore):
             ],
             params=_VECTOR_INDEX_PARAMS,
         )
-        for key, declared_type in config.indexed_properties_schema.items():
+        for key in config.indexed_properties_schema:
             index_params.add_index(
                 field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                 index_name=f"{_DECLARED_FIELD_PREFIX}{key}",
-                index_type=_DECLARED_INDEX_TYPES[declared_type],
+                index_type="AUTOINDEX",
             )
 
         async def _create_collection() -> None:
