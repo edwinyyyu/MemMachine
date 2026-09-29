@@ -183,10 +183,13 @@ def _condition(
         render = _declared_literal
     if not values:
         return _FALSE_EXPR
-    if isinstance(expr, FilterIn):
-        return f"{target} in [{', '.join(render(value) for value in values)}]"
-    operator = "==" if expr.op == "=" else expr.op
-    return f"{target} {operator} {render(values[0])}"
+    match expr:
+        case FilterIn():
+            return f"{target} in [{', '.join(render(value) for value in values)}]"
+        case FilterComparison(op="="):
+            return f"{target} == {render(values[0])}"
+        case FilterComparison(op=op):
+            return f"{target} {op} {render(values[0])}"
 
 
 def _milvus_filter(
@@ -203,26 +206,28 @@ def _milvus_filter(
     is pushed down to the conditions, each of which, negated, also holds
     where its property has no value. `!=` is the negation of `=`.
     """
-    if isinstance(expr, FilterNot):
-        return _milvus_filter(expr.expr, declared, negate=not negate)
-    if isinstance(expr, FilterAnd | FilterOr):
-        left = _milvus_filter(expr.left, declared, negate=negate)
-        right = _milvus_filter(expr.right, declared, negate=negate)
-        operator = "&&" if isinstance(expr, FilterAnd) != negate else "||"
-        return f"({left}) {operator} ({right})"
-    if isinstance(expr, FilterIsNull):
-        absent = _absent(expr.field, declared)
-        return f"not ({absent})" if negate else absent
-    if isinstance(expr, FilterComparison) and expr.op == "!=":
-        equal = FilterComparison(field=expr.field, op="=", value=expr.value)
-        return _milvus_filter(equal, declared, negate=not negate)
-    if isinstance(expr, FilterComparison | FilterIn):
-        condition = _condition(expr, declared)
-        if negate:
-            return f"(not ({condition})) || ({_absent(expr.field, declared)})"
-        return condition
-    message = f"Unsupported filter expression type: {type(expr)}"
-    raise TypeError(message)
+    match expr:
+        case FilterNot(operand):
+            return _milvus_filter(operand, declared, negate=not negate)
+        case FilterAnd(left, right) | FilterOr(left, right):
+            operator = "&&" if isinstance(expr, FilterAnd) != negate else "||"
+            return f" {operator} ".join(
+                f"({_milvus_filter(operand, declared, negate=negate)})"
+                for operand in (left, right)
+            )
+        case FilterIsNull(field):
+            absent = _absent(field, declared)
+            return f"not ({absent})" if negate else absent
+        case FilterComparison(field, "!=", value):
+            equal = FilterComparison(field=field, op="=", value=value)
+            return _milvus_filter(equal, declared, negate=not negate)
+        case FilterComparison() | FilterIn():
+            condition = _condition(expr, declared)
+            if negate:
+                return f"(not ({condition})) || ({_absent(expr.field, declared)})"
+            return condition
+        case _:
+            raise TypeError(f"Unsupported filter expression type: {type(expr)}")
 
 
 def _incarnation_filter(incarnation: UUID) -> str:
@@ -350,9 +355,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             return math.sqrt(max(distance, 0.0))
         return distance
 
-    def _partition_filter(self) -> str:
-        return _incarnation_filter(self._incarnation)
-
     @override
     async def upsert(
         self,
@@ -389,7 +391,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 return [QueryResult(matches=[]) for _ in query_vectors]
 
             await self._fence()
-            filter_expr = self._partition_filter()
+            filter_expr = _incarnation_filter(self._incarnation)
             if property_filter is not None:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
