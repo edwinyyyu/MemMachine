@@ -39,7 +39,7 @@ from memmachine_server.common.properties_json import (
     PROPERTY_VALUE_KEY,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware
+from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
 from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
@@ -69,6 +69,13 @@ _PROPERTIES_FIELD = "properties"
 """A JSON field holding the properties the collection's schema does not declare."""
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
+_OFFSET_FIELD_PREFIX = "_tz_"
+"""The prefix of the field holding a declared datetime property's UTC offset.
+
+A TIMESTAMPTZ field keeps only the instant; the offset, in seconds, keeps
+the rest of the value written, as the other stores keep it, so the stored
+record is the one written. Filters compare instants and never read it.
+"""
 
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
@@ -323,6 +330,10 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
                     value
                 ).isoformat()
+                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = utc_offset_seconds(value)
+            elif declared_type is datetime:
+                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
+                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = None
             elif declared_type is float and isinstance(value, int | float):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = float(value)
             else:
@@ -674,6 +685,12 @@ class MilvusVectorStore(VectorStore):
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                         datatype=_DECLARED_DATA_TYPES[declared_type],
+                        nullable=True,
+                    )
+                if declared_type is datetime:
+                    schema.add_field(
+                        field_name=f"{_OFFSET_FIELD_PREFIX}{key}",
+                        datatype=DataType.INT32,
                         nullable=True,
                     )
 

@@ -330,8 +330,8 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_native_collection_schema(self, store):
-        """Each declared property is a typed, nullable, indexed field; the
-        collection isolates tenants."""
+        """Each declared property is a typed, nullable, indexed field, a
+        datetime with a field for its offset; the collection isolates tenants."""
         await store.create_collection(
             namespace=NAMESPACE,
             name="schema",
@@ -366,6 +366,7 @@ class TestCollectionLifecycle:
             "_p_score": DataType.DOUBLE,
             "_p_active": DataType.BOOL,
             "_p_created_at": DataType.TIMESTAMPTZ,
+            "_tz_created_at": DataType.INT32,
         }
         for field_name, data_type in expected.items():
             assert fields[field_name]["type"] == data_type
@@ -725,6 +726,20 @@ class TestFilters:
             "color": "red",
             "size": 3,
         }
+
+    @pytest.mark.asyncio
+    async def test_a_declared_datetime_is_stored_with_its_offset(self, collection):
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"created_at": written}
+        )
+        await collection.upsert(records=[record])
+
+        stored = (await _stored(collection, [record.uuid]))[record.uuid]
+        assert datetime.fromisoformat(stored["_p_created_at"]) == written
+        assert stored["_tz_created_at"] == 5 * 3600 + 30 * 60
 
     @pytest.mark.asyncio
     async def test_datetime_filters_compare_instants_across_offsets(self, collection):
