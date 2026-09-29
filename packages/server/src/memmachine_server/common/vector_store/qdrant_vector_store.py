@@ -441,12 +441,8 @@ class QdrantVectorStoreParams(BaseModel):
         client (AsyncQdrantClient):
             Async Qdrant client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            The collection registry for the Qdrant server or cluster the client
-            connects to. Every store connected to that Qdrant, in any process,
-            must use this registry, and a store connected to another Qdrant
-            must use another: a store purges the registry's deleted collections
-            through its own client. The caller starts it before handing it
-            over.
+            Shared by the stores, in any process, whose clients connect to the
+            same Qdrant, and by no other store. Started by the caller.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -459,11 +455,8 @@ class QdrantVectorStoreParams(BaseModel):
     collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
         description=(
-            "The collection registry for the Qdrant server or cluster the client "
-            "connects to. Every store connected to that Qdrant, in any process, "
-            "must use this registry, and a store connected to another Qdrant "
-            "must use another: a store purges the registry's deleted collections "
-            "through its own client. The caller starts it before handing it over"
+            "Shared by the stores, in any process, whose clients connect to "
+            "the same Qdrant, and by no other store. Started by the caller"
         ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(

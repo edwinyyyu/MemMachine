@@ -8,10 +8,8 @@ every process sharing it: registration mints an incarnation no live or
 queued collection carries, unregistration makes the collection unreachable
 when it returns, and a purge claim goes to one purger at a time.
 
-Every store whose client connects to the same backend data (the same Qdrant
-server or cluster, or the same Milvus database) must share one registry, and
-a store connected to other data must not: a store purges the registry's
-deleted collections through its own client.
+Stores share a registry exactly when their clients connect to the same
+Qdrant, or the same Milvus database.
 """
 
 from abc import ABC, abstractmethod
