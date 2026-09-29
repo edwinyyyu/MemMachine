@@ -300,12 +300,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        if record.vector is None:
-            raise ValueError(
-                f"Record {record.uuid} has vector=None, which is not allowed on input."
-            )
-
-        properties = record.properties if record.properties is not None else {}
         declared = self._config.indexed_properties_schema
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
@@ -313,11 +307,15 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             _PARTITION_KEY_FIELD: str(self._incarnation),
             _VECTOR_FIELD: record.vector,
             _PROPERTIES_FIELD: encode_properties(
-                {key: value for key, value in properties.items() if key not in declared}
+                {
+                    key: value
+                    for key, value in record.properties.items()
+                    if key not in declared
+                }
             ),
         }
         for key, declared_type in declared.items():
-            value = properties.get(key)
+            value = record.properties.get(key)
             # A filter compares an int property with a float, but an INT64
             # field stores only ints.
             if value is not None and (

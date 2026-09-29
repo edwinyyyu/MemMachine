@@ -301,20 +301,19 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
 
     def _build_payload(
         self,
-        properties: dict[str, PropertyValue] | None,
+        properties: dict[str, PropertyValue],
     ) -> dict[str, PropertyValue]:
         """Build Qdrant-compatible payload from record properties."""
         payload: dict[str, PropertyValue] = {
             _PAYLOAD_INCARNATION: str(self._incarnation),
         }
-        if properties:
-            for key, value in properties.items():
-                if value is None:
-                    continue
-                if isinstance(value, datetime):
-                    payload[key] = ensure_tz_aware(value)
-                else:
-                    payload[key] = value
+        for key, value in properties.items():
+            if value is None:
+                continue
+            if isinstance(value, datetime):
+                payload[key] = ensure_tz_aware(value)
+            else:
+                payload[key] = value
         return payload
 
     @override
@@ -325,23 +324,17 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         async with self._tracker("upsert"):
             await self._fence()
-            points: list[models.PointStruct] = []
-            for record in records:
-                if record.vector is None:
-                    raise ValueError(
-                        f"Record {record.uuid} has vector=None, which is not allowed on input."
-                    )
-                properties = record.properties if record.properties is not None else {}
-                points.append(
-                    models.PointStruct(
-                        id=str(self._point_id(record.uuid)),
-                        vector=record.vector,
-                        payload={
-                            **self._build_payload(properties),
-                            _PAYLOAD_RECORD_UUID: str(record.uuid),
-                        },
-                    )
+            points = [
+                models.PointStruct(
+                    id=str(self._point_id(record.uuid)),
+                    vector=record.vector,
+                    payload={
+                        **self._build_payload(record.properties),
+                        _PAYLOAD_RECORD_UUID: str(record.uuid),
+                    },
                 )
+                for record in records
+            ]
             if points:
                 await self._upsert_with_backoff(points)
             await self._fence()

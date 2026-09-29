@@ -133,31 +133,30 @@ class Record(BaseModel):
     """
     A record to write to a vector store collection.
 
-    Records are only ever written: a collection stores vectors to search
+    Records are only ever written. A collection stores vectors to search
     them and properties to filter on them, and answers a query with
     `QueryMatch`; neither a vector nor a property is read back out.
 
     Attributes:
         uuid (UUID):
             Unique identifier for the record.
-        vector (list[float] | None):
-            Vector for similarity search. `None` is not allowed
-            (default: None).
-        properties (dict[str, PropertyValue] | None):
+        vector (list[float]):
+            Vector for similarity search.
+        properties (dict[str, PropertyValue]):
             Property key-value pairs.
-            Use `{}` to represent missing properties; `None` is treated as `{}`
-            (default: None).
+            Stored for property filtering; never returned
+            (default: `{}`).
     """
 
     uuid: UUID
-    vector: list[float] | None = None
-    properties: dict[str, PropertyValue] | None = None
+    vector: list[float]
+    properties: dict[str, PropertyValue] = Field(default_factory=dict)
 
-    @field_validator("properties")
+    @field_validator("properties", mode="after")
     @classmethod
     def _validate_property_keys(
-        cls, v: dict[str, PropertyValue] | None
-    ) -> dict[str, PropertyValue] | None:
+        cls, v: dict[str, PropertyValue]
+    ) -> dict[str, PropertyValue]:
         if v:
             for key in v:
                 if not validate_identifier(key):
