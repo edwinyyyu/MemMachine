@@ -828,7 +828,7 @@ async def test_get_segment_uuids_by_derivative_uuids(
 
 
 @pytest.mark.asyncio
-async def test_get_segment_uuids_by_derivative_uuids_inverts_the_forward_lookup(
+async def test_get_segment_uuids_by_derivative_uuids_agrees_with_the_forward_lookup(
     partition: SQLAlchemySegmentStorePartition,
 ) -> None:
     """Every derivative belongs to exactly one segment, so the two agree."""

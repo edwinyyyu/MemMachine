@@ -120,9 +120,8 @@ class SegmentStorePartition(ABC):
         """
         Get the segment each of the given derivatives belongs to.
 
-        A derivative belongs to exactly one segment, so this is the inverse of
-        `get_derivative_uuids_by_segment_uuids` and answers one UUID rather
-        than a list. UUIDs the partition does not hold are omitted.
+        A derivative belongs to exactly one segment. UUIDs the partition does
+        not hold are omitted.
 
         Args:
             derivative_uuids (Iterable[UUID]):
