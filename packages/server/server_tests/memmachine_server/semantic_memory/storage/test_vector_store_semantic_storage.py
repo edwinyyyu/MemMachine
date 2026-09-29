@@ -217,9 +217,7 @@ async def test_an_update_reads_nothing_back_from_the_vector_store(
     sqlalchemy_sqlite_engine,
     vector_collection: InMemoryVectorStoreCollection,
 ):
-    """An update neither reads the vector record nor fails when a read would
-    have missed it (#1721): the record here is absent, as a read on a backend
-    that has not yet made it visible would find it."""
+    """An update succeeds with the vector record absent, as a backend may not show it yet."""
     storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
     await storage.startup()
     try:

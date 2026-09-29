@@ -70,12 +70,7 @@ _PROPERTIES_FIELD = "properties"
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
 _OFFSET_FIELD_PREFIX = "_tz_"
-"""The prefix of the field holding a declared datetime property's UTC offset.
-
-A TIMESTAMPTZ field keeps only the instant; the offset, in seconds, keeps
-the rest of the value written, as the other stores keep it, so the stored
-record is the one written. Filters compare instants and never read it.
-"""
+"""The prefix of the field holding a declared datetime's UTC offset in seconds, which TIMESTAMPTZ drops."""
 
 _UUID_LENGTH = 36
 """The length of a UUID's hyphenated text form (RFC 9562), the form stored."""
@@ -195,11 +190,9 @@ def _milvus_filter(
 ) -> str:
     """Compile a filter, or with `negate` its complement, into a Milvus expression.
 
-    A condition on a property with no value is false, and a negation is the
-    complement, true wherever the negated expression is not, missing values
-    included. Milvus evaluates a condition on a null the SQL way, so negation
-    is pushed down to the conditions, each of which, negated, also holds
-    where its property has no value. `!=` is the negation of `=`.
+    A negation holds where the property has no value. Milvus evaluates a
+    condition on a null the SQL way, so negation is pushed down to the
+    conditions.
     """
     match expr:
         case FilterNot(operand):
@@ -585,9 +578,8 @@ class MilvusVectorStore(VectorStore):
     ) -> None:
         """Ensure the native Milvus collection exists, is indexed and is loaded.
 
-        Creation is three server steps, each run only when it is missing, so
-        a creation that failed or was interrupted part way is completed by
-        the next one, as if it had never been attempted.
+        Each step runs when it is missing, so the next creation completes one
+        that failed part way.
         """
         self._validate_metric(config.similarity_metric)
         native_collection_name = MilvusVectorStore._build_native_collection_name(
@@ -682,8 +674,8 @@ class MilvusVectorStore(VectorStore):
                     raise
 
         # Index names are their field names, so the ones present say which
-        # fields are indexed. A racing creator's index of the same
-        # definition makes create_index succeed, not fail.
+        # fields are indexed. An index a racing creator made is created again
+        # without error.
         existing = set(
             await self._client.list_indexes(
                 native_collection_name,
@@ -787,13 +779,10 @@ class MilvusVectorStore(VectorStore):
 
     @override
     async def purge_deleted_collections(self) -> bool:
-        # One purge round per call, on the tombstone that came due first: the
-        # claim is a row lock the registry holds while the round lists up to a
-        # batch of the incarnation's entities and deletes them by primary key.
-        # Deleting the whole incarnation by filter would be one request, but
-        # Milvus applies it as one burst that every Session read waits
-        # behind; a batch keeps each burst small. The registry keeps or
-        # removes the tombstone by what the round found.
+        # One purge round per call, on the tombstone that came due first: it
+        # lists up to a batch of the incarnation's entities and deletes them
+        # by primary key. A batch keeps each delete small; one filter-delete
+        # of a large incarnation stalls every tenant while Milvus applies it.
         async with (
             self._tracker("purge_deleted_collections"),
             self._collection_registry.claim_purgeable_incarnation() as claim,

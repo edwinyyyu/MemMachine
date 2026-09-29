@@ -1,29 +1,12 @@
 """
 The collection lifecycle contract the registry-backed vector stores satisfy.
 
-Each store's test module mixes `CollectionLifecycleContract` into a test
-class and supplies the `store` fixture, a started store;
-`count_stored(store, namespace, config)`, the number of records the backend
-physically holds in the native collection those name; and
-`stored_uuids(collection)`, the record UUIDs the backend holds under a
-handle's incarnation; and `settle(collection)`, which returns once the
-store's own reads reflect every write made so far. The first two read past
-the store's own API, whose reads may lag its writes, so a test observes
-what the backend holds, not what a query has caught up with; a test
-settles before a purge round, whose listing is such a read. The backend may persist across tests (a
-shared Qdrant or Milvus server): every test starts by deleting the
-collections it uses, and the purge tests count relative to a drained
-baseline.
-
-A collection is identified to callers by its (namespace, name) and inside
-the store by an incarnation minted per life of the pair. The contract: a
-handle is bound to one incarnation and raises once that incarnation is
-deleted; a collection re-created under a deleted name starts empty;
-deletion is a registry write and `purge_deleted_collections` reclaims the
-records afterward; a write can land under an incarnation that died while
-it was in flight, and the operation then raises instead of reporting
-success, with the incarnation's tombstone having the records reclaimed by
-a later purge round.
+A store's test module mixes `CollectionLifecycleContract` into a test class
+and supplies a `store` fixture and three hooks: `count_stored` and
+`stored_uuids` read the backend directly, and `settle` returns once the
+store's reads reflect every write so far. The backend may persist across
+tests, so each test first deletes the collections it uses, and the purge
+tests count against a drained baseline.
 """
 
 import asyncio
