@@ -425,12 +425,12 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         A round that found no records removes the tombstone; one that found
         records resets its count of failed rounds.
         """
-        if claim.found_any_records is None:
+        if claim.any_records_found is None:
             raise RuntimeError(
                 f"Purge round for incarnation {claim.incarnation} ended "
-                "without setting found_any_records"
+                "without setting any_records_found"
             )
-        if not claim.found_any_records:
+        if not claim.any_records_found:
             await connection.execute(
                 delete(PurgeQueueRow).where(
                     PurgeQueueRow.incarnation == claim.incarnation

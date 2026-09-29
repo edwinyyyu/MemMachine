@@ -37,14 +37,14 @@ class PurgeClaim:
 
     The registry fills in `incarnation`, the value the deleted collection's
     records carry, and `namespace` and `config`, which name the native
-    collection they are in. The round sets `found_any_records` before the claim
+    collection they are in. The round sets `any_records_found` before the claim
     ends: whether it found records under the incarnation.
     """
 
     incarnation: UUID
     namespace: str
     config: VectorStoreCollectionConfig
-    found_any_records: bool | None = None
+    any_records_found: bool | None = None
 
 
 class VectorStoreCollectionRegistry(ABC):
@@ -144,7 +144,7 @@ class VectorStoreCollectionRegistry(ABC):
         A tombstone is due once the retention has passed since its
         deletion. In the body, the caller deletes records under
         `claim.incarnation` in the native collection that `claim.namespace`
-        and `claim.config` name, and sets `claim.found_any_records`. A round that
+        and `claim.config` name, and sets `claim.any_records_found`. A round that
         found no records removes the tombstone and frees its incarnation. A
         body that raises is a failed round: the tombstone is claimed again
         after a backoff that grows with each consecutive failure, and one

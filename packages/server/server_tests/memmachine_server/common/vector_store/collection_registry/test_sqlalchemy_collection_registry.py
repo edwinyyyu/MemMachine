@@ -169,13 +169,13 @@ async def _failing_round(registry: SQLAlchemyVectorStoreCollectionRegistry) -> U
 
 
 async def _round(
-    registry: SQLAlchemyVectorStoreCollectionRegistry, found_any_records: bool
+    registry: SQLAlchemyVectorStoreCollectionRegistry, any_records_found: bool
 ) -> UUID | None:
-    """One purge round on the oldest due tombstone, reporting `found_any_records`; its incarnation, or None."""
+    """One purge round on the oldest due tombstone, reporting `any_records_found`; its incarnation, or None."""
     async with registry.claim_purgeable_incarnation() as claim:
         if claim is None:
             return None
-        claim.found_any_records = found_any_records
+        claim.any_records_found = any_records_found
         return claim.incarnation
 
 
@@ -254,8 +254,8 @@ async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else
     await first.unregister(NAMESPACE, "c")
     await _age_deletion(first, one)
     assert await second.is_live(two)
-    assert await _round(second, found_any_records=False) is None
-    assert await _round(first, found_any_records=False) == one
+    assert await _round(second, any_records_found=False) is None
+    assert await _round(first, any_records_found=False) == one
 
 
 @pytest.mark.asyncio
@@ -326,7 +326,7 @@ async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_stor
         assert claim.incarnation == incarnation
         assert claim.namespace == NAMESPACE
         assert claim.config == OTHER_CONFIG
-        claim.found_any_records = False
+        claim.any_records_found = False
 
 
 @pytest.mark.asyncio
@@ -337,7 +337,7 @@ async def test_a_tombstone_is_not_due_before_the_retention(
     incarnation = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
 
-    assert await _round(registry, found_any_records=False) is None
+    assert await _round(registry, any_records_found=False) is None
     assert await _queued(registry) == [incarnation]
 
 
@@ -360,13 +360,13 @@ async def test_due_tombstones_go_oldest_deletion_first_until_a_round_finds_nothi
     await _age_deletion(registry, first)
     await _age_deletion(registry, second, extra=timedelta(minutes=1))
 
-    assert await _round(registry, found_any_records=True) == second
+    assert await _round(registry, any_records_found=True) == second
     # Found records: still due, and still the oldest deletion.
-    assert await _round(registry, found_any_records=False) == second
+    assert await _round(registry, any_records_found=False) == second
     assert await _queued(registry) == [first]
-    assert await _round(registry, found_any_records=False) == first
+    assert await _round(registry, any_records_found=False) == first
     assert await _queued(registry) == []
-    assert await _round(registry, found_any_records=False) is None
+    assert await _round(registry, any_records_found=False) is None
 
 
 @pytest.mark.asyncio
@@ -382,7 +382,7 @@ async def test_a_tombstone_queued_by_a_real_deletion_comes_due_by_the_database_c
     incarnation = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
 
-    assert await _round(registry, found_any_records=False) == incarnation
+    assert await _round(registry, any_records_found=False) == incarnation
 
     assert await _queued(registry) == []
 
@@ -396,12 +396,12 @@ async def test_a_changed_retention_applies_to_tombstones_already_queued(
     queued_under_a_day = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await queued_under_a_day.register(NAMESPACE, "a", CONFIG)
     await queued_under_a_day.unregister(NAMESPACE, "a")
-    assert await _round(queued_under_a_day, found_any_records=False) is None
+    assert await _round(queued_under_a_day, any_records_found=False) is None
 
     no_retention = await _registry(
         sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
-    assert await _round(no_retention, found_any_records=False) == incarnation
+    assert await _round(no_retention, any_records_found=False) == incarnation
     assert await _queued(no_retention) == []
 
 
@@ -418,7 +418,7 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_fail
         async with registry.claim_purgeable_incarnation() as claim:
             assert claim is not None
             assert claim.incarnation == incarnation
-            claim.found_any_records = False
+            claim.any_records_found = False
             raise RuntimeError("the backend refused")
 
     with pytest.raises(RuntimeError):
@@ -427,9 +427,9 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_fail
     assert await _queued(registry) == [incarnation]
     assert await _failed_rounds(registry, incarnation) == 1
     # Backing off: claimed again once 30 seconds have passed since the failure.
-    assert await _round(registry, found_any_records=False) is None
+    assert await _round(registry, any_records_found=False) is None
     await _age_last_failure(registry, incarnation, timedelta(seconds=35))
-    assert await _round(registry, found_any_records=False) == incarnation
+    assert await _round(registry, any_records_found=False) == incarnation
 
 
 @pytest.mark.asyncio
@@ -445,7 +445,7 @@ async def test_a_failed_tombstone_backs_off_while_the_ones_behind_it_are_claimed
     await _age_deletion(registry, later)
 
     assert await _failing_round(registry) == failing
-    assert await _round(registry, found_any_records=False) == later
+    assert await _round(registry, any_records_found=False) == later
 
 
 @pytest.mark.asyncio
@@ -464,9 +464,9 @@ async def test_the_backoff_doubles_with_each_failure_and_runs_from_the_last_one(
     await _failing_round(registry)
     # Two failures: a minute from the second.
     await _age_last_failure(registry, incarnation, timedelta(seconds=50))
-    assert await _round(registry, found_any_records=True) is None
+    assert await _round(registry, any_records_found=True) is None
     await _age_last_failure(registry, incarnation, timedelta(seconds=70))
-    assert await _round(registry, found_any_records=True) == incarnation
+    assert await _round(registry, any_records_found=True) == incarnation
 
 
 @pytest.mark.asyncio
@@ -492,9 +492,9 @@ async def test_the_backoff_stops_doubling_at_its_maximum(
         await _age_last_failure(registry, incarnation, timedelta(days=1))
     # Five failures: 30 seconds doubled four times is 8 minutes, capped at 2.
     await _age_last_failure(registry, incarnation, timedelta(seconds=110))
-    assert await _round(registry, found_any_records=True) is None
+    assert await _round(registry, any_records_found=True) is None
     await _age_last_failure(registry, incarnation, timedelta(seconds=130))
-    assert await _round(registry, found_any_records=True) == incarnation
+    assert await _round(registry, any_records_found=True) == incarnation
 
 
 @pytest.mark.asyncio
@@ -522,8 +522,8 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
     ]
     # Skipped from now on, but kept: its records stay reclaimable once its
     # count is reset, and its incarnation is never re-minted.
-    assert await _round(registry, found_any_records=False) == later
-    assert await _round(registry, found_any_records=False) is None
+    assert await _round(registry, any_records_found=False) == later
+    assert await _round(registry, any_records_found=False) is None
     assert await _queued(registry) == [failing]
 
 
@@ -539,7 +539,7 @@ async def test_a_round_that_finds_points_clears_the_failed_rounds(
     for _ in range(_MAX_FAILED_PURGE_ROUNDS - 1):
         await _failing_round(registry)
         await _age_last_failure(registry, incarnation, timedelta(days=1))
-    assert await _round(registry, found_any_records=True) == incarnation
+    assert await _round(registry, any_records_found=True) == incarnation
     assert await _failed_rounds(registry, incarnation) == 0
 
 
@@ -592,7 +592,7 @@ async def test_a_round_that_reports_nothing_is_an_error(
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
-    with pytest.raises(RuntimeError, match="without setting found_any_records"):
+    with pytest.raises(RuntimeError, match="without setting any_records_found"):
         async with registry.claim_purgeable_incarnation():
             pass
     assert await _queued(registry) == [incarnation]
@@ -677,7 +677,7 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
                 )
             ).one()
         assert row.real_now - row.enqueued_at > timedelta(days=9)
-        assert await _round(registry, found_any_records=False) is None
+        assert await _round(registry, any_records_found=False) is None
         assert await _queued(registry) == [incarnation]
     finally:
         await skewed_engine.dispose()
@@ -708,7 +708,7 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
                 .where(PurgeQueueRow.incarnation == held)
                 .with_for_update()
             )
-            claim = asyncio.create_task(_round(registry, found_any_records=False))
+            claim = asyncio.create_task(_round(registry, any_records_found=False))
             outcome = await _blocked_or_done(sqlalchemy_engine, claim)
             assert outcome == "done", (
                 "the claim waited on a tombstone another purger holds"
@@ -864,7 +864,7 @@ async def test_a_round_claims_one_tombstone(sqlalchemy_engine, vector_store_name
         await registry.register(NAMESPACE, name, CONFIG)
         await registry.unregister(NAMESPACE, name)
 
-    assert await _round(registry, found_any_records=False) is not None
+    assert await _round(registry, any_records_found=False) is not None
 
     assert len(await _queued(registry)) == 2
 
