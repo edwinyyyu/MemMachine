@@ -54,36 +54,38 @@ wrote it.
 
 ### Tables
 
-Each registry is a table pair named by the vector store: `vector_store_name`
-is the backend's key under `resources.databases`, must match `[a-z0-9_]+` and
-be at most 32 bytes. So several vector stores' registries share one database
-without sharing a row, and two registry objects under one name are one
-registry.
+The registries of every vector store share two tables, defined once at module
+level as the segment store's are, and keyed by `vector_store_name`: the
+backend's key under `resources.databases`, which must match `[a-z0-9_]+` and
+be at most 32 bytes. Two registry objects under one name are one registry.
+(Decided: one table pair with a key column, not a table pair per vector store,
+so the schema is static.)
 
-`collection_registry_{vector_store_name}_ct`, the live collections:
+`collection_registry_ct`, the live collections:
 
 | Column | Type | Role |
 |---|---|---|
-| `namespace`, `name` | string, primary key | The caller's identity of the collection. The primary key arbitrates creation. |
-| `incarnation` | UUID, unique | The collection's current life. Points carry it. |
+| `vector_store_name`, `namespace`, `name` | string, primary key | The collection's identity. The primary key arbitrates creation. |
+| `incarnation` | UUID, unique | The collection's current life. Its records carry it. |
 | `config` | JSON (JSONB on PostgreSQL) | The configuration the collection was created with. A handle is built from it; open-or-create compares against it. |
 
-`collection_registry_{vector_store_name}_gc`, the purge queue, one row per
-dead incarnation (its *tombstone*; see [purge](vector_store_purge.md)):
+`collection_registry_gc`, the purge queue, one row per deleted incarnation
+(its *tombstone*; see [purge](vector_store_purge.md)):
 
 | Column | Type | Role |
 |---|---|---|
-| `incarnation` | UUID, primary key | The dead life whose points remain. |
-| `namespace` | string | With `config`, names the native collection the points are in. |
-| `name` | string | Forensics only; the purge never reads it. |
+| `incarnation` | UUID, primary key | The deleted life whose records remain. |
+| `vector_store_name` | string | Whose purge claims the tombstone. |
+| `namespace` | string | With `config`, names the native collection the records are in. |
+| `name` | string | Kept for inspection; the purge does not read it. |
 | `config` | JSON | With `namespace`, names the native collection. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
 | `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised. |
 | `last_failed_at` | timestamp, nullable | When the last of them raised, on the database clock. |
 
-Index `collection_registry_{vector_store_name}_gc__ea` on `enqueued_at` bounds
-the purge claim. The index follows the repository's naming scheme (table, two
-letters per column).
+Index `collection_registry_gc__vs_ea` on (`vector_store_name`, `enqueued_at`)
+bounds the purge claim, equality before order. The index follows the
+repository's naming scheme (table, two letters per column).
 
 The queue carries `namespace` and `config` because nothing else knows where a
 dead incarnation's points are once the collection is gone: the native

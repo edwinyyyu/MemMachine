@@ -4,7 +4,6 @@ import asyncio
 import logging
 from asyncio import Lock
 from collections.abc import Callable
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Self
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
@@ -36,6 +35,7 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistryParams,
 )
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
@@ -627,9 +627,11 @@ class DatabaseManager:
             # The registry first, so a failed lookup or startup leaves no
             # client open.
             collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-                engine=await self.async_get_sql_engine(conf.collection_registry),
-                vector_store_name=name,
-                tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
+                SQLAlchemyVectorStoreCollectionRegistryParams(
+                    engine=await self.async_get_sql_engine(conf.collection_registry),
+                    vector_store_name=name,
+                    tombstone_retention_seconds=conf.tombstone_retention_seconds,
+                )
             )
             await collection_registry.startup()
 
@@ -720,9 +722,11 @@ class DatabaseManager:
             # The registry first, so a failed lookup or startup leaves no
             # client open.
             collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-                engine=await self.async_get_sql_engine(conf.collection_registry),
-                vector_store_name=name,
-                tombstone_retention=timedelta(seconds=conf.tombstone_retention_seconds),
+                SQLAlchemyVectorStoreCollectionRegistryParams(
+                    engine=await self.async_get_sql_engine(conf.collection_registry),
+                    vector_store_name=name,
+                    tombstone_retention_seconds=conf.tombstone_retention_seconds,
+                )
             )
             await collection_registry.startup()
 

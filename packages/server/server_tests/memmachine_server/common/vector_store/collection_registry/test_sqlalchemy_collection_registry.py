@@ -21,7 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     _MAX_FAILED_PURGE_ROUNDS,
+    CollectionRow,
+    PurgeQueueRow,
     SQLAlchemyVectorStoreCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistryParams,
 )
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
@@ -34,6 +37,7 @@ CONFIG = VectorStoreCollectionConfig(
 )
 OTHER_CONFIG = VectorStoreCollectionConfig(vector_dimensions=4)
 RETENTION = timedelta(days=1)
+RETENTION_SECONDS = int(RETENTION.total_seconds())
 NAMESPACE = "ns"
 
 
@@ -46,12 +50,14 @@ def vector_store_name() -> str:
 async def _registry(
     engine: AsyncEngine,
     vector_store_name: str,
-    tombstone_retention: timedelta = RETENTION,
+    tombstone_retention_seconds: int = RETENTION_SECONDS,
 ) -> SQLAlchemyVectorStoreCollectionRegistry:
     registry = SQLAlchemyVectorStoreCollectionRegistry(
-        engine=engine,
-        vector_store_name=vector_store_name,
-        tombstone_retention=tombstone_retention,
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=engine,
+            vector_store_name=vector_store_name,
+            tombstone_retention_seconds=tombstone_retention_seconds,
+        )
     )
     await registry.startup()
     return registry
@@ -61,9 +67,9 @@ async def _queued(registry: SQLAlchemyVectorStoreCollectionRegistry) -> list[UUI
     """The registry's tombstones, oldest first."""
     async with registry._engine.connect() as connection:
         rows = await connection.execute(
-            select(registry._purge_queue.c.incarnation).order_by(
-                registry._purge_queue.c.enqueued_at
-            )
+            select(PurgeQueueRow.incarnation)
+            .where(PurgeQueueRow.vector_store_name == registry._vector_store_name)
+            .order_by(PurgeQueueRow.enqueued_at)
         )
         return list(rows.scalars())
 
@@ -83,8 +89,8 @@ async def _age_deletion(
     """Move the tombstone's deletion back past the retention, by `extra` more, on the database clock."""
     async with registry._engine.begin() as connection:
         await connection.execute(
-            update(registry._purge_queue)
-            .where(registry._purge_queue.c.incarnation == incarnation)
+            update(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == incarnation)
             .values(
                 enqueued_at=_database_time_ago(
                     registry._engine, RETENTION + timedelta(seconds=1) + extra
@@ -126,8 +132,8 @@ async def _failed_rounds(
     async with registry._engine.connect() as connection:
         return (
             await connection.execute(
-                select(registry._purge_queue.c.failed_rounds).where(
-                    registry._purge_queue.c.incarnation == incarnation
+                select(PurgeQueueRow.failed_rounds).where(
+                    PurgeQueueRow.incarnation == incarnation
                 )
             )
         ).scalar_one()
@@ -141,8 +147,8 @@ async def _age_last_failure(
     """Move the tombstone's last failed round back to `ago` before now, on the database clock."""
     async with registry._engine.begin() as connection:
         await connection.execute(
-            update(registry._purge_queue)
-            .where(registry._purge_queue.c.incarnation == incarnation)
+            update(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == incarnation)
             .values(last_failed_at=_database_time_ago(registry._engine, ago))
         )
 
@@ -208,10 +214,10 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
 )
 def test_a_vector_store_name_must_be_an_identifier(invalid_name):
     with pytest.raises(ValueError, match="Vector store name"):
-        SQLAlchemyVectorStoreCollectionRegistry(
+        SQLAlchemyVectorStoreCollectionRegistryParams(
             engine=create_async_engine("sqlite+aiosqlite://"),
             vector_store_name=invalid_name,
-            tombstone_retention=RETENTION,
+            tombstone_retention_seconds=RETENTION_SECONDS,
         )
 
 
@@ -219,8 +225,10 @@ def test_an_engine_of_another_dialect_is_refused(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite://")
     monkeypatch.setattr(engine.dialect, "name", "mssql")
     with pytest.raises(ValueError, match="mssql"):
-        SQLAlchemyVectorStoreCollectionRegistry(
-            engine=engine, vector_store_name="store", tombstone_retention=RETENTION
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=engine,
+            vector_store_name="store",
+            tombstone_retention_seconds=RETENTION_SECONDS,
         )
 
 
@@ -369,7 +377,7 @@ async def test_a_tombstone_queued_by_a_real_deletion_comes_due_by_the_database_c
     database's arithmetic: with no retention the first round claims the
     tombstone, and no stamp is rewritten by the test."""
     registry = await _registry(
-        sqlalchemy_engine, vector_store_name, tombstone_retention=timedelta(0)
+        sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
     incarnation = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
@@ -391,7 +399,7 @@ async def test_a_changed_retention_applies_to_tombstones_already_queued(
     assert await _round(queued_under_a_day, found_any_records=False) is None
 
     no_retention = await _registry(
-        sqlalchemy_engine, vector_store_name, tombstone_retention=timedelta(0)
+        sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
     assert await _round(no_retention, found_any_records=False) == incarnation
     assert await _queued(no_retention) == []
@@ -466,11 +474,13 @@ async def test_the_backoff_stops_doubling_at_its_maximum(
     sqlalchemy_engine, vector_store_name
 ):
     registry = SQLAlchemyVectorStoreCollectionRegistry(
-        engine=sqlalchemy_engine,
-        vector_store_name=vector_store_name,
-        tombstone_retention=RETENTION,
-        purge_retry_backoff=timedelta(seconds=30),
-        max_purge_retry_backoff=timedelta(minutes=2),
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=sqlalchemy_engine,
+            vector_store_name=vector_store_name,
+            tombstone_retention_seconds=RETENTION_SECONDS,
+            purge_retry_backoff_seconds=30,
+            max_purge_retry_backoff_seconds=120,
+        )
     )
     await registry.startup()
     incarnation = await registry.register(NAMESPACE, "a", CONFIG)
@@ -543,8 +553,8 @@ async def test_a_stored_configuration_that_no_longer_validates_counts_as_a_faile
     await _age_deletion(registry, incarnation)
     async with registry._engine.begin() as connection:
         await connection.execute(
-            update(registry._purge_queue)
-            .where(registry._purge_queue.c.incarnation == incarnation)
+            update(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == incarnation)
             .values(config={"vector_dimensions": "not a number"})
         )
 
@@ -658,11 +668,12 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
         incarnation = await registry.register(NAMESPACE, "a", CONFIG)
         await registry.unregister(NAMESPACE, "a")
 
-        queue = registry._purge_queue
         async with skewed_engine.connect() as connection:
             row = (
                 await connection.execute(
-                    select(queue.c.enqueued_at, text("pg_catalog.now() AS real_now"))
+                    select(
+                        PurgeQueueRow.enqueued_at, text("pg_catalog.now() AS real_now")
+                    ).where(PurgeQueueRow.incarnation == incarnation)
                 )
             ).one()
         assert row.real_now - row.enqueued_at > timedelta(days=9)
@@ -689,13 +700,12 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
     await _age_deletion(registry, held, extra=timedelta(minutes=1))
     await _age_deletion(registry, free)
 
-    queue = registry._purge_queue
     claim = None
     try:
         async with sqlalchemy_engine.connect() as other_purger, other_purger.begin():
             await other_purger.execute(
-                select(queue.c.incarnation)
-                .where(queue.c.incarnation == held)
+                select(PurgeQueueRow.incarnation)
+                .where(PurgeQueueRow.incarnation == held)
                 .with_for_update()
             )
             claim = asyncio.create_task(_round(registry, found_any_records=False))
@@ -738,20 +748,18 @@ async def test_a_deletion_racing_another_waits_and_queues_nothing_more(
         pytest.skip("SQLite serializes whole write transactions")
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.register(NAMESPACE, "c", CONFIG)
-    collections, queue = registry._collections, registry._purge_queue
 
     local = None
     try:
         async with sqlalchemy_engine.connect() as remote, remote.begin():
             # Another process's deletion, held uncommitted.
             await remote.execute(
-                delete(collections).where(
-                    collections.c.namespace == NAMESPACE, collections.c.name == "c"
-                )
+                delete(CollectionRow).where(CollectionRow.incarnation == incarnation)
             )
             await remote.execute(
-                insert(queue).values(
+                insert(PurgeQueueRow).values(
                     incarnation=incarnation,
+                    vector_store_name=vector_store_name,
                     namespace=NAMESPACE,
                     name="c",
                     config=CONFIG.model_dump(mode="json"),
@@ -809,11 +817,10 @@ async def test_a_mint_checks_the_queue_after_its_insert(
         "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
         lambda: next(minted),
     )
-    collections, queue = registry._collections, registry._purge_queue
     insert_issued = asyncio.Event()
 
     def on_statement(_connection, _cursor, statement, _parameters, _context, _many):
-        if statement.startswith(f"INSERT INTO {collections.name}"):
+        if statement.startswith(f"INSERT INTO {CollectionRow.__tablename__}"):
             insert_issued.set()
 
     event.listen(sqlalchemy_engine.sync_engine, "before_cursor_execute", on_statement)
@@ -821,11 +828,12 @@ async def test_a_mint_checks_the_queue_after_its_insert(
     try:
         async with sqlalchemy_engine.connect() as remote, remote.begin():
             await remote.execute(
-                delete(collections).where(collections.c.incarnation == victim)
+                delete(CollectionRow).where(CollectionRow.incarnation == victim)
             )
             await remote.execute(
-                insert(queue).values(
+                insert(PurgeQueueRow).values(
                     incarnation=victim,
+                    vector_store_name=vector_store_name,
                     namespace=NAMESPACE,
                     name="victim",
                     config=CONFIG.model_dump(mode="json"),
@@ -850,7 +858,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
 async def test_a_round_claims_one_tombstone(sqlalchemy_engine, vector_store_name):
     """A claim takes one tombstone and leaves the others to other purgers."""
     registry = await _registry(
-        sqlalchemy_engine, vector_store_name, tombstone_retention=timedelta(0)
+        sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
     for name in ("a", "b", "c"):
         await registry.register(NAMESPACE, name, CONFIG)

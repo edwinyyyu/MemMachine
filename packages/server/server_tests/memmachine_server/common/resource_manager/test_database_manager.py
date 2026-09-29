@@ -1,5 +1,4 @@
 import importlib.util
-from datetime import timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,6 +23,9 @@ from memmachine_server.common.errors import (
 )
 from memmachine_server.common.resource_manager.database_manager import DatabaseManager
 from memmachine_server.common.vector_graph_store import VectorGraphStore
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyVectorStoreCollectionRegistryParams,
+)
 
 requires_pymilvus = pytest.mark.skipif(
     importlib.util.find_spec("pymilvus") is None,
@@ -416,9 +418,11 @@ async def test_qdrant_creates_vector_store():
         await builder.async_get_qdrant_client("qdrant1")
 
     mock_registry_cls.assert_called_once_with(
-        engine=builder.sql_engines["registry"],
-        vector_store_name="qdrant1",
-        tombstone_retention=timedelta(seconds=3600),
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=builder.sql_engines["registry"],
+            vector_store_name="qdrant1",
+            tombstone_retention_seconds=3600,
+        )
     )
     mock_registry_cls.return_value.startup.assert_awaited_once()
     mock_params_cls.assert_called_once()
@@ -667,9 +671,11 @@ async def test_milvus_creates_vector_store():
         await builder.async_get_milvus_client("milvus1")
 
     mock_registry_cls.assert_called_once_with(
-        engine=builder.sql_engines["registry"],
-        vector_store_name="milvus1",
-        tombstone_retention=timedelta(seconds=3600),
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=builder.sql_engines["registry"],
+            vector_store_name="milvus1",
+            tombstone_retention_seconds=3600,
+        )
     )
     mock_registry_cls.return_value.startup.assert_awaited_once()
     mock_params_cls.assert_called_once_with(

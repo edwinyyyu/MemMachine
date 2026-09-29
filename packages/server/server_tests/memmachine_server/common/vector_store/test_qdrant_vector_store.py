@@ -23,6 +23,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import MetricsFactory
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistryParams,
 )
 from memmachine_server.common.vector_store.data_types import (
     PropertyTypeMismatchError,
@@ -46,8 +47,6 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "qdrant_test"
-# Tombstones come due at once, so a test can purge right after deleting.
-TOMBSTONE_RETENTION = timedelta(0)
 
 
 async def _stored_uuids(collection) -> set[UUID]:
@@ -96,9 +95,13 @@ async def registry_engine(tmp_path):
 async def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
     """Parameters for one store: its own started registry over the shared registry database."""
     collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-        engine=registry_engine,
-        vector_store_name=VECTOR_STORE_NAME,
-        tombstone_retention=TOMBSTONE_RETENTION,
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=registry_engine,
+            vector_store_name=VECTOR_STORE_NAME,
+            # Tombstones come due at once, so a test can purge right after
+            # deleting.
+            tombstone_retention_seconds=0,
+        )
     )
     await collection_registry.startup()
     return QdrantVectorStoreParams(

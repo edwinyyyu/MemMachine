@@ -31,6 +31,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistryParams,
 )
 from memmachine_server.common.vector_store.data_types import (
     PropertyTypeMismatchError,
@@ -49,8 +50,6 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "milvus_test"
-# Tombstones come due at once, so a test can purge right after deleting.
-TOMBSTONE_RETENTION = timedelta(0)
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_VARCHAR_LENGTH = 1024
 PURGE_BATCH_SIZE = 10000
@@ -131,9 +130,13 @@ async def store(milvus_client, tmp_path):
         f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
     )
     collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-        engine=registry_engine,
-        vector_store_name=VECTOR_STORE_NAME,
-        tombstone_retention=TOMBSTONE_RETENTION,
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=registry_engine,
+            vector_store_name=VECTOR_STORE_NAME,
+            # Tombstones come due at once, so a test can purge right after
+            # deleting.
+            tombstone_retention_seconds=0,
+        )
     )
     await collection_registry.startup()
     vector_store = MilvusVectorStore(
