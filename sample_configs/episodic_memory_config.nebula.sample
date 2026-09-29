@@ -133,7 +133,7 @@ resources:
     #     uri: http://localhost:19530
     #     # token: $MILVUS_TOKEN
     #     # db_name: default
-    #     consistency_level: Session       # Strong, Session, Bounded, Eventually
+    #     consistency_level: Bounded       # Strong, Session, Bounded, Eventually
     #     collection_registry: profile_storage
     #     request_timeout_seconds: 30
     #
