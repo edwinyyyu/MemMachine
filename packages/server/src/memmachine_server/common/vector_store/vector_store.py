@@ -36,8 +36,8 @@ class VectorStoreCollection(ABC):
     An `upsert` or `delete` is durable once it returns; queries may reflect
     it only after a delay. A store that guarantees more states it.
 
-    Implementations must support storing, filtering on, and returning
-    record properties not declared in the configured indexed properties schema.
+    Implementations must support storing and filtering on record properties
+    not declared in the configured indexed properties schema.
 
     The schema exists to support indexing on fixed-type record properties.
     Record properties not declared in the schema may have mixed-type values.
@@ -86,11 +86,12 @@ class VectorStoreCollection(ABC):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
+
+        A match answers a record's UUID and score; the store keeps its
+        vector and properties to search and filter on, and returns neither.
 
         Args:
             query_vectors (Iterable[Sequence[float]]):
@@ -104,12 +105,6 @@ class VectorStoreCollection(ABC):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
                 (default: None).
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
 
         Returns:
             list[QueryResult]:

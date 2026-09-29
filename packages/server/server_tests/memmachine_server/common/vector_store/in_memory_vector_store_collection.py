@@ -138,8 +138,6 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
         score_threshold: float | None = None,
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         metric = self.collection_config.similarity_metric
         higher_is_better = metric.higher_is_better
@@ -160,14 +158,7 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
                     score, score_threshold, higher_is_better
                 ):
                     continue
-                matches.append(
-                    QueryMatch(
-                        score=score,
-                        record=self._project_record(
-                            record, return_vector, return_properties
-                        ),
-                    )
-                )
+                matches.append(QueryMatch(score=score, record_uuid=record.uuid))
             matches.sort(key=lambda m: m.score, reverse=higher_is_better)
             if limit is not None:
                 matches = matches[:limit]
@@ -177,22 +168,3 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         for uid in record_uuids:
             self.records.pop(uid, None)
-
-    @staticmethod
-    def _project_record(
-        record: Record, return_vector: bool, return_properties: bool
-    ) -> Record:
-        """Return a copy of the record with only the requested fields."""
-        return Record(
-            uuid=record.uuid,
-            vector=(
-                list(record.vector)
-                if return_vector and record.vector is not None
-                else None
-            ),
-            properties=(
-                dict(record.properties)
-                if return_properties and record.properties
-                else None
-            ),
-        )

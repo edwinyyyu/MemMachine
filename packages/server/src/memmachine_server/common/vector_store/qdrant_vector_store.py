@@ -3,7 +3,7 @@
 import hashlib
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime
-from typing import Any, ClassVar, cast, override
+from typing import Any, ClassVar, override
 from uuid import UUID
 
 import grpc
@@ -301,27 +301,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     payload[key] = value
         return payload
 
-    def _parse_payload(
-        self,
-        payload: dict[str, Any] | None,
-    ) -> dict[str, PropertyValue] | None:
-        """Parse record properties from Qdrant payload."""
-        if payload is None:
-            return None
-
-        indexed_properties_schema = self._config.indexed_properties_schema
-        result: dict[str, PropertyValue] = {}
-        for key, value in payload.items():
-            if key == _PAYLOAD_INCARNATION or value is None:
-                continue
-            if indexed_properties_schema.get(key) is datetime and isinstance(
-                value, str
-            ):
-                result[key] = datetime.fromisoformat(value)
-            else:
-                result[key] = cast(PropertyValue, value)
-        return result
-
     @override
     async def upsert(
         self,
@@ -371,8 +350,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
@@ -399,8 +376,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     filter=qdrant_filter,
                     score_threshold=score_threshold,
                     limit=limit,
-                    with_vector=return_vector,
-                    with_payload=return_properties,
+                    with_vector=False,
+                    with_payload=False,
                 )
                 for query_vector in query_vectors
             ]
@@ -410,31 +387,15 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 requests=requests,
             )
 
-            query_results: list[QueryResult] = []
-            for batch in batch_results:
-                matches: list[QueryMatch] = []
-                for point in batch.points:
-                    vector: list[float] | None = None
-                    if return_vector and point.vector is not None:
-                        vector = cast(list[float], point.vector)
-
-                    properties: dict[str, PropertyValue] | None = None
-                    if return_properties and point.payload is not None:
-                        properties = self._parse_payload(point.payload)
-
-                    matches.append(
-                        QueryMatch(
-                            score=point.score,
-                            record=Record(
-                                uuid=UUID(str(point.id)),
-                                vector=vector,
-                                properties=properties,
-                            ),
-                        ),
-                    )
-                query_results.append(QueryResult(matches=matches))
-
-            return query_results
+            return [
+                QueryResult(
+                    matches=[
+                        QueryMatch(score=point.score, record_uuid=UUID(str(point.id)))
+                        for point in batch.points
+                    ]
+                )
+                for batch in batch_results
+            ]
 
     @override
     async def delete(

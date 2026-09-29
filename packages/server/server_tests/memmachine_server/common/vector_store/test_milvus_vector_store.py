@@ -28,6 +28,7 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
+from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
 )
@@ -91,8 +92,8 @@ async def _settle(collection: MilvusVectorStoreCollection) -> None:
 
 async def _stored(
     collection: MilvusVectorStoreCollection, record_uuids: list[UUID]
-) -> dict[UUID, Record]:
-    """The records Milvus holds under these UUIDs, read past the store at Strong.
+) -> dict[UUID, dict]:
+    """The entities Milvus holds under these UUIDs, read past the store at Strong.
 
     The store's reads may lag its writes by its consistency level; a Strong
     read reflects every write that returned before it.
@@ -103,16 +104,10 @@ async def _stored(
             collection._primary_id(collection._incarnation, record_uuid)
             for record_uuid in record_uuids
         ],
-        output_fields=collection._output_fields(
-            return_vector=True, return_properties=True
-        ),
+        output_fields=["*"],
         consistency_level="Strong",
     )
-    records = (
-        collection._parse_record(row, return_vector=True, return_properties=True)
-        for row in rows
-    )
-    return {record.uuid: record for record in records}
+    return {UUID(row["record_uuid"]): row for row in rows}
 
 
 @pytest_asyncio.fixture
@@ -269,7 +264,7 @@ class TestCollectionLifecycle:
             limit=1,
             property_filter=Comparison(field="name", op="=", value="alice"),
         )
-        assert [match.record.uuid for match in result.matches] == [record.uuid]
+        assert [match.record_uuid for match in result.matches] == [record.uuid]
         native = coll._native_collection_name
         assert set(await store._client.list_indexes(native)) == {"vector", "_p_name"}
         await store.delete_collection(namespace=namespace, name="partial")
@@ -335,8 +330,8 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_native_collection_schema(self, store):
-        """Each declared property is a typed, nullable, indexed field, a
-        datetime with a field for its offset; the collection isolates tenants."""
+        """Each declared property is a typed, nullable, indexed field; the
+        collection isolates tenants."""
         await store.create_collection(
             namespace=NAMESPACE,
             name="schema",
@@ -371,7 +366,6 @@ class TestCollectionLifecycle:
             "_p_score": DataType.DOUBLE,
             "_p_active": DataType.BOOL,
             "_p_created_at": DataType.TIMESTAMPTZ,
-            "_tz_created_at": DataType.INT32,
         }
         for field_name, data_type in expected.items():
             assert fields[field_name]["type"] == data_type
@@ -448,9 +442,9 @@ class TestUpsertAndQuery:
         matches = query_results[0].matches
 
         assert len(matches) == 3
-        assert matches[0].record.uuid == r1.uuid
-        assert matches[1].record.uuid == r3.uuid
-        assert matches[2].record.uuid == r2.uuid
+        assert matches[0].record_uuid == r1.uuid
+        assert matches[1].record_uuid == r3.uuid
+        assert matches[2].record_uuid == r2.uuid
         assert matches[0].score >= matches[1].score >= matches[2].score
         assert matches[0].score == pytest.approx(1.0)
         assert matches[2].score == pytest.approx(0.0)
@@ -470,29 +464,7 @@ class TestUpsertAndQuery:
         )
         matches = query_results[0].matches
         assert len(matches) == 1
-        assert matches[0].record.uuid == r1.uuid
-
-    @pytest.mark.asyncio
-    async def test_query_return_flags(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(records=[r1])
-        await _settle(collection)
-
-        no_vector = await collection.query(
-            query_vectors=[v1], limit=10, return_vector=False
-        )
-        assert no_vector[0].matches[0].record.vector is None
-        assert no_vector[0].matches[0].record.properties is not None
-
-        no_properties = await collection.query(
-            query_vectors=[v1],
-            limit=10,
-            return_vector=True,
-            return_properties=False,
-        )
-        assert no_properties[0].matches[0].record.vector is not None
-        assert no_properties[0].matches[0].record.properties is None
+        assert matches[0].record_uuid == r1.uuid
 
     @pytest.mark.asyncio
     async def test_query_batch_multiple_vectors(self, collection):
@@ -507,8 +479,8 @@ class TestUpsertAndQuery:
         all_results = await collection.query(query_vectors=[v1, v2], limit=1)
 
         assert len(all_results) == 2
-        assert all_results[0].matches[0].record.uuid == r1.uuid
-        assert all_results[1].matches[0].record.uuid == r2.uuid
+        assert all_results[0].matches[0].record_uuid == r1.uuid
+        assert all_results[1].matches[0].record_uuid == r2.uuid
 
     @pytest.mark.asyncio
     async def test_upsert_removes_stale_filter_fields(self, collection):
@@ -527,7 +499,7 @@ class TestUpsertAndQuery:
             limit=10,
             property_filter=IsNull(field="name"),
         )
-        assert {match.record.uuid for match in results[0].matches} == {record.uuid}
+        assert {match.record_uuid for match in results[0].matches} == {record.uuid}
 
     @pytest.mark.asyncio
     async def test_upsert_failure_preserves_existing_record(
@@ -556,8 +528,8 @@ class TestUpsertAndQuery:
             )
 
         stored = (await _stored(collection, [record.uuid]))[record.uuid]
-        assert stored.vector == old_vector
-        assert stored.properties == {"name": "old"}
+        assert list(stored["vector"]) == old_vector
+        assert stored["_p_name"] == "old"
 
 
 class TestFilters:
@@ -587,7 +559,7 @@ class TestFilters:
             limit=10,
             property_filter=Comparison(field=field, op=op, value=value),
         )
-        return {match.record.uuid for match in all_results[0].matches}
+        return {match.record_uuid for match in all_results[0].matches}
 
     @pytest.mark.asyncio
     async def test_scalar_filters(self, collection):
@@ -613,7 +585,7 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
-    async def test_datetime_filters_and_roundtrip(self, collection):
+    async def test_datetime_filters(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
         v2 = _normalize([1.0, 0.1, 0.0])
         dt_utc = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
@@ -627,9 +599,6 @@ class TestFilters:
         dt_filter = datetime(2024, 6, 15, 17, 0, 0, tzinfo=plus5)
         uuids = await self._query(collection, v1, "created_at", "=", dt_filter)
         assert uuids == {r1.uuid}
-
-        stored = await _stored(collection, [r1.uuid])
-        assert stored[r1.uuid].properties == {"created_at": dt_utc}
 
     @pytest.mark.asyncio
     async def test_is_null_and_not_null(self, collection):
@@ -645,14 +614,14 @@ class TestFilters:
             limit=10,
             property_filter=IsNull(field="name"),
         )
-        assert {m.record.uuid for m in null_results[0].matches} == {r_missing.uuid}
+        assert {m.record_uuid for m in null_results[0].matches} == {r_missing.uuid}
 
         not_null_results = await collection.query(
             query_vectors=[v1],
             limit=10,
             property_filter=Not(expr=IsNull(field="name")),
         )
-        assert {m.record.uuid for m in not_null_results[0].matches} == {
+        assert {m.record_uuid for m in not_null_results[0].matches} == {
             r_has_value.uuid
         }
 
@@ -665,7 +634,7 @@ class TestFilters:
             limit=10,
             property_filter=In(field="name", values=["alice", "carol"]),
         )
-        assert {m.record.uuid for m in in_results[0].matches} == {r1.uuid, r3.uuid}
+        assert {m.record_uuid for m in in_results[0].matches} == {r1.uuid, r3.uuid}
 
         and_results = await collection.query(
             query_vectors=[v1],
@@ -675,7 +644,7 @@ class TestFilters:
                 right=Comparison(field="age", op=">", value=30),
             ),
         )
-        assert {m.record.uuid for m in and_results[0].matches} == {r3.uuid}
+        assert {m.record_uuid for m in and_results[0].matches} == {r3.uuid}
 
         or_results = await collection.query(
             query_vectors=[v1],
@@ -685,7 +654,7 @@ class TestFilters:
                 right=Comparison(field="name", op="=", value="bob"),
             ),
         )
-        assert {m.record.uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
+        assert {m.record_uuid for m in or_results[0].matches} == {r1.uuid, r2.uuid}
 
     @pytest.mark.asyncio
     async def test_negation_is_the_complement_missing_values_included(self, collection):
@@ -700,7 +669,7 @@ class TestFilters:
             [result] = await collection.query(
                 query_vectors=[v1], limit=10, property_filter=expr
             )
-            return {match.record.uuid for match in result.matches}
+            return {match.record_uuid for match in result.matches}
 
         assert await uuids(Comparison(field="name", op="!=", value="alice")) == {
             r2.uuid,
@@ -744,7 +713,7 @@ class TestFilters:
             [result] = await collection.query(
                 query_vectors=[v1], limit=10, property_filter=expr
             )
-            return {match.record.uuid for match in result.matches}
+            return {match.record_uuid for match in result.matches}
 
         assert await uuids(Comparison(field="color", op="=", value="red")) == {red.uuid}
         assert await uuids(Comparison(field="size", op=">=", value=3)) == {red.uuid}
@@ -752,32 +721,10 @@ class TestFilters:
         assert await uuids(IsNull(field="size")) == {blue.uuid}
         assert await uuids(Comparison(field="size", op="!=", value=3)) == {blue.uuid}
         stored = await _stored(collection, [red.uuid])
-        assert stored[red.uuid].properties == {"color": "red", "size": 3}
-
-    @pytest.mark.asyncio
-    async def test_a_datetime_reads_back_in_the_timezone_it_was_written_in(
-        self, collection
-    ):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        written = datetime(
-            2024,
-            6,
-            15,
-            17,
-            30,
-            0,
-            123456,
-            tzinfo=timezone(timedelta(hours=5, minutes=30)),
-        )
-        record = _make_record(vector=v1, properties={"created_at": written})
-        await collection.upsert(records=[record])
-        await _settle(collection)
-
-        [result] = await collection.query(query_vectors=[v1], limit=1)
-        assert (
-            result.matches[0].record.properties["created_at"].isoformat()
-            == written.isoformat()
-        )
+        assert decode_properties(stored[red.uuid]["properties"]) == {
+            "color": "red",
+            "size": 3,
+        }
 
     @pytest.mark.asyncio
     async def test_datetime_filters_compare_instants_across_offsets(self, collection):
@@ -804,7 +751,7 @@ class TestFilters:
             [result] = await collection.query(
                 query_vectors=[v1], limit=10, property_filter=expr
             )
-            return {match.record.uuid for match in result.matches}
+            return {match.record_uuid for match in result.matches}
 
         same_instant = base.astimezone(plus5)
         assert await uuids(
@@ -832,7 +779,7 @@ class TestFilters:
             limit=10,
             property_filter=Comparison(field="age", op="!=", value="thirty"),
         )
-        assert {m.record.uuid for m in complement.matches} == {
+        assert {m.record_uuid for m in complement.matches} == {
             r1.uuid,
             r2.uuid,
             r3.uuid,
@@ -929,8 +876,8 @@ class TestPartitionIsolation:
         stored_a = await _stored(coll_a, [record_uuid])
         stored_b = await _stored(coll_b, [record_uuid])
 
-        assert stored_a[record_uuid].properties == {"name": "a"}
-        assert stored_b[record_uuid].properties == {"name": "b"}
+        assert decode_properties(stored_a[record_uuid]["properties"]) == {"name": "a"}
+        assert decode_properties(stored_b[record_uuid]["properties"]) == {"name": "b"}
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")

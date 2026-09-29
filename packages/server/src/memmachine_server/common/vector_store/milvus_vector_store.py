@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
@@ -37,10 +37,9 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.properties_json import (
     PROPERTY_VALUE_KEY,
-    decode_properties,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
+from memmachine_server.common.utils import ensure_tz_aware
 
 from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
@@ -70,12 +69,6 @@ _PROPERTIES_FIELD = "properties"
 """A JSON field holding the properties the collection's schema does not declare."""
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
-_OFFSET_FIELD_PREFIX = "_tz_"
-"""The prefix of the field holding a declared datetime property's UTC offset.
-
-A TIMESTAMPTZ field keeps the instant and returns it in UTC; the offset, in
-seconds, restores the timezone the value was written in.
-"""
 
 _MAX_UUID_LENGTH = 36
 _MAX_PRIMARY_ID_LENGTH = 128
@@ -330,63 +323,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
                     value
                 ).isoformat()
-                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = utc_offset_seconds(value)
-            elif declared_type is datetime:
-                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
-                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = None
             elif declared_type is float and isinstance(value, int | float):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = float(value)
             else:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
-
-    def _parse_record(
-        self,
-        entity: Mapping[str, Any],
-        *,
-        return_vector: bool,
-        return_properties: bool,
-    ) -> Record:
-        """Parse a Milvus entity into a vector store record."""
-        vector: list[float] | None = None
-        if return_vector:
-            raw_vector = entity.get(_VECTOR_FIELD)
-            if raw_vector is not None:
-                vector = list(cast(Sequence[float], raw_vector))
-
-        properties: dict[str, PropertyValue] | None = None
-        if return_properties:
-            properties = decode_properties(
-                cast(Mapping | None, entity.get(_PROPERTIES_FIELD))
-            )
-            for key, declared_type in self._config.indexed_properties_schema.items():
-                value = entity.get(f"{_DECLARED_FIELD_PREFIX}{key}")
-                if value is None:
-                    continue
-                if declared_type is datetime:
-                    offset = timedelta(seconds=entity[f"{_OFFSET_FIELD_PREFIX}{key}"])
-                    value = datetime.fromisoformat(value).astimezone(timezone(offset))
-                properties[key] = value
-
-        return Record(
-            uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
-            vector=vector,
-            properties=properties,
-        )
-
-    def _output_fields(
-        self, *, return_vector: bool, return_properties: bool
-    ) -> list[str]:
-        fields = [_RECORD_UUID_FIELD]
-        if return_vector:
-            fields.append(_VECTOR_FIELD)
-        if return_properties:
-            fields.append(_PROPERTIES_FIELD)
-            for key, declared_type in self._config.indexed_properties_schema.items():
-                fields.append(f"{_DECLARED_FIELD_PREFIX}{key}")
-                if declared_type is datetime:
-                    fields.append(f"{_OFFSET_FIELD_PREFIX}{key}")
-        return fields
 
     def _score(self, distance: float) -> float:
         """The store's score for a distance Milvus returned.
@@ -428,8 +369,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
@@ -454,10 +393,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 filter=filter_expr,
                 limit=limit,
                 search_params={"params": _SEARCH_PARAMS},
-                output_fields=self._output_fields(
-                    return_vector=return_vector,
-                    return_properties=return_properties,
-                ),
+                output_fields=[_RECORD_UUID_FIELD],
                 anns_field=_VECTOR_FIELD,
                 consistency_level=self._consistency_level,
                 timeout=self._request_timeout_seconds,
@@ -477,11 +413,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                     matches.append(
                         QueryMatch(
                             score=score,
-                            record=self._parse_record(
-                                entity,
-                                return_vector=return_vector,
-                                return_properties=return_properties,
-                            ),
+                            record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
                         )
                     )
 
@@ -742,12 +674,6 @@ class MilvusVectorStore(VectorStore):
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                         datatype=_DECLARED_DATA_TYPES[declared_type],
-                        nullable=True,
-                    )
-                if declared_type is datetime:
-                    schema.add_field(
-                        field_name=f"{_OFFSET_FIELD_PREFIX}{key}",
-                        datatype=DataType.INT32,
                         nullable=True,
                     )
 

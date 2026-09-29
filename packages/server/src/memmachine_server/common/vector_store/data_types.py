@@ -131,20 +131,21 @@ class VectorStoreAttemptsExhaustedError(Exception):
 
 class Record(BaseModel):
     """
-    A record in the vector store.
+    A record to write to a vector store collection.
+
+    Records are only ever written: a collection stores vectors to search
+    them and properties to filter on them, and answers a query with
+    `QueryMatch`; neither a vector nor a property is read back out.
 
     Attributes:
         uuid (UUID):
             Unique identifier for the record.
         vector (list[float] | None):
-            Vector for similarity search.
-            `None` is not allowed on input.
-            `None` on output means the vector was not requested (`return_vector=False`)
+            Vector for similarity search. `None` is not allowed
             (default: None).
         properties (dict[str, PropertyValue] | None):
             Property key-value pairs.
-            Use `{}` to represent missing properties; `None` on input is treated as `{}`.
-            `None` on output means the properties were not requested (`return_properties=False`)
+            Use `{}` to represent missing properties; `None` is treated as `{}`
             (default: None).
     """
 
@@ -184,12 +185,12 @@ class QueryMatch(BaseModel):
 
             Use `SimilarityMetric.higher_is_better` to determine which
             direction indicates a better match.
-        record (Record):
-            The matched record.
+        record_uuid (UUID):
+            UUID of the matched record.
     """
 
     score: float
-    record: Record
+    record_uuid: UUID
 
 
 class QueryResult(BaseModel):

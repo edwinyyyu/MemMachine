@@ -41,11 +41,10 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 from sqlalchemy.sql.elements import ColumnElement
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
-    decode_properties,
     encode_properties,
 )
 
@@ -377,8 +376,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         limit: int,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
-        return_vector: bool = False,
-        return_properties: bool = True,
     ) -> list[QueryResult]:
         query_vectors = list(query_vectors)
         if not query_vectors:
@@ -404,8 +401,6 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             matches = await self._build_matches(
                 row_id_to_score={m.key: m.score for m in search_result.matches},
                 score_threshold=score_threshold,
-                return_vector=return_vector,
-                return_properties=return_properties,
             )
             results.append(QueryResult(matches=matches))
 
@@ -433,25 +428,15 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         self,
         row_id_to_score: Mapping[int, float],
         score_threshold: float | None,
-        return_vector: bool,
-        return_properties: bool,
     ) -> list[QueryMatch]:
-        matched_row_ids = list(row_id_to_score.keys())
-
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.row_id]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        fetch_records = select(*selected_columns).where(
-            self._records_table.c.row_id.in_(matched_row_ids),
+        fetch_records = select(
+            self._records_table.c.uuid, self._records_table.c.row_id
+        ).where(
+            self._records_table.c.row_id.in_(list(row_id_to_score)),
         )
 
         async with self._create_session() as session:
             matched_rows = (await session.execute(fetch_records)).all()
-
-        vector_map: dict[int, list[float]] = {}
-        if return_vector:
-            vector_map = await self._search_engine.get_vectors(matched_row_ids)
 
         higher_is_better = self._config.similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
@@ -465,18 +450,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
             ):
                 continue
 
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = vector_map.get(row.row_id)
-
-            matches.append(
-                QueryMatch(
-                    score=score,
-                    record=Record(uuid=row.uuid, vector=vector, properties=properties),
-                )
-            )
+            matches.append(QueryMatch(score=score, record_uuid=row.uuid))
 
         matches.sort(
             key=lambda match: match.score,
