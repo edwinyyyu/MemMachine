@@ -586,11 +586,9 @@ class MilvusVectorStore(VectorStore):
     configured. At Bounded a query reflects every write that returned at
     least the server's `common.gracefulTime` (5 s by default) before it
     began, and when the server has fallen further behind, it waits rather
-    than reads staler; it usually reflects later writes too. At Strong a
-    query reflects every write that returned before it began, at the cost
-    of waiting for the server to apply every write up to then, whichever
-    tenant made it. Milvus orders a record's writes by its write-ahead log,
-    so a record reads as its last write.
+    than reads staler. At Strong a query reflects every write that returned
+    before it began, at the cost of waiting for the server to apply every
+    write up to then, whichever tenant made it.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {

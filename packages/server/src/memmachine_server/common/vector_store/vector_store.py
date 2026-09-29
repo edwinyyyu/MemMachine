@@ -33,13 +33,8 @@ class VectorStoreCollection(ABC):
     it, returning the content from before the deletion. A store that cannot
     detect a stale handle says so in its own contract.
 
-    An `upsert` or `delete` is durable once it returns. Queries reflect it
-    as soon as it returns, or after a delay a store states in its own
-    contract; a query within that delay may miss a record upserted, or
-    return a record deleted, shortly before it. A write to a record that
-    begins after another write to it returned takes effect after that one;
-    writes to one record that overlap in time take effect in some order,
-    the same for every query.
+    An `upsert` or `delete` is durable once it returns; queries may reflect
+    it only after a delay. A store that guarantees more states it.
 
     Implementations must support storing, filtering on, and returning
     record properties not declared in the configured indexed properties schema.

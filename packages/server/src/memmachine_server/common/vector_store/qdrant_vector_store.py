@@ -511,9 +511,7 @@ class QdrantVectorStore(VectorStore):
     Qdrant backend and the registry may serve any collection.
 
     Writes return once Qdrant has applied them, so on a single node queries
-    reflect a write as soon as it returns. On a replicated deployment a
-    query reads one replica, which Qdrant documents may not yet have
-    applied a write another replica has, without a bound.
+    reflect a write as soon as it returns.
     """
 
     _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
