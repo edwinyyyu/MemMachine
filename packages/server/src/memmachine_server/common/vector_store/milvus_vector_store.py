@@ -52,6 +52,7 @@ from .data_types import (
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
+from .declared_properties import require_declared_types
 from .utils import require_identifiers, validate_filter
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -321,16 +322,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         }
         for key, declared_type in declared.items():
             value = record.properties.get(key)
-            # A filter compares an int property with a float, but an INT64
-            # field stores only ints.
-            if value is not None and (
-                not _fits(value, declared_type)
-                or (declared_type is int and isinstance(value, float))
-            ):
-                raise TypeError(
-                    f"Property {key!r} is declared {declared_type.__name__}, "
-                    f"got {type(value).__name__}"
-                )
             if isinstance(value, datetime):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
                     value
@@ -339,8 +330,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             elif declared_type is datetime:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
                 entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = None
-            elif declared_type is float and isinstance(value, int | float):
-                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = float(value)
             else:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
@@ -367,6 +356,10 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 return
 
             await self._fence()
+            for record in records:
+                require_declared_types(
+                    record.properties, self._config.indexed_properties_schema
+                )
             await self._client.upsert(
                 collection_name=self._native_collection_name,
                 data=[self._build_entity(record) for record in records],

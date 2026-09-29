@@ -52,6 +52,7 @@ from .data_types import (
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
+from .declared_properties import require_declared_types
 from .utils import require_identifiers, validate_filter
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -324,17 +325,21 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         async with self._tracker("upsert"):
             await self._fence()
-            points = [
-                models.PointStruct(
-                    id=str(self._point_id(record.uuid)),
-                    vector=record.vector,
-                    payload={
-                        **self._build_payload(record.properties),
-                        _PAYLOAD_RECORD_UUID: str(record.uuid),
-                    },
+            points: list[models.PointStruct] = []
+            for record in records:
+                require_declared_types(
+                    record.properties, self._config.indexed_properties_schema
                 )
-                for record in records
-            ]
+                points.append(
+                    models.PointStruct(
+                        id=str(self._point_id(record.uuid)),
+                        vector=record.vector,
+                        payload={
+                            **self._build_payload(record.properties),
+                            _PAYLOAD_RECORD_UUID: str(record.uuid),
+                        },
+                    )
+                )
             if points:
                 await self._upsert_with_backoff(points)
             await self._fence()

@@ -69,6 +69,11 @@ class VectorStoreCollection(ABC):
                 Records containing properties
                 not in the indexed properties schema
                 are allowed.
+
+        Raises:
+            PropertyTypeMismatchError:
+                If a record's declared property holds a value of another
+                type.
         """
         raise NotImplementedError
 

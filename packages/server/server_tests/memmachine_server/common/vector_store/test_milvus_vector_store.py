@@ -33,6 +33,7 @@ from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collec
     SQLAlchemyVectorStoreCollectionRegistry,
 )
 from memmachine_server.common.vector_store.data_types import (
+    PropertyTypeMismatchError,
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
@@ -801,15 +802,18 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("value", ["old", 30.0])
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("age", "old"), ("age", 30.5), ("age", True), ("score", 3), ("score", "high")],
+    )
     async def test_a_declared_property_of_another_type_is_refused(
-        self, collection, value
+        self, collection, key, value
     ):
-        with pytest.raises(TypeError, match="declared int"):
+        with pytest.raises(PropertyTypeMismatchError, match=f"{key!r} is declared"):
             await collection.upsert(
                 records=[
                     _make_record(
-                        vector=_normalize([1.0, 0.0, 0.0]), properties={"age": value}
+                        vector=_normalize([1.0, 0.0, 0.0]), properties={key: value}
                     )
                 ]
             )

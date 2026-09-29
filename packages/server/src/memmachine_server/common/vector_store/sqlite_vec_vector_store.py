@@ -47,6 +47,7 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
 )
+from .declared_properties import require_declared_types
 from .utils import validate_filter, validate_identifier
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -127,6 +128,10 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         records = list(records)
         if not records:
             return
+        for record in records:
+            require_declared_types(
+                record.properties, self._config.indexed_properties_schema
+            )
 
         async with self._create_session() as session, session.begin():
             upsert_records = (
