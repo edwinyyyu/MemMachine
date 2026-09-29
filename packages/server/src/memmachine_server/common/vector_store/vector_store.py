@@ -244,17 +244,6 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        """
-        Close a collection handle.
-
-        Args:
-            collection (Collection):
-                The handle of the collection to close.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """
         Delete a logical collection from the vector store.

@@ -692,11 +692,6 @@ class QdrantVectorStore(VectorStore):
         return self._build_collection_handle(namespace, name, registered)
 
     @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        # Qdrant collection handles hold nothing to release.
-        pass
-
-    @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         require_identifiers(namespace, name)
         async with self._tracker("delete_collection"):

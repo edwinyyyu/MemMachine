@@ -850,10 +850,6 @@ class SQLiteVectorStore(VectorStore):
         )
 
     @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        self._require_started()
-
-    @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         self._require_started()
         if not validate_identifier(namespace) or not validate_identifier(name):

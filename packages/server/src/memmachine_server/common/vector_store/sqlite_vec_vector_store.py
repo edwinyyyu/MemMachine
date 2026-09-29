@@ -487,10 +487,6 @@ class SQLiteVecVectorStore(VectorStore):
         )
 
     @override
-    async def close_collection(self, *, collection: VectorStoreCollection) -> None:
-        pass  # No resources to release.
-
-    @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         if not validate_identifier(namespace) or not validate_identifier(name):
             raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
