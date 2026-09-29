@@ -156,8 +156,9 @@ tasks search live tenants; two runs each):
 | Session | none | 20 | 0 | 4.0-4.5 s | 6.4-9.1 ms |
 | Strong | none | 20 | 0 | 2.2-2.4 s | 7.6-12.9 ms |
 
-(Accepted: Bounded, as the store reads everywhere; a caller that runs rounds
-back to back pays repeated deletes, never a wrong result.)
+(Proposed: keep Bounded, as the store reads everywhere; a caller that runs
+rounds back to back pays repeated deletes, never a wrong result. Session waits
+on every write the process makes, which the measurement did not load.)
 
 ## Consistency
 
