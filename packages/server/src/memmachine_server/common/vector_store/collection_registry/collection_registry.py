@@ -24,7 +24,7 @@ from memmachine_server.common.vector_store.data_types import (
 
 @dataclass(frozen=True)
 class RegisteredCollection:
-    """A live collection: the incarnation its points carry and the configuration it was created with."""
+    """A live collection: the incarnation its records carry and the configuration it was created with."""
 
     incarnation: UUID
     config: VectorStoreCollectionConfig
@@ -36,15 +36,15 @@ class PurgeClaim:
     One purge round's claim on a tombstone.
 
     The registry fills in `incarnation`, the value the deleted collection's
-    points carry, and `namespace` and `config`, which name the native
-    collection they are in. The round sets `points_found` before the claim
-    ends: whether it found points under the incarnation.
+    records carry, and `namespace` and `config`, which name the native
+    collection they are in. The round sets `found_any_records` before the claim
+    ends: whether it found records under the incarnation.
     """
 
     incarnation: UUID
     namespace: str
     config: VectorStoreCollectionConfig
-    points_found: bool | None = None
+    found_any_records: bool | None = None
 
 
 class VectorStoreCollectionRegistry(ABC):
@@ -73,7 +73,7 @@ class VectorStoreCollectionRegistry(ABC):
 
         The (namespace, name) is arbitrated across processes, and the
         incarnation is one no live or queued collection carries, so the new
-        collection starts empty and no purge reclaims its points.
+        collection starts empty and no purge reclaims its records.
 
         Args:
             namespace (str): Namespace of the collection.
@@ -82,7 +82,7 @@ class VectorStoreCollectionRegistry(ABC):
                 The configuration the collection is created with.
 
         Returns:
-            UUID: The incarnation the collection's points carry.
+            UUID: The incarnation the collection's records carry.
 
         Raises:
             VectorStoreCollectionAlreadyExistsError: The (namespace, name) is taken.
@@ -126,7 +126,7 @@ class VectorStoreCollectionRegistry(ABC):
         Unregister a collection and queue its incarnation for purge.
 
         The collection is unreachable when this returns, and purge rounds
-        reclaim its points later. Idempotent.
+        reclaim its records later. Idempotent.
 
         Args:
             namespace (str): Namespace of the collection.
@@ -142,10 +142,10 @@ class VectorStoreCollectionRegistry(ABC):
         Claim a due tombstone for one purge round, run in the body of the context.
 
         A tombstone is due once the retention has passed since its
-        deletion. In the body, the caller deletes points under
+        deletion. In the body, the caller deletes records under
         `claim.incarnation` in the native collection that `claim.namespace`
-        and `claim.config` name, and sets `claim.points_found`. A round that
-        found no points removes the tombstone and frees its incarnation. A
+        and `claim.config` name, and sets `claim.found_any_records`. A round that
+        found no records removes the tombstone and frees its incarnation. A
         body that raises is a failed round: the tombstone is claimed again
         after a backoff that grows with each consecutive failure, and one
         whose rounds keep failing is dead-lettered and reported. A round must

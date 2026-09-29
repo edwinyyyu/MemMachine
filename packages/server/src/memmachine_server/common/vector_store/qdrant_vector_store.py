@@ -727,8 +727,8 @@ class QdrantVectorStore(VectorStore):
                 if not QdrantVectorStore._is_not_found_error(e):
                     raise
                 points = []
-            claim.points_found = bool(points)
-            if claim.points_found:
+            claim.found_any_records = bool(points)
+            if claim.found_any_records:
                 await self._client.delete(
                     collection_name=native_collection_name,
                     points_selector=models.FilterSelector(
@@ -736,4 +736,4 @@ class QdrantVectorStore(VectorStore):
                     ),
                     wait=True,
                 )
-            return claim.points_found
+            return claim.found_any_records

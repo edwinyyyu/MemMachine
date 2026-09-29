@@ -80,7 +80,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     registry holds. Its tables are `collection_registry_{vector_store_name}_ct`
     and `..._gc`, so registries of different vector stores can share a
     database. It must match `[a-z0-9_]+` and be at most 32 bytes.
-    `tombstone_retention` is how long a deleted collection's points are kept
+    `tombstone_retention` is how long a deleted collection's records are kept
     before its purge starts, on the database clock; it must exceed, by
     orders of magnitude, the longest a write to the backend can be in flight
     and the delay before the store's reads reflect a write.
@@ -138,7 +138,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             Column("namespace", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             # The collection's name, kept for inspection.
             Column("name", String(_IDENTIFIER_MAX_BYTES), nullable=False),
-            # The configuration names the native collection the points are in.
+            # The configuration names the native collection the records are in.
             Column("config", _JSON_AUTO, nullable=False),
             Column("enqueued_at", DateTime(timezone=True), nullable=False),
             # Consecutive purge rounds on the tombstone that raised, and when
@@ -356,16 +356,16 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     ) -> None:
         """Record a purge round's outcome, in the claim's transaction.
 
-        A round that found no points removes the tombstone; one that found
-        points resets its count of failed rounds.
+        A round that found no records removes the tombstone; one that found
+        records resets its count of failed rounds.
         """
-        if claim.points_found is None:
+        if claim.found_any_records is None:
             raise RuntimeError(
                 f"Purge round for incarnation {claim.incarnation} ended "
-                "without setting points_found"
+                "without setting found_any_records"
             )
         queue = self._purge_queue
-        if not claim.points_found:
+        if not claim.found_any_records:
             await connection.execute(
                 delete(queue).where(queue.c.incarnation == claim.incarnation)
             )
@@ -394,7 +394,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         if failed_rounds == _MAX_FAILED_PURGE_ROUNDS:
             logger.error(
                 "Purge of incarnation %s failed %d rounds in a row and is "
-                "dead-lettered: its points stay and it is no longer claimed. "
+                "dead-lettered: its records stay and it is no longer claimed. "
                 "Last error: %r. Set its failed_rounds to 0 in %s to retry it.",
                 incarnation,
                 failed_rounds,
