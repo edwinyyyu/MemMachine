@@ -441,7 +441,7 @@ class TestUpsertAndQuery:
         await _settle(collection)
 
         [result] = await collection.query(
-            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=100
+            query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=200
         )
 
         assert {match.record_uuid for match in result.matches} == {

@@ -21,15 +21,12 @@ registry](vector_store_collection_registry.md),
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
-  HNSW indexes; the store's HNSW_SQ is one.
-- **Vector index:** HNSW_SQ, 4-bit codes with FP16 refinement, M=18,
-  efConstruction=240: what AUTOINDEX builds on CPU from Milvus 2.6.10
-  (`autoIndex.params.build`, `autoindex_param_nocuda.go`). Naming it builds
-  the same index on every deployment, whatever the server's AUTOINDEX
-  configuration says, and the search parameters are for it. A search runs
-  with `ef = max(limit, 64)` and `refine_k = 2`: knowhere refuses an `ef`
-  below the result count, and Milvus never raises it. Neither the index nor
-  the search parameters are configurable yet.
+  HNSW indexes, which the store's is.
+- **Vector index:** HNSW on float32 vectors, M=16, efConstruction=128,
+  searched with `ef = max(limit, 128)`: the numbers MemMachine's own HNSW
+  engines (hnswlib and usearch) use. knowhere refuses an `ef` below the result
+  count, and Milvus never raises it. Neither the index nor the search is
+  configurable yet.
 - **Declared properties:** each has a scalar AUTOINDEX, which Milvus
   resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
@@ -79,27 +76,29 @@ Milvus also caps a deployment's collection count.
 
 ### Why this index
 
-Measured on Milvus 3.0.2 at 600k vectors (768 dimensions; tenants of 200k,
-50k, 5k and 2,000 of 100; 4 CPUs; one run): isolation halved the index-build
-CPU (855 against 448 CPU-seconds) for about 0.2 GB more memory, with search
-throughput unchanged; under isolation, HNSW_SQ against fp32 HNSW took 0.8 GB
-less memory and 2.9 against 3.7 ms of CPU per search on the 200k tenant, at
-similar recall.
-
-The search parameters, measured on Milvus 2.6.24 (180k vectors of 384
+Milvus's defaults are cheap rather than accurate. AUTOINDEX builds HNSW_SQ
+(4-bit codes with FP16 refinement) from 2.6.10, chosen for memory, and with no
+search parameters knowhere searches with `ef = max(k, 16)` and rescores only
+the k results the 4-bit codes picked (`refine_k = 1`); the change that made
+it the default says to raise `ef` and `refine_k` if recall is insufficient
+(milvus-io/milvus#47386). Measured on Milvus 2.6.24 (180k vectors of 384
 dimensions from a mixture of 64 clusters; tenants of 100k, 10k, 1k and 100
 rows; 100 queries per tenant size; recall@k against exact search within the
-tenant; one run). M=16, efConstruction=200 and AUTOINDEX's M=18,
-efConstruction=240 gave the same recall to within 0.01 everywhere:
+tenant; one run):
 
-| Search parameters | Recall@10 (100k / 10k / 1k / 100) | Recall@100 |
+| Index and search | Recall@10 (100k / 10k / 1k / 100) | Recall@100 |
 |---|---|---|
-| none (knowhere's: `ef = max(k, 16)`, `refine_k = 1`) | 0.73 / 0.78 / 0.93 / 0.84 | 0.88 / 0.93 / 0.86 / 1.00 |
-| `refine_k = 2` | 0.84 / 0.95 / 1.00 / 0.98 | 0.99 / 1.00 / 1.00 / 1.00 |
-| `ef = 64`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | every query refused |
-| `ef = max(k, 64)`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | 0.99 / 1.00 / 1.00 / 1.00 |
+| AUTOINDEX, no search parameters | 0.73 / 0.78 / 0.93 / 0.84 | 0.88 / 0.93 / 0.86 / 1.00 |
+| HNSW_SQ, `ef = max(k, 64)`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | 0.99 / 1.00 / 1.00 / 1.00 |
+| HNSW_SQ, `ef = 64` | 0.93 / 0.96 / 1.00 / 0.99 | every query refused |
 
-Search latency stayed between 1 and 2.3 ms p50 in every row.
+Float32 HNSW with the engines' parameters is the choice that needs no tuning
+of its own, and costs memory: on Milvus 3.0.2 at 600k vectors of 768
+dimensions (tenants of 200k, 50k, 5k and 2,000 of 100; 4 CPUs; one run),
+HNSW_SQ took 0.8 GB less than float32 HNSW and 2.9 against 3.7 ms of CPU per
+search on the 200k tenant, at similar recall. Partition-key isolation halved
+the index-build CPU there (855 against 448 CPU-seconds) for about 0.2 GB more
+memory, with search throughput unchanged.
 
 ## The composite key
 
