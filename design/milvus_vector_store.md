@@ -139,6 +139,26 @@ of 1M points instead stalled every tenant's reads and writes for 2.7-9 s at
 Session consistency. Listing by the incarnation field took 57-63 ms per round
 of 10,000 against 70-75 ms by primary-key range (1.4M rows, Milvus 2.6.24).
 
+The listing reads at Bounded, which waits for nothing when the query node
+keeps up, so a round can list entities the previous round deleted but the
+node has not applied yet, and delete them again. At the resource manager's
+one-second pause after a busy round this does not happen. Measured (Milvus
+2.6.24, 4 CPUs / 5 GB; one dead incarnation of 200,000 entities among 50 live
+tenants of 2,000, 128 dimensions; rounds of 10,000 on the async client while 4
+tasks search live tenants; two runs each):
+
+| Listing level | Pause | Rounds | Entities listed again | Wall | Search p99 |
+|---|---|---|---|---|---|
+| Bounded | 1 s | 20 | 0 | 21.3-21.6 s | 4.2-4.5 ms |
+| Session | 1 s | 20 | 0 | 21.6-22.1 s | 5.1-5.7 ms |
+| Strong | 1 s | 20 | 0 | 24.4-25.2 s | 9.7-10.0 ms |
+| Bounded | none | 83-87 | 630,000-670,000 | 5.7-6.5 s | 23-27 ms |
+| Session | none | 20 | 0 | 4.0-4.5 s | 6.4-9.1 ms |
+| Strong | none | 20 | 0 | 2.2-2.4 s | 7.6-12.9 ms |
+
+(Accepted: Bounded, as the store reads everywhere; a caller that runs rounds
+back to back pays repeated deletes, never a wrong result.)
+
 ## Consistency
 
 **How Milvus orders and reads.** Each write is appended to its shard's
