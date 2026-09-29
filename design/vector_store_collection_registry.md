@@ -138,14 +138,13 @@ then registers:
 - The registry's primary key is the one arbiter: a racing creator on any
   process loses at the insert, never in the backend.
 - Native collections are shared by every logical collection of one namespace
-  and configuration (see [backend layouts](vector_store_backend_layouts.md)),
-  so an empty one left by a failed creation is the one the next creation would
-  have made, not per-collection garbage.
-- Native creation converges. Milvus creates the collection, its indexes and
-  its load as three steps, each run only when missing, so a creation that
-  failed part way is completed by the next one as if it had never been
-  attempted. Qdrant creates the collection and each payload index under
-  separate already-exists guards, for the same reason.
+  and configuration, so an empty one left by a failed creation is the one the
+  next creation would have made, not per-collection garbage.
+- Native creation converges: each step runs only when missing, so a creation
+  that failed part way is completed by the next one as if it had never been
+  attempted. How each backend does it is in the
+  [Qdrant](qdrant_vector_store.md) and [Milvus](milvus_vector_store.md)
+  documents.
 
 **`open_or_create_collection`** is read-then-create, retried: a live row is
 opened (or refused with `VectorStoreCollectionConfigMismatchError` if its

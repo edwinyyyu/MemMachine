@@ -1,7 +1,7 @@
 # Vector store horizontal scaling
 
-Status: in review in #1631 (2026-09-29). The documents below mark what is
-accepted and what is proposed.
+Status: in review in #1631 (2026-09-29). Each document marks what is accepted,
+what is implemented, and what is proposed.
 
 ## Problem
 
@@ -24,28 +24,36 @@ serve any collection of a shared Qdrant or Milvus deployment, with:
 - a re-created name starting empty;
 - reclamation of deleted data bounded in cost and safe to run from every
   process;
-- reads and writes whose consistency the contract states.
+- reads whose relation to earlier writes the contract states;
+- collections isolated from one another whatever record UUIDs they carry.
 
 The SQLite stores keep their single-process (engine-backed store) and
 single-node (sqlite-vec) bounds.
 
-## Design at a glance
+## Documents
 
-| Piece | What it does | Document |
-|---|---|---|
-| Collection registry | A relational database arbitrates which collections exist, under which incarnation and configuration, and which dead incarnations await purge. | [collection registry](vector_store_collection_registry.md) |
-| Incarnations and handles | Each collection life has a random UUID its points carry; a handle is bound to one life and fenced by a liveness check before every operation and after every write. | [collection registry](vector_store_collection_registry.md) |
-| Tombstones and purge | Deletion queues a tombstone; after a retention, bounded purge rounds reclaim the points, with backoff and dead-lettering for rounds that fail. | [purge](vector_store_purge.md) |
-| Record identity | Where record UUIDs come from, what reusing one does, and the isolation guarantee between collections. | [record identity](vector_store_record_identity.md) |
-| Consistency | What a read sees of earlier writes on each backend, the level each Milvus call uses, and what the contract guarantees. | [consistency](vector_store_consistency.md) |
-| Backend layouts | How Qdrant and Milvus lay out shared native collections, indexes and tenancy. | [backend layouts](vector_store_backend_layouts.md) |
+Shared: contracts and choices made with every backend in mind.
+
+| Document | What it covers |
+|---|---|
+| [collection registry](vector_store_collection_registry.md) | The SQL catalog that arbitrates which collections exist, incarnations, handles and their fencing, creation races. |
+| [purge](vector_store_purge.md) | Tombstones, the retention, the claim, backoff, dead-lettering, the sweeper. |
+| [consistency](vector_store_consistency.md) | What a query sees of earlier writes, as the contract states it; why `get` is gone; asynchronous clients; how tests observe state. |
+| [isolation](vector_store_isolation.md) | Isolation between collections, record UUIDs and their reuse, and whether other vector databases can meet the guarantee. |
+
+Per backend: how each implementation meets the contracts, and the measurements
+behind its choices.
+
+| Document | What it covers |
+|---|---|
+| [Qdrant](qdrant_vector_store.md) | Shared native collections, per-tenant graphs, point ids and conditional upsert, filtered-search correctness, purge by filter, consistency on one node and replicated. |
+| [Milvus](milvus_vector_store.md) | Shared native collections, partition-key tenancy, the composite key, the index, purge in batches, consistency levels, the async client. |
 
 ## Lifecycle of a collection
 
 1. **Create.** The store ensures the native collection for the namespace and
-   configuration exists, indexed and loaded, then inserts a registry row under
-   a freshly minted incarnation. A racing creator loses at the registry's
-   primary key.
+   configuration exists, then inserts a registry row under a freshly minted
+   incarnation. A racing creator loses at the registry's primary key.
 2. **Open.** The registry resolves `(namespace, name)` to the live incarnation
    and its configuration; the handle is bound to that incarnation.
 3. **Use.** Every point a handle writes carries its incarnation, and every
@@ -60,12 +68,12 @@ single-node (sqlite-vec) bounds.
 
 ## Guarantees by store
 
-| Store | Processes that may serve a collection | Deletion reclaims |
-|---|---|---|
-| SQLite (engine-backed) | one | at once |
-| sqlite-vec | any on one node | at once |
-| Qdrant | any, sharing the store's registry | by purge, after the retention |
-| Milvus | any, sharing the store's registry | by purge, after the retention |
+| Store | Processes that may serve a collection | Queries reflect a write | Deletion reclaims |
+|---|---|---|---|
+| SQLite (engine-backed) | one | as soon as it returns | at once |
+| sqlite-vec | any on one node | as soon as it returns | at once |
+| Qdrant | any, sharing the store's registry | as soon as it returns on one node; replicated, after an unbounded delay | by purge, after the retention |
+| Milvus | any, sharing the store's registry | within the server's `common.gracefulTime` (5 s by default) at Bounded | by purge, after the retention |
 
 ## Configuration
 
@@ -79,9 +87,11 @@ single-node (sqlite-vec) bounds.
   which the retention must far exceed.
 
 `MilvusConf` also gains `max_varchar_length` (65,535) and `purge_batch_size`
-(10,000), two sizes the Milvus server's own configuration bounds. The wizard
-points the registry at its SQLite database; the sample configurations and the
-Helm chart point it at the relational database their other components use.
+(10,000), two sizes the Milvus server's own configuration bounds, and its
+`consistency_level` now defaults to `Bounded` and governs every read. The
+wizard points the registry at its SQLite database; the sample configurations
+and the Helm chart point it at the relational database their other components
+use.
 
 ## Clients
 
@@ -89,8 +99,8 @@ Every backend client is the library's asynchronous client: `AsyncQdrantClient`
 and pymilvus's `AsyncMilvusClient`. A synchronous client run on worker threads
 holds a thread of the process's shared executor for the whole of each request,
 so enough slow requests starve every other call of the process (measured in
-[consistency](vector_store_consistency.md)). (Decided: a library's async
-client is always used when one exists.)
+the [Milvus](milvus_vector_store.md) document). (Accepted and implemented: a
+library's async client is always used when one exists.)
 
 ## Related work
 
@@ -99,10 +109,13 @@ client is always used when one exists.)
   incarnation logic.
 - #1627 makes a vector store one native collection with string-keyed
   partitions, on top of this.
-- #1663 removes `VectorStoreCollection.get` and the semantic memory's
-  read-modify-write that used it.
+- #1663 answers queries with UUIDs and cosine scores only; it removed `get`
+  too, which #1631 now does first.
 - #1570 tracks moving provisioning (table and collection creation) out of
   runtime startup for every store.
+- #1468 (SQLite store: writes reach the table and the search engine in
+  different orders) is fixed by #1469 and #1673.
+- #1721 (semantic memory's read-modify-write of its vector) is fixed by #1631.
 
 ## Deployment consequences
 

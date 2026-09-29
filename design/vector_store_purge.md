@@ -1,9 +1,7 @@
 # Vector store: tombstones and purge
 
-Status: accepted 2026-09-29, in review in #1631; the purge listing's
-consistency level is proposed (see
-[consistency](vector_store_consistency.md)). Part of [vector store horizontal
-scaling](vector_store_horizontal_scaling.md).
+Status: accepted and implemented 2026-09-29, in review in #1631. Part of
+[vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
@@ -37,9 +35,17 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
 - **Why wait.** A write that passed its liveness check before the deletion
   committed can land after it, and the backend cannot refuse it. Every such
   write has landed once the longest a request can be in flight has passed;
-  `request_timeout_seconds` (30 unless configured) bounds that. The retention
-  exceeds it by orders of magnitude, so a round that runs after it and finds
-  nothing proves the incarnation empty for good.
+  `request_timeout_seconds` (30 unless configured) bounds that.
+- **Whom the round must see.** A round lists the incarnation's points with the
+  store's own reads, which may lag writes by a delay the store states (see
+  [consistency](vector_store_consistency.md)): at most 5 s on Milvus at
+  Bounded. So the retention must also exceed that delay. It exceeds both by
+  orders of magnitude, so a round that runs after it and finds nothing proves
+  the incarnation empty for good, at the store's usual read level. A round
+  that lists points an earlier round deleted, before the deletion is
+  reflected, deletes them again; that costs a round, never correctness.
+  (Accepted: the purge reads at the same level as every other read of the
+  store, not a stronger one.)
 - **The retention decides nothing about validity.** A stale write is refused
   by the handle's check after it; the retention only has to outlast any write
   in flight.
@@ -106,31 +112,11 @@ maximum.)
 
 ### Per-backend rounds
 
-Chosen by measurement (Qdrant 1.18.3, 1.19.0 and 1.19.1; Milvus 3.0.2; 2.11M
-points in this layout, dead incarnations of 10k to 1M among live tenants under
-search, upsert and scroll traffic; containers capped at 2 CPUs and 4 GB):
-
-- **Qdrant: one filter-delete of the whole incarnation per round.** The round
-  scrolls for one point under the incarnation and, when it finds one, deletes
-  by filter with `wait=True`. The delete stalls writes and scrolls on the
-  shard, never searches, for its duration: about 1.3 s per 1M points on 1.19.1
-  at 3 segments per shard (7.3 s at 101), with no errors. Deleting in batches
-  instead collapsed once a vacuum rebuilt the incarnation's segments
-  mid-purge: every batched 1M purge (7 of 7 runs, on all three versions)
-  slowed to minutes-long deletes and 60-120 s stalls for every tenant.
-- **Milvus: bounded batches.** A round lists up to `purge_batch_size` (10,000
-  unless configured) of the incarnation's primary keys, by a query on the
-  incarnation field, and deletes them by key. Rounds stayed flat at about 100
-  ms to the end of a 1M purge, with at most a 0.3 s stall for other tenants.
-  One filter-delete of 1M points instead stalled every tenant's reads and
-  writes for 2.7-9 s under Session consistency. The batch must stay within the
-  server's `quotaAndLimits.limits.maxQueryResultWindow` (16,384 by default),
-  so the size is a store parameter, not a constant. Listing by the incarnation
-  field took 57-63 ms per round of 10,000 against 70-75 ms by primary-key
-  range (1.4M rows, Milvus 2.6.24).
-
-A native collection that no longer exists holds nothing: the round finds
-nothing, and the tombstone goes.
+Each backend deletes the way it measured best: Qdrant with one filter-delete
+of the whole incarnation per round, Milvus in bounded batches listed by the
+incarnation. The measurements are in the [Qdrant](qdrant_vector_store.md) and
+[Milvus](milvus_vector_store.md) documents. A native collection that no longer
+exists holds nothing: the round finds nothing, and the tombstone goes.
 
 ### The sweeper
 
@@ -175,7 +161,11 @@ processes need no coordination: the claim arbitrates.
 - **A separate dead-letter table.** A counter on the queue row does the same
   with no move between tables.
 - **Batched deletes on Qdrant; one filter-delete on Milvus; listing Milvus
-  keys by primary-key range.** Measured worse, above.
+  keys by primary-key range.** Measured worse; see the per-backend documents.
+- **A stronger read level for the purge than for the store's other reads**
+  (Strong on Milvus). It would let a round see the round before it, sparing a
+  repeated listing, but the design needs no more than the retention already
+  guarantees.
 
 ## Consequences
 
