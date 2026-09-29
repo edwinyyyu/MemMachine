@@ -77,8 +77,10 @@ the rest of the value written, as the other stores keep it, so the stored
 record is the one written. Filters compare instants and never read it.
 """
 
-_MAX_UUID_LENGTH = 36
-_MAX_PRIMARY_ID_LENGTH = 128
+_UUID_LENGTH = 36
+"""The length of a UUID's hyphenated text form (RFC 9562), the form stored."""
+_PRIMARY_ID_LENGTH = 2 * _UUID_LENGTH + 1
+"""The length of a primary key, `"{incarnation}:{record_uuid}"`."""
 _FALSE_EXPR = f'{_ID_FIELD} == "__memmachine_no_match__"'
 
 _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
@@ -651,17 +653,17 @@ class MilvusVectorStore(VectorStore):
                 field_name=_ID_FIELD,
                 datatype=DataType.VARCHAR,
                 is_primary=True,
-                max_length=_MAX_PRIMARY_ID_LENGTH,
+                max_length=_PRIMARY_ID_LENGTH,
             )
             schema.add_field(
                 field_name=_RECORD_UUID_FIELD,
                 datatype=DataType.VARCHAR,
-                max_length=_MAX_UUID_LENGTH,
+                max_length=_UUID_LENGTH,
             )
             schema.add_field(
                 field_name=_PARTITION_KEY_FIELD,
                 datatype=DataType.VARCHAR,
-                max_length=_MAX_UUID_LENGTH,
+                max_length=_UUID_LENGTH,
                 is_partition_key=True,
             )
             schema.add_field(
