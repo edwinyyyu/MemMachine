@@ -1,16 +1,14 @@
 """
 A collection registry in a relational database, through SQLAlchemy.
 
-Qdrant and Milvus have no transactions, unique constraints or conditional
-writes, so a catalog kept inside them cannot arbitrate two processes
-creating, deleting or reclaiming the same logical collection. This
-registry lives in a relational database instead: a table pair per vector
-store, named by the store's name, with a row per live logical collection
-keyed by namespace and name, whose incarnation is the value every point of
-that life carries, and a purge queue of dead incarnations claimed in the
-order they come due. Registration is an insert the primary key
-arbitrates, unregistration is one transaction, and a purge claim is a row lock the database
-hands to one purger at a time.
+Qdrant and Milvus have no transactions or unique constraints, so a catalog
+kept in them cannot arbitrate two processes creating, deleting or
+reclaiming the same logical collection. This registry keeps it in a
+relational database: per vector store, a table of live collections keyed
+by namespace and name, each with its incarnation, and a queue of deleted
+incarnations claimed in the order they come due. The primary key
+arbitrates registration, unregistration is one transaction, and a purge
+claim is a row lock.
 """
 
 import logging
@@ -78,25 +76,22 @@ class _RegistryInsertRejectedError(Exception):
 class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     """The registry of one vector store's collections, in its own table pair.
 
-    `vector_store_name` names the vector store, and so the vector database
-    deployment it reaches, whose collections the registry holds: its tables
-    are `collection_registry_{vector_store_name}_ct` and `..._gc`, so the
-    registries of different vector stores share a database without sharing
-    a row, and registry objects under one name are one registry. It must
-    match `[a-z0-9_]+` and be at most 32 bytes. `tombstone_retention` is
-    how long a dead incarnation's points are kept before its purge starts;
-    it must exceed, by orders of magnitude, the longest a write to the
-    backend can be in flight and the delay before the store's reads reflect
-    a write. The retention is measured on the database clock.
+    `vector_store_name` names the vector store whose collections the
+    registry holds. Its tables are `collection_registry_{vector_store_name}_ct`
+    and `..._gc`, so registries of different vector stores can share a
+    database. It must match `[a-z0-9_]+` and be at most 32 bytes.
+    `tombstone_retention` is how long a deleted collection's points are kept
+    before its purge starts, on the database clock; it must exceed, by
+    orders of magnitude, the longest a write to the backend can be in flight
+    and the delay before the store's reads reflect a write.
 
-    A purge round that raises counts against its tombstone and backs it off:
-    after its f-th consecutive failed round it is claimed again only once
-    `purge_retry_backoff` doubled f - 1 times, at most
-    `max_purge_retry_backoff`, has passed since that round, and the
-    tombstones behind it are claimed meanwhile. A tombstone whose
-    last `_MAX_FAILED_PURGE_ROUNDS` rounds all raised is dead-lettered: kept,
-    never re-minted, no longer claimed, and reported by an error log.
-    Setting its `failed_rounds` back to 0 returns it to the purge.
+    After a tombstone's f-th consecutive failed round, it is claimed again
+    once `purge_retry_backoff` * 2 ** (f - 1), at most
+    `max_purge_retry_backoff`, has passed; other tombstones are claimed
+    meanwhile. After `_MAX_FAILED_PURGE_ROUNDS` consecutive failed rounds, a
+    tombstone is dead-lettered: kept, its incarnation not minted again, no
+    longer claimed, and reported by an error log. Setting its
+    `failed_rounds` back to 0 returns it to the purge.
     """
 
     def __init__(
@@ -141,7 +136,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             metadata,
             Column("incarnation", Uuid, primary_key=True),
             Column("namespace", String(_IDENTIFIER_MAX_BYTES), nullable=False),
-            # The logical name is carried for forensics; the purge never reads it.
+            # The collection's name, kept for inspection.
             Column("name", String(_IDENTIFIER_MAX_BYTES), nullable=False),
             # The configuration names the native collection the points are in.
             Column("config", _JSON_AUTO, nullable=False),
@@ -269,13 +264,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @override
     async def unregister(self, namespace: str, name: str) -> None:
-        # One transaction: the collection is unreachable as soon as it
-        # commits, and the queue row is the incarnation's tombstone. The
-        # segment store pins the row before its queue insert with the
-        # fence its writes use; the registry has no such fence to reuse,
-        # so the DELETE goes first: it takes the row's write lock, racing
-        # deleters serialize on it and the loser deletes nothing, on
-        # PostgreSQL and on SQLite alike, and RETURNING resolves the
+        # One transaction: the collection is unreachable once it commits,
+        # and the queue row is its incarnation's tombstone. The DELETE goes
+        # first and takes the row's write lock, so racing deleters serialize
+        # on it and the loser deletes nothing; RETURNING gives the
         # incarnation in the same round trip.
         async with self._engine.begin() as connection:
             row = (
@@ -306,24 +298,18 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     @override
     @asynccontextmanager
     async def claim_purgeable_incarnation(self) -> AsyncIterator[PurgeClaim | None]:
-        # The queue stores only the deletion's time, on the database clock;
-        # the retention is policy, applied by the database's own arithmetic
-        # when a claim is decided, so a changed retention reaches every
-        # tombstone. A tombstone is due once the retention has passed since
-        # its deletion, oldest deletion first. By then every write that was
-        # in flight at the deletion has landed and none can land later, so
-        # a round that finds nothing proves the incarnation empty for good.
-        # Tombstones of one tick of the clock are unordered among
-        # themselves. The claim is a row lock held for the body: on
-        # PostgreSQL a concurrent purger skips the locked entry and takes
-        # the next; on SQLite a doubly claimed entry costs a repeated,
-        # idempotent round. A round that raises, its stored configuration
-        # included, rolls back and then counts against the tombstone in a
-        # transaction of its own, with the time it failed. The backoff is
-        # computed from that recorded time and count, not stored as a time
-        # to retry at; it filters the due range the index bounds, so a claim
-        # reads each due tombstone that is backing off, and none that is not
-        # yet due.
+        # The queue stores the deletion's time on the database clock, and
+        # the retention is applied when a claim is decided, so a changed
+        # retention applies to every tombstone. A tombstone is due once the
+        # retention has passed since its deletion, oldest deletion first. By
+        # then every write in flight at the deletion has landed, so a round
+        # that finds nothing proves the incarnation empty. The claim is a row
+        # lock held for the body: on PostgreSQL a concurrent purger skips the
+        # locked row and takes the next; on SQLite two purgers may run the
+        # same round. A round that raises rolls back, then counts against the
+        # tombstone in a transaction of its own, with the time it failed; the
+        # backoff is computed from that time and count, within the due range
+        # the index bounds.
         queue = self._purge_queue
         claimed: UUID | None = None
         try:
@@ -368,10 +354,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     async def _record_round(
         self, connection: AsyncConnection, claim: PurgeClaim, failed_rounds: int
     ) -> None:
-        """Record what a purge round found, in the claim's transaction.
+        """Record a purge round's outcome, in the claim's transaction.
 
-        A round that found nothing removes the tombstone; one that found
-        points clears the failed rounds before it.
+        A round that found no points removes the tombstone; one that found
+        points resets its count of failed rounds.
         """
         if claim.points_found is None:
             raise RuntimeError(

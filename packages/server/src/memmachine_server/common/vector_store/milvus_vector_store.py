@@ -59,11 +59,10 @@ from .vector_store import VectorStore, VectorStoreCollection
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
 _PARTITION_KEY_FIELD = "partition_key"
-"""The native partition-key field; holds the incarnation, never the collection's name.
+"""The native partition-key field, holding the incarnation of the collection an entity belongs to.
 
-A collection deleted and re-created under the same name gets a fresh
-incarnation, and its predecessor's entities are invisible to it while the
-purge reclaims them.
+A collection created again under a deleted one's name gets a fresh
+incarnation, so the deleted collection's entities are not part of it.
 """
 _VECTOR_FIELD = "vector"
 _PROPERTIES_FIELD = "properties"
@@ -283,18 +282,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         self._consistency_level = consistency_level
 
     async def _fence(self) -> None:
-        """Raise if this handle's incarnation is no longer the collection's.
+        """Raise if this handle's collection has been deleted.
 
-        Called before every operation, to refuse a handle known to be
-        dead, and after a write, so a write completed under an incarnation
-        that died meanwhile raises instead of reporting success. Milvus has
-        no transactions, so a write can still land under a dead
-        incarnation: between the two checks, or after a check that never
-        ran; the tombstone's purge rounds reclaim it. A read is not checked
-        after: a collection deleted while a read is in flight keeps its
-        entities until a purge round claims its tombstone, so the read returns
-        what it saw, a snapshot from before the deletion, as a read that
-        happened to run just before it would have.
+        Called before every operation, and again after a write, so a write
+        that raced the deletion raises instead of reporting success. Such a
+        write may still have landed; the purge reclaims it.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
@@ -460,13 +452,9 @@ class MilvusVectorStoreParams(BaseModel):
     Attributes:
         client (AsyncMilvusClient): Milvus client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            The registry of the Milvus deployment the client reaches: which
-            collections exist, under which incarnation and configuration,
-            and which dead incarnations await purge. Milvus arbitrates none
-            of that, so the registry lives where a primary key and a
-            transaction can. Every store on the deployment, in any
-            process, uses this registry, and no store on another
-            deployment does. The caller starts it before handing it over.
+            The registry of the Milvus deployment the client reaches.
+            Every store on that deployment, in any process, uses it, and no
+            other store does. The caller starts it before handing it over.
         consistency_level (str):
             The Milvus consistency level every read runs at, and the level
             the native collections the store creates are given.
@@ -745,12 +733,10 @@ class MilvusVectorStore(VectorStore):
         require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with self._tracker("create_collection"):
-            # The native collection first, the registry row last: a crash
-            # between the two leaves an empty native collection the next
-            # creation of the same configuration adopts, never a row whose
-            # entities have nowhere to go. The registry's primary key is the
-            # arbiter: a racing creator on any process loses here, never in
-            # Milvus.
+            # The native collection first, the registry row last, so a crash
+            # between the two leaves at worst an empty native collection,
+            # which the next creation of the same configuration uses. The
+            # registry's primary key decides a creation race.
             await self._create_native_collection(namespace, config)
             await self._collection_registry.register(namespace, name, config)
 

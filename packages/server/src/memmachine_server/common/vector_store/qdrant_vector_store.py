@@ -61,11 +61,10 @@ from .vector_store import VectorStore, VectorStoreCollection
 # Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
 _SYSTEM_KEY_PREFIX = "sys-"
 _PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
-"""The payload key naming the collection incarnation a point belongs to.
+"""The payload key holding the incarnation of the collection a point belongs to.
 
-Points carry the incarnation, never the collection's name: a collection
-deleted and re-created under the same name gets a fresh incarnation, and
-its predecessor's points are invisible to it while the purge reclaims them.
+A collection created again under a deleted one's name gets a fresh
+incarnation, so the deleted collection's points are not part of it.
 """
 _PAYLOAD_RECORD_UUID = f"{_SYSTEM_KEY_PREFIX}record_uuid"
 """The payload key holding a point's record UUID.
@@ -270,18 +269,11 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         self._is_live = is_live
 
     async def _fence(self) -> None:
-        """Raise if this handle's incarnation is no longer the collection's.
+        """Raise if this handle's collection has been deleted.
 
-        Called before every operation, to refuse a handle known to be
-        dead, and after a write, so a write completed under an incarnation
-        that died meanwhile raises instead of reporting success. Qdrant has
-        no transactions, so a write can still land under a dead
-        incarnation: between the two checks, or after a check that never
-        ran; the tombstone's purge rounds reclaim it. A read is not checked
-        after: a collection deleted while a read is in flight keeps its
-        points until a purge round claims its tombstone, so the read returns
-        what it saw, a snapshot from before the deletion, as a read that
-        happened to run just before it would have.
+        Called before every operation, and again after a write, so a write
+        that raced the deletion raises instead of reporting success. Such a
+        write may still have landed; the purge reclaims it.
         """
         if not await self._is_live(self._incarnation):
             raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
@@ -294,9 +286,8 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     def _point_id(self, record_uuid: UUID) -> UUID:
         """The point id of a record: a UUIDv5 of the record UUID under the incarnation.
 
-        Collections of one native collection never share a point id, whatever
-        record UUIDs they carry, and a collection created again under a name
-        writes points the dead life's, awaiting purge, cannot collide with.
+        Collections sharing a native collection never share a point id, and
+        neither do a deleted collection and one created again under its name.
         """
         return uuid5(self._incarnation, str(record_uuid))
 
@@ -450,13 +441,9 @@ class QdrantVectorStoreParams(BaseModel):
         client (AsyncQdrantClient):
             Async Qdrant client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            The registry of the Qdrant deployment the client reaches: which
-            collections exist, under which incarnation and configuration,
-            and which dead incarnations await purge. Qdrant arbitrates none
-            of that, so the registry lives where a primary key and a
-            transaction can. Every store on the deployment, in any
-            process, uses this registry, and no store on another
-            deployment does. The caller starts it before handing it over.
+            The registry of the Qdrant deployment the client reaches.
+            Every store on that deployment, in any process, uses it, and no
+            other store does. The caller starts it before handing it over.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -480,16 +467,14 @@ class QdrantVectorStoreParams(BaseModel):
 class QdrantVectorStore(VectorStore):
     """Asynchronous Qdrant-based implementation of VectorStore.
 
-    A logical collection is a payload value, the incarnation of its life,
-    inside a native collection shared by the logical collections of one
-    namespace and configuration. The catalog is the `VectorStoreCollectionRegistry`
-    the store is given: it mints the incarnations and arbitrates creation,
-    deletion and reclamation across processes, which Qdrant, with no
-    transactions or unique constraints, cannot. Any process sharing the
-    Qdrant backend and the registry may serve any collection.
+    A logical collection is the points carrying its incarnation in their
+    payload, inside a native collection shared by the logical collections of
+    one namespace and configuration. The `VectorStoreCollectionRegistry` the
+    store is given mints incarnations and arbitrates creation, deletion and
+    reclamation across processes. Any process sharing the Qdrant deployment
+    and the registry may serve any collection.
 
-    Writes return once Qdrant has applied them, so on a single node queries
-    reflect a write as soon as it returns.
+    On a single node, queries reflect a write as soon as it returns.
     """
 
     _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
@@ -647,12 +632,10 @@ class QdrantVectorStore(VectorStore):
     ) -> None:
         require_identifiers(namespace, name)
         async with self._tracker("create_collection"):
-            # The native collection first, the registry row last: a crash
-            # between the two leaves an empty native collection the next
-            # creation of the same configuration adopts, never a row whose
-            # points have nowhere to go. The registry's primary key is the
-            # arbiter: a racing creator on any process loses here, never in
-            # Qdrant.
+            # The native collection first, the registry row last, so a crash
+            # between the two leaves at worst an empty native collection,
+            # which the next creation of the same configuration uses. The
+            # registry's primary key decides a creation race.
             await self._create_native_collection(namespace, config)
             await self._collection_registry.register(namespace, name, config)
 
@@ -718,11 +701,10 @@ class QdrantVectorStore(VectorStore):
 
     @override
     async def purge_deleted_collections(self) -> bool:
-        # One purge round per call, on the tombstone that came due first: the
-        # claim is a row lock the registry holds while one point is looked for
-        # and, if there is one, the points go by filter in a single
-        # server-side operation. The registry keeps or removes the tombstone
-        # by what the round found.
+        # One purge round per call, on the tombstone that came due first: if
+        # a point remains under its incarnation, one filter-delete removes
+        # them all. The registry keeps or removes the tombstone by whether
+        # the round found points.
         async with (
             self._tracker("purge_deleted_collections"),
             self._collection_registry.claim_purgeable_incarnation() as claim,

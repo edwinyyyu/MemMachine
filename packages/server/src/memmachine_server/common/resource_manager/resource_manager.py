@@ -93,14 +93,12 @@ async def _purge_deleted_partitions_forever(store: SegmentStore) -> None:
 
 
 async def _purge_deleted_collections_forever(store: VectorStore, label: str) -> None:
-    """Drive the store's bounded purge, paced by its backlog signal.
+    """Run the store's purge rounds for as long as the task runs.
 
-    The store never schedules reclamation itself; this loop is the
-    deployment's sweeper for one store. A round that reclaimed something
-    is followed after a short pause, a round that found nothing due after
-    the idle interval, and a round that raised is logged and retried a
-    tick later. Concurrent sweepers on other processes are safe by the
-    store's contract, so nothing here coordinates with them.
+    A round that reclaimed something is followed after a short pause, one
+    that reclaimed nothing after the idle interval, and one that raised is
+    logged and retried a tick later. Sweepers in other processes may run
+    the same store's purge at the same time.
     """
     while True:
         try:
@@ -207,8 +205,7 @@ class ResourceManagerImpl:
     async def get_vector_store(self, name: str) -> VectorStore:
         """Return a vector store by name.
 
-        The first time a store is handed out, its sweeper is started: the
-        store never schedules its own purge.
+        The first time a store is handed out, its purge sweeper starts.
         """
         store = await self._database_manager.get_vector_store(name)
         if name not in self._vector_store_purge_tasks:

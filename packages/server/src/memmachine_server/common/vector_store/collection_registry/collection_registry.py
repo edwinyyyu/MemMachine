@@ -1,18 +1,15 @@
 """
 Abstract base class for a collection registry.
 
-The catalog of a vector store whose backend holds only points: which
+The catalog of a vector store whose backend cannot arbitrate one: which
 logical collections exist, under which incarnation and configuration, and
-which dead incarnations await purge. A registry keys its collections by
-namespace and name. Its calls are arbitrated across every process sharing
-it: registration mints an incarnation no live or queued collection
-carries, unregistration makes the collection unreachable when it returns, and a purge
-claim is handed to one purger at a time.
+which deleted incarnations await purge. Its calls are arbitrated across
+every process sharing it: registration mints an incarnation no live or
+queued collection carries, unregistration makes the collection unreachable
+when it returns, and a purge claim goes to one purger at a time.
 
-A registry belongs to one vector deployment: every store whose client
-reaches that deployment uses it, and stores on other deployments use
-other registries, since a store reclaims its registry's tombstones
-through its own client.
+A registry belongs to one vector database deployment: every store that
+reaches the deployment uses it, and no other store does.
 """
 
 from abc import ABC, abstractmethod
@@ -36,14 +33,12 @@ class RegisteredCollection:
 @dataclass
 class PurgeClaim:
     """
-    One purge round's hold on a tombstone: what the round needs, and what it found.
+    One purge round's claim on a tombstone.
 
-    The registry fills in what the round needs to find the dead
-    incarnation's points: `incarnation`, the value they carry, and
-    `namespace` and `config`, which name the native collection they are
-    in. The round sets `points_found` before the claim ends: True when
-    points remained under the incarnation, False when none did. The registry
-    records that outcome when the claim ends.
+    The registry fills in `incarnation`, the value the deleted collection's
+    points carry, and `namespace` and `config`, which name the native
+    collection they are in. The round sets `points_found` before the claim
+    ends: whether it found points under the incarnation.
     """
 
     incarnation: UUID
@@ -56,13 +51,12 @@ class VectorStoreCollectionRegistry(ABC):
     """
     The collection registry of one vector store.
 
-    A queue entry is a dead incarnation's tombstone. The backend holds the
-    points, and a write the registry read as live can land there after the
-    deletion, so purging starts only once a retention has passed since the
-    deletion, longer than any write can be in flight: nothing more lands
-    under the incarnation after that. The entry stays through purge rounds
-    until one finds nothing, and is then removed; until then the
-    incarnation is never re-minted.
+    A deleted collection's incarnation waits on a queue as a tombstone. A
+    write checked as live before the deletion can land in the backend after
+    it, so a tombstone's purge starts once a retention, longer than any
+    write can be in flight, has passed since the deletion. The tombstone is
+    removed when a purge round finds nothing, and its incarnation is not
+    minted again before then.
     """
 
     @abstractmethod
@@ -78,9 +72,8 @@ class VectorStoreCollectionRegistry(ABC):
         Register a new collection under a freshly minted incarnation.
 
         The (namespace, name) is arbitrated across processes, and the
-        incarnation is one no live or queued collection carries, so no
-        points can be adopted by, or reclaimed out from under, the new
-        collection.
+        incarnation is one no live or queued collection carries, so the new
+        collection starts empty and no purge reclaims its points.
 
         Args:
             namespace (str): Namespace of the collection.
@@ -94,7 +87,8 @@ class VectorStoreCollectionRegistry(ABC):
         Raises:
             VectorStoreCollectionAlreadyExistsError: The (namespace, name) is taken.
             VectorStoreAttemptsExhaustedError:
-                Every minted incarnation was rejected for another reason.
+                The registry gave up after repeated inserts were rejected
+                with the (namespace, name) free.
         """
         raise NotImplementedError
 
@@ -131,9 +125,8 @@ class VectorStoreCollectionRegistry(ABC):
         """
         Unregister a collection and queue its incarnation for purge.
 
-        The collection is unreachable when this returns, and its points
-        are reclaimed by the purge rounds that claim its tombstone. It is
-        idempotent: no collection under the key is the no-op case.
+        The collection is unreachable when this returns, and purge rounds
+        reclaim its points later. Idempotent.
 
         Args:
             namespace (str): Namespace of the collection.
@@ -146,26 +139,18 @@ class VectorStoreCollectionRegistry(ABC):
         self,
     ) -> AbstractAsyncContextManager[PurgeClaim | None]:
         """
-        Claim a dead incarnation whose tombstone is due, for one purge round held for the body of the context.
+        Claim a due tombstone for one purge round, run in the body of the context.
 
         A tombstone is due once the retention has passed since its
-        deletion. The caller runs one round in the body: it looks for
-        points under `claim.incarnation` in the native collection that
-        `claim.namespace` and `claim.config` name, deletes any it finds,
-        and sets `claim.points_found`. When the body ends, the registry records
-        the outcome: a round that found points leaves the tombstone due; a
-        round that found none removes the tombstone and frees its
-        incarnation. A body that raises counts a failed round against the
-        tombstone, which is claimed again after a backoff that grows with each
-        consecutive failure, while the tombstones behind it are claimed; a
-        tombstone whose rounds keep failing is dead-lettered after a bound the
-        registry sets: kept, no longer claimed, and reported, instead of
-        retried forever.
-
-        A registry that can hold a claim hands the tombstone to no other
-        purger for the body's duration; one that cannot lets a doubly
-        claimed tombstone cost a repeated, idempotent round and never a
-        missed one.
+        deletion. In the body, the caller deletes points under
+        `claim.incarnation` in the native collection that `claim.namespace`
+        and `claim.config` name, and sets `claim.points_found`. A round that
+        found no points removes the tombstone and frees its incarnation. A
+        body that raises is a failed round: the tombstone is claimed again
+        after a backoff that grows with each consecutive failure, and one
+        whose rounds keep failing is dead-lettered and reported. A round must
+        be safe to repeat, since a registry may hand one tombstone to two
+        purgers.
 
         Returns:
             AbstractAsyncContextManager[PurgeClaim | None]:

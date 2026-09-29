@@ -319,11 +319,7 @@ class EventMemory:
         derivative: Derivative,
         derivative_embedding: Sequence[float],
     ) -> Record:
-        """Build a vector record from a derivative and its embedding.
-
-        The segment store owns which segment a derivative belongs to, so the
-        segment uuid is not copied here.
-        """
+        """Build a vector record from a derivative and its embedding."""
         properties: dict[str, PropertyValue] = {}
 
         # System-defined metadata (underscore-prefixed).

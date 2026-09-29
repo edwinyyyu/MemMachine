@@ -82,9 +82,8 @@ class VectorSemanticFeature(BaseVectorSemanticStorage):
     __tablename__ = "vector_semantic_feature"
 
     id = mapped_column(Integer, primary_key=True)
-    # The feature's record in the vector store. This is the mapping that lets a
-    # search hit be resolved back to a feature; the vector store holds no copy
-    # of anything this table owns.
+    # The UUID of the feature's record in the vector store, through which a
+    # search hit resolves to the feature.
     vector_uuid = mapped_column(Uuid, nullable=False, unique=True, default=uuid4)
     set_id = mapped_column(String, nullable=False, index=True)
     semantic_category_id = mapped_column(String, nullable=False)
@@ -173,9 +172,8 @@ class VectorSemanticSetIngestedHistory(BaseVectorSemanticStorage):
 class VectorStoreSemanticStorage(SemanticStorage):
     """SemanticStorage using SQLAlchemy metadata and VectorStore embeddings.
 
-    The feature row is the authority for everything but the embedding: it
-    carries `vector_uuid`, its own pointer into the collection. Vector
-    records therefore hold a vector and no properties.
+    A feature's embedding is a vector record, and the feature's row carries
+    its `vector_uuid`.
     """
 
     backend_name = "vector_store"
@@ -294,8 +292,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
         if row is None:
             raise ResourceNotFoundError(f"Feature ID not found: {feature_id}")
 
-        # Only an embedding reaches the vector store; everything else this
-        # method can change lives on the row above.
+        # The vector store holds the embedding; the row above holds the rest.
         if embedding is not None:
             await self._vector_collection.upsert(
                 records=[Record(uuid=row.vector_uuid, vector=embedding.tolist())]
@@ -584,10 +581,9 @@ class VectorStoreSemanticStorage(SemanticStorage):
     async def _vector_uuids_for_features(
         self, feature_ids: Sequence[FeatureIdT]
     ) -> list[UUID]:
-        """Read the vector records these features own.
+        """Read the UUIDs of these features' vector records.
 
-        Must run before the rows are deleted: the row is what says which vector
-        record belongs to the feature, so once it is gone the mapping is too.
+        Call it before deleting the rows, which hold the mapping.
         """
         if not feature_ids:
             return []

@@ -108,7 +108,7 @@ class VectorStoreCollectionConfigMismatchError(Exception):
 
 
 class VectorStoreCollectionHandleStaleError(Exception):
-    """A collection handle outlived the collection incarnation it was bound to."""
+    """Raised when a handle is used after its collection was deleted."""
 
     def __init__(self, namespace: str, name: str) -> None:
         """Record the namespace and name the stale handle belonged to."""
@@ -150,18 +150,13 @@ class Record(BaseModel):
     """
     A record to write to a vector store collection.
 
-    Records are only ever written. A collection stores vectors to search
-    them and properties to filter on them, and answers a query with
-    `QueryMatch`; neither a vector nor a property is read back out.
-
     Attributes:
         uuid (UUID):
             Unique identifier for the record.
         vector (list[float]):
             Vector for similarity search.
         properties (dict[str, PropertyValue]):
-            Property key-value pairs.
-            Stored for property filtering; never returned
+            Property key-value pairs to filter on
             (default: `{}`).
     """
 

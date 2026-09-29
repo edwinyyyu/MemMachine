@@ -351,9 +351,8 @@ class SQLiteVecVectorStore(VectorStore):
     Vector store backed by SQLite + sqlite-vec.
 
     Each logical collection gets its own records table and vec0 virtual table.
-    The database file is one node's, so a collection is managed by the
-    processes of one node; a handle outliving its collection is not
-    detected.
+    The database is a local file, so the processes sharing a collection
+    must run on one host. A handle outliving its collection is not detected.
     """
 
     _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {

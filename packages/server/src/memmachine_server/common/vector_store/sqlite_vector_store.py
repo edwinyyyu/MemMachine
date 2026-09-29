@@ -589,9 +589,8 @@ class SQLiteVectorStore(VectorStore):
 
     Each logical collection gets its own records table and engine instance.
     The engine and its index file live in the process that opened the
-    collection, so a collection is managed by at most one process at a
-    time; the consumer is responsible for sharding names across processes.
-    A handle outliving its collection is not detected.
+    collection, so one process at a time may use a collection. A handle
+    outliving its collection is not detected.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:

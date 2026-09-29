@@ -31,9 +31,8 @@ class VectorStoreCollection(ABC):
     A handle is bound to one life of the collection: after the collection
     is deleted, its operations raise VectorStoreCollectionHandleStaleError,
     and a collection created again under the same (namespace, name) is a
-    new life. A read concurrent with the deletion may take effect before
-    it, returning the content from before the deletion. A store that cannot
-    detect a stale handle says so in its own contract.
+    new life. A store that cannot detect a stale handle says so in its own
+    contract.
 
     An `upsert` or `delete` is durable once it returns; queries may not
     reflect it right away. A store that guarantees more states it.
@@ -131,11 +130,10 @@ class VectorStore(ABC):
     """
     Abstract base class for a vector store.
 
-    A logical collection is identified to callers by a (namespace, name)
-    pair and inside the store by an incarnation minted per life of the
-    pair, so nothing written under one life of a name is ever seen by, or
-    reclaimed out from under, another. Which processes may share a store's
-    collections is the store's own contract, stated on the store.
+    A logical collection is identified by a (namespace, name) pair. A
+    collection deleted and created again under the same pair starts empty,
+    and reclaiming the deleted one's storage leaves it untouched. Each store
+    states which processes may share its collections.
 
     Different namespaces are fully independent (separate native collections).
     Multiple logical collections with the same (namespace, vector dimensions, similarity metric, indexed properties schema)
@@ -246,9 +244,9 @@ class VectorStore(ABC):
         """
         Delete a logical collection from the vector store.
 
-        When this returns, the collection is unreachable and its data is
-        deleted or, on a store that reclaims it later, left for
-        `purge_deleted_collections`. It is idempotent.
+        When this returns, the collection is unreachable. A store that
+        reclaims storage later leaves the collection's data for
+        `purge_deleted_collections`. Idempotent.
 
         Args:
             namespace (str):
@@ -261,14 +259,13 @@ class VectorStore(ABC):
     @abstractmethod
     async def purge_deleted_collections(self) -> bool:
         """
-        Reclaim, bounded, some of the storage of deleted collections.
+        Reclaim some of the storage of deleted collections.
 
-        A store whose deletion reclaims physically returns False. A store
-        that defers reclamation does one bounded round per call and
-        returns True when the round found records to reclaim, so the
-        caller's protocol is "call until False"; a False may still leave
-        tombstones that come due later. Safe to repeat, and safe from
-        several processes at once. The store never schedules this itself.
+        Each call does a bounded amount of work. Call it until it returns
+        False, and again from time to time: a deleted collection's storage
+        may become reclaimable some time after the deletion. A store that
+        reclaims storage in `delete_collection` returns False. Safe to call
+        from several processes at once.
 
         Returns:
             bool:
