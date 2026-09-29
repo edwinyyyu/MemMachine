@@ -20,8 +20,8 @@ contract said nothing about it. Under that silence:
 
 `VectorStoreCollection` states:
 
-> An `upsert` or `delete` is durable once it returns; queries may reflect it
-> only after a delay. A store that guarantees more states it.
+> An `upsert` or `delete` is durable once it returns; queries may not
+> reflect it right away. A store that guarantees more states it.
 
 The contract promises as little as every store can keep, and a store that
 keeps more says so on itself: a store that states nothing may delay. It says
