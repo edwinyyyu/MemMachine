@@ -16,8 +16,9 @@ registry](vector_store_collection_registry.md),
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
   `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
-  nullable typed field per declared property, `_p_<name>`. Dynamic fields are
-  off, so each property is stored once.
+  nullable typed field per declared property, `_p_<name>`, plus `_tz_<name>`
+  for a datetime's UTC offset. Dynamic fields are off, so each property is
+  stored once.
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
@@ -29,8 +30,11 @@ registry](vector_store_collection_registry.md),
   says. (Accepted: no index configurability for now.)
 - **Declared properties:** each has a scalar index (VARCHAR with INVERTED;
   INT64 and DOUBLE with STL_SORT; BOOL with BITMAP; a datetime as TIMESTAMPTZ
-  with STL_SORT). Undeclared properties go in the JSON field, still filterable
-  by path. Negation is the complement, as on Qdrant: a negated condition holds
+  with STL_SORT). A TIMESTAMPTZ field holds only the instant, which is all a
+  filter compares; the datetime's UTC offset is stored beside it so the stored
+  record is the one written, as the other stores keep it, though nothing in
+  the store reads it back. Undeclared properties go in the JSON field, still
+  filterable by path. Negation is the complement, as on Qdrant: a negated condition holds
   where the property has no value, which Milvus's SQL-style null evaluation
   does not give on its own.
 - **Scores** are the server's (cosine similarity, inner product, and the
