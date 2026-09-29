@@ -1,6 +1,5 @@
 """Milvus-based vector store implementation."""
 
-import asyncio
 import hashlib
 import json
 import math
@@ -10,7 +9,7 @@ from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
-from pymilvus import DataType, MilvusClient
+from pymilvus import AsyncMilvusClient, DataType
 from pymilvus.exceptions import MilvusException
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
@@ -252,7 +251,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     def __init__(
         self,
         *,
-        client: MilvusClient,
+        client: AsyncMilvusClient,
         native_collection_name: str,
         namespace: str,
         name: str,
@@ -412,16 +411,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 return
 
             await self._fence()
-            entities = [self._build_entity(record) for record in records]
-
-            def _upsert() -> None:
-                self._client.upsert(
-                    collection_name=self._native_collection_name,
-                    data=entities,
-                    timeout=self._request_timeout_seconds,
-                )
-
-            await asyncio.to_thread(_upsert)
+            await self._client.upsert(
+                collection_name=self._native_collection_name,
+                data=[self._build_entity(record) for record in records],
+                timeout=self._request_timeout_seconds,
+            )
             await self._fence()
 
     @override
@@ -452,8 +446,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 )
                 filter_expr = f"({filter_expr}) && ({property_expr})"
 
-            raw_results = await asyncio.to_thread(
-                self._client.search,
+            raw_results = await self._client.search(
                 collection_name=self._native_collection_name,
                 data=query_vectors,
                 filter=filter_expr,
@@ -514,8 +507,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             primary_ids = [
                 self._primary_id(self._incarnation, uuid) for uuid in uuid_list
             ]
-            raw_records = await asyncio.to_thread(
-                self._client.get,
+            raw_records = await self._client.get(
                 collection_name=self._native_collection_name,
                 ids=primary_ids,
                 output_fields=self._output_fields(
@@ -557,8 +549,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             primary_ids = [
                 self._primary_id(self._incarnation, uuid) for uuid in uuid_list
             ]
-            await asyncio.to_thread(
-                self._client.delete,
+            await self._client.delete(
                 collection_name=self._native_collection_name,
                 ids=primary_ids,
                 timeout=self._request_timeout_seconds,
@@ -571,7 +562,7 @@ class MilvusVectorStoreParams(BaseModel):
     Parameters for MilvusVectorStore.
 
     Attributes:
-        client (MilvusClient): Milvus client instance.
+        client (AsyncMilvusClient): Milvus client instance.
         collection_registry (VectorStoreCollectionRegistry):
             The registry of the Milvus deployment the client reaches: which
             collections exist, under which incarnation and configuration,
@@ -593,7 +584,7 @@ class MilvusVectorStoreParams(BaseModel):
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
-    client: InstanceOf[MilvusClient] = Field(
+    client: InstanceOf[AsyncMilvusClient] = Field(
         ...,
         description="Milvus client instance",
     )
@@ -739,7 +730,7 @@ class MilvusVectorStore(VectorStore):
                 index_type=_DECLARED_INDEX_TYPES[declared_type],
             )
 
-        def _create_collection() -> None:
+        async def _create_collection() -> None:
             schema = self._client.create_schema(
                 auto_id=False,
                 enable_dynamic_field=False,
@@ -793,7 +784,7 @@ class MilvusVectorStore(VectorStore):
 
             # Without index_params, so the indexes and the load below are
             # steps of their own.
-            self._client.create_collection(
+            await self._client.create_collection(
                 collection_name=native_collection_name,
                 schema=schema,
                 consistency_level=self._consistency_level,
@@ -801,13 +792,12 @@ class MilvusVectorStore(VectorStore):
                 timeout=self._request_timeout_seconds,
             )
 
-        if not await asyncio.to_thread(
-            self._client.has_collection,
+        if not await self._client.has_collection(
             native_collection_name,
             timeout=self._request_timeout_seconds,
         ):
             try:
-                await asyncio.to_thread(_create_collection)
+                await _create_collection()
             except MilvusException as exc:
                 if not MilvusVectorStore._is_already_exists_error(exc):
                     raise
@@ -816,8 +806,7 @@ class MilvusVectorStore(VectorStore):
         # fields are indexed. A racing creator's index of the same
         # definition makes create_index succeed, not fail.
         existing = set(
-            await asyncio.to_thread(
-                self._client.list_indexes,
+            await self._client.list_indexes(
                 native_collection_name,
                 timeout=self._request_timeout_seconds,
             )
@@ -827,15 +816,13 @@ class MilvusVectorStore(VectorStore):
             index for index in index_params if index.index_name not in existing
         )
         if missing:
-            await asyncio.to_thread(
-                self._client.create_index,
+            await self._client.create_index(
                 native_collection_name,
                 missing,
                 timeout=self._request_timeout_seconds,
             )
         # A no-op when the collection is already loaded.
-        await asyncio.to_thread(
-            self._client.load_collection,
+        await self._client.load_collection(
             native_collection_name,
             timeout=self._request_timeout_seconds,
         )
@@ -944,13 +931,11 @@ class MilvusVectorStore(VectorStore):
             native_collection_name = MilvusVectorStore._build_native_collection_name(
                 claim.namespace, claim.config
             )
-            if await asyncio.to_thread(
-                self._client.has_collection,
+            if await self._client.has_collection(
                 native_collection_name,
                 timeout=self._request_timeout_seconds,
             ):
-                listed = await asyncio.to_thread(
-                    self._client.query,
+                listed = await self._client.query(
                     collection_name=native_collection_name,
                     filter=_incarnation_filter(claim.incarnation),
                     output_fields=[_ID_FIELD],
@@ -963,8 +948,7 @@ class MilvusVectorStore(VectorStore):
                 primary_ids = []
             claim.found = bool(primary_ids)
             if claim.found:
-                await asyncio.to_thread(
-                    self._client.delete,
+                await self._client.delete(
                     collection_name=native_collection_name,
                     ids=primary_ids,
                     timeout=self._request_timeout_seconds,

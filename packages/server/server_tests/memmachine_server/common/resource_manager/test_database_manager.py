@@ -559,7 +559,7 @@ def _milvus_only_conf() -> MagicMock:
 @pytest.mark.asyncio
 @requires_pymilvus
 async def test_milvus_client_kwargs_forwarded():
-    """uri, token, and db_name are forwarded to MilvusClient."""
+    """uri, token, and db_name are forwarded to AsyncMilvusClient."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
@@ -569,9 +569,9 @@ async def test_milvus_client_kwargs_forwarded():
         consistency_level="Strong",
     )
 
-    mock_client = MagicMock()
-    mock_client.list_collections.return_value = []
-    mock_client.close = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.list_collections = AsyncMock(return_value=[])
+    mock_client.close = AsyncMock()
 
     with (
         patch(
@@ -580,7 +580,7 @@ async def test_milvus_client_kwargs_forwarded():
         patch(
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
-        patch("pymilvus.MilvusClient", return_value=mock_client) as mock_cls,
+        patch("pymilvus.AsyncMilvusClient", return_value=mock_client) as mock_cls,
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
@@ -599,8 +599,8 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
     """Empty auth and database values are not forwarded."""
     conf = _milvus_only_conf()
 
-    mock_client = MagicMock()
-    mock_client.close = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.close = AsyncMock()
 
     with (
         patch(
@@ -609,7 +609,7 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
         patch(
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
-        patch("pymilvus.MilvusClient", return_value=mock_client) as mock_cls,
+        patch("pymilvus.AsyncMilvusClient", return_value=mock_client) as mock_cls,
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
@@ -626,7 +626,7 @@ async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(collection_registry="missing")
 
-    with patch("pymilvus.MilvusClient") as mock_cls:
+    with patch("pymilvus.AsyncMilvusClient") as mock_cls:
         builder = DatabaseManager(conf)
         with pytest.raises(ValueError, match="missing"):
             await builder.async_get_milvus_client("milvus1")
@@ -646,8 +646,8 @@ async def test_milvus_creates_vector_store():
         tombstone_retention_seconds=3600,
     )
 
-    mock_client = MagicMock()
-    mock_client.close = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.close = AsyncMock()
 
     with (
         patch(
@@ -659,7 +659,7 @@ async def test_milvus_creates_vector_store():
         patch(
             "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStoreCollectionRegistry",
         ) as mock_registry_cls,
-        patch("pymilvus.MilvusClient", return_value=mock_client),
+        patch("pymilvus.AsyncMilvusClient", return_value=mock_client),
     ):
         mock_registry_cls.return_value.startup = AsyncMock()
         mock_store_cls.return_value.startup = AsyncMock()
@@ -691,9 +691,9 @@ async def test_get_vector_store_milvus():
     """get_vector_store returns the VectorStore for a Milvus config."""
     conf = _milvus_only_conf()
 
-    mock_client = MagicMock()
-    mock_client.list_collections.return_value = []
-    mock_client.close = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.list_collections = AsyncMock(return_value=[])
+    mock_client.close = AsyncMock()
 
     with (
         patch(
@@ -702,7 +702,7 @@ async def test_get_vector_store_milvus():
         patch(
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
-        patch("pymilvus.MilvusClient", return_value=mock_client),
+        patch("pymilvus.AsyncMilvusClient", return_value=mock_client),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         builder = DatabaseManager(conf)
@@ -724,14 +724,14 @@ async def test_milvus_config_not_found():
 @pytest.mark.asyncio
 async def test_milvus_validation_failure():
     """validate_milvus_client raises MilvusConfigurationError on failure."""
-    mock_client = MagicMock()
-    mock_client.list_collections.side_effect = ConnectionError("refused")
-    mock_client.close = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.list_collections = AsyncMock(side_effect=ConnectionError("refused"))
+    mock_client.close = AsyncMock()
 
     with pytest.raises(MilvusConfigurationError, match="failed verification"):
         await DatabaseManager.validate_milvus_client("milvus1", mock_client)
 
-    mock_client.close.assert_called_once()
+    mock_client.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -740,8 +740,8 @@ async def test_milvus_close():
     """close() cleans up Milvus clients and vector stores."""
     conf = _milvus_only_conf()
 
-    mock_client = MagicMock()
-    mock_client.close = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.close = AsyncMock()
 
     with (
         patch(
@@ -750,7 +750,7 @@ async def test_milvus_close():
         patch(
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
-        patch("pymilvus.MilvusClient", return_value=mock_client),
+        patch("pymilvus.AsyncMilvusClient", return_value=mock_client),
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         mock_store_cls.return_value.shutdown = AsyncMock()
@@ -764,7 +764,7 @@ async def test_milvus_close():
 
     assert builder.milvus_clients == {}
     assert builder.vector_stores == {}
-    mock_client.close.assert_called()
+    mock_client.close.assert_awaited()
 
 
 # --- SQLite-backed VectorStores ---

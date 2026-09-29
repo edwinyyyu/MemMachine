@@ -17,7 +17,7 @@ from server_tests.memmachine_server.common.vector_store.collection_lifecycle_con
 
 pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
-MilvusClient = pymilvus.MilvusClient
+AsyncMilvusClient = pymilvus.AsyncMilvusClient
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -72,11 +72,11 @@ def _make_record(
     )
 
 
-@pytest.fixture
-def server_milvus_client(milvus_container):
-    client = MilvusClient(uri=milvus_container.get_connection_url())
+@pytest_asyncio.fixture
+async def server_milvus_client(milvus_container):
+    client = AsyncMilvusClient(uri=milvus_container.get_connection_url())
     yield client
-    client.close()
+    await client.close()
 
 
 @pytest.fixture(
@@ -113,7 +113,7 @@ async def store(milvus_client, tmp_path):
     await registry_engine.dispose()
 
 
-# MilvusClient's constructor timeout bounds only the connection; a request
+# AsyncMilvusClient's constructor timeout bounds only the connection; a request
 # is bounded only by the timeout passed to it, so every request must carry it.
 _CLIENT_REQUESTS = (
     "has_collection",
@@ -202,7 +202,7 @@ class TestCollectionLifecycle:
             vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
         )
 
-        def refuse(*args, **kwargs):
+        async def refuse(*args, **kwargs):
             raise pymilvus.MilvusException(message=f"{failing_step} refused")
 
         with monkeypatch.context() as patch:
@@ -229,7 +229,7 @@ class TestCollectionLifecycle:
         )
         assert [match.record.uuid for match in result.matches] == [record.uuid]
         native = coll._native_collection_name
-        assert set(store._client.list_indexes(native)) == {"vector", "_p_name"}
+        assert set(await store._client.list_indexes(native)) == {"vector", "_p_name"}
         await store.delete_collection(namespace=namespace, name="partial")
 
     @pytest.mark.asyncio
@@ -313,7 +313,7 @@ class TestCollectionLifecycle:
         assert coll is not None
         native = coll._native_collection_name
 
-        schema = store._client.describe_collection(native)
+        schema = await store._client.describe_collection(native)
         fields = {field["name"]: field for field in schema["fields"]}
         assert schema["auto_id"] is False
         assert schema["enable_dynamic_field"] is False
@@ -336,8 +336,8 @@ class TestCollectionLifecycle:
             assert fields[field_name]["nullable"] is True
         assert fields["_p_name"]["params"]["max_length"] == MAX_VARCHAR_LENGTH
         indexed = {
-            store._client.describe_index(native, index_name)["field_name"]
-            for index_name in store._client.list_indexes(native)
+            (await store._client.describe_index(native, index_name))["field_name"]
+            for index_name in await store._client.list_indexes(native)
         }
         assert indexed == {
             "vector",
@@ -368,12 +368,12 @@ class TestUpsertAndQuery:
     async def test_upsert_calls_native_upsert(self, collection, monkeypatch):
         captured_kwargs = None
 
-        def tracked_upsert(**kwargs):
+        async def tracked_upsert(**kwargs):
             nonlocal captured_kwargs
             captured_kwargs = kwargs
 
-        def fail_insert(*args, **kwargs):
-            pytest.fail("collection upsert must not call MilvusClient.insert")
+        async def fail_insert(*args, **kwargs):
+            pytest.fail("collection upsert must not call AsyncMilvusClient.insert")
 
         monkeypatch.setattr(collection._client, "upsert", tracked_upsert)
         monkeypatch.setattr(collection._client, "insert", fail_insert)
@@ -489,7 +489,7 @@ class TestUpsertAndQuery:
         record = _make_record(vector=old_vector, properties={"name": "old"})
         await collection.upsert(records=[record])
 
-        def fail_upsert(*args, **kwargs):
+        async def fail_upsert(*args, **kwargs):
             raise RuntimeError("upsert failed")
 
         monkeypatch.setattr(collection._client, "upsert", fail_upsert)
@@ -927,9 +927,9 @@ class TestPurgeBatches:
         await store.delete_collection(namespace=NAMESPACE, name="batched")
         native = MilvusVectorStore._build_native_collection_name(NAMESPACE, config)
 
-        def left_of_the_incarnation() -> int:
+        async def left_of_the_incarnation() -> int:
             return len(
-                store._client.query(
+                await store._client.query(
                     collection_name=native,
                     filter=f'partition_key == "{incarnation}"',
                     output_fields=["id"],
@@ -939,7 +939,7 @@ class TestPurgeBatches:
 
         left_after_each_round = []
         while await store.purge_deleted_collections():
-            left_after_each_round.append(left_of_the_incarnation())
+            left_after_each_round.append(await left_of_the_incarnation())
         assert left_after_each_round == [3, 1, 0]
 
 
@@ -949,7 +949,7 @@ class TestLifecycleContract(CollectionLifecycleContract):
     @staticmethod
     async def count_stored(store, namespace: str, config) -> int:
         native = MilvusVectorStore._build_native_collection_name(namespace, config)
-        rows = store._client.query(
+        rows = await store._client.query(
             collection_name=native,
             filter='id != ""',
             output_fields=["id"],

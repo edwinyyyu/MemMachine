@@ -46,7 +46,7 @@ from memmachine_server.common.vector_store.vector_search_engine import (
 # installed unless those backends are actually used. Imports happen at use sites.
 if TYPE_CHECKING:
     from nebulagraph_python.client import NebulaAsyncClient
-    from pymilvus import MilvusClient
+    from pymilvus import AsyncMilvusClient
     from qdrant_client import AsyncQdrantClient
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ class DatabaseManager:
         # Type checkers see it, but runtime treats it as a string literal.
         self.nebula_clients: dict[str, NebulaAsyncClient] = {}
         self.qdrant_clients: dict[str, AsyncQdrantClient] = {}
-        self.milvus_clients: dict[str, MilvusClient] = {}
+        self.milvus_clients: dict[str, AsyncMilvusClient] = {}
         # SQLAlchemy engines that back SQLite-based vector stores. Tracked
         # separately from `sql_engines` (which holds user-facing relational
         # databases) so vector store internals don't collide with caller names.
@@ -683,15 +683,15 @@ class DatabaseManager:
     # --- Milvus ---
 
     @staticmethod
-    async def _close_milvus_client(name: str, client: "MilvusClient") -> None:
+    async def _close_milvus_client(name: str, client: "AsyncMilvusClient") -> None:
         try:
-            await asyncio.to_thread(client.close)
+            await client.close()
         except Exception as ex:
             logger.warning("Error closing Milvus client '%s': %s", name, ex)
 
     async def async_get_milvus_client(
         self, name: str, validate: bool = False
-    ) -> "MilvusClient":
+    ) -> "AsyncMilvusClient":
         """Return a Milvus client, creating it if necessary (lazy)."""
         if name not in self._milvus_locks:
             async with self._lock:
@@ -705,7 +705,7 @@ class DatabaseManager:
             if not conf:
                 raise ValueError(f"Milvus config '{name}' not found.")
 
-            from pymilvus import MilvusClient
+            from pymilvus import AsyncMilvusClient
 
             # The constructor's timeout bounds connecting and reconnecting;
             # the store passes the same bound to every request it makes.
@@ -730,7 +730,7 @@ class DatabaseManager:
             )
             await collection_registry.startup()
 
-            client = MilvusClient(**client_kwargs)
+            client = AsyncMilvusClient(**client_kwargs)
 
             if validate:
                 await self.validate_milvus_client(name, client)
@@ -752,7 +752,7 @@ class DatabaseManager:
                 store = MilvusVectorStore(params)
                 await store.startup()
             except Exception:
-                await asyncio.to_thread(client.close)
+                await client.close()
                 raise
 
             self.milvus_clients[name] = client
@@ -761,14 +761,14 @@ class DatabaseManager:
             return client
 
     @staticmethod
-    async def validate_milvus_client(name: str, client: "MilvusClient") -> None:
+    async def validate_milvus_client(name: str, client: "AsyncMilvusClient") -> None:
         """Validate connectivity to a Milvus instance."""
         try:
             logger.info("Validating Milvus client '%s'", name)
-            await asyncio.to_thread(client.list_collections)
+            await client.list_collections()
             logger.info("Milvus client '%s' validated successfully", name)
         except Exception as e:
-            await asyncio.to_thread(client.close)
+            await client.close()
             raise MilvusConfigurationError(
                 f"Milvus config '{name}' failed verification: {e}",
             ) from e
