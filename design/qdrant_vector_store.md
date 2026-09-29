@@ -63,6 +63,44 @@ A keyword index on `sys-record_uuid` would turn a lookup by hand from a scan
 into an index read, at about 5% of 10-point upsert throughput (1,524-1,570/s);
 it is not added.
 
+The search cost is reading the field back, not the ids: both search variants
+ran on one collection with the same derived ids and payload, and differed only
+in whether each hit returned `sys-record_uuid`. Qdrant keeps payloads out of
+RAM by default (`on_disk_payload: true`; only indexed filter fields stay in
+memory), so each hit's field is read from payload storage. Upserts, which
+compute the UUIDv5 and store the field, ran the same as with bare ids. If
+search throughput at saturation ever matters, keeping the payload in RAM
+(`on_disk_payload=false`) is the lever that keeps one-way ids, at the memory
+of every property's payload; it is not measured.
+
+**Why one-way ids.** The record UUID has to come back from the payload because
+a UUIDv5 cannot be inverted, and that is also what makes it safe. An attacker
+who writes through the API into one collection, and wants to hide a record of
+another collection sharing the native collection, needs a record UUID whose
+point id equals the target's. With UUIDv5 that is a second preimage of SHA-1
+on 122 bits, about 2^122 work, even for someone who knows both incarnations
+and the target's record UUID; known SHA-1 attacks need control of both inputs.
+Isolation then holds as long as the attacker cannot write to Qdrant or the
+registry directly, where isolation is moot anyway. (Accepted: UUIDv5.)
+
+**Rejected: reversible ids.** A point id the store can invert, such as the
+record UUID XOR the incarnation, would let a search recover the record UUID
+from the point id and return no payload. But whatever lets the store invert
+the mapping lets anyone holding the incarnations aim it: with the target's
+incarnation, their own, and the target's record UUID, an attacker computes the
+colliding UUID directly (`record ^ incarnation_A ^ incarnation_B`), and a
+write of it through an ingestion path that passes a caller's UUID through
+replaces the target's point, which then disappears from its collection.
+Incarnations are not guarded as secrets: the registry logs them in its
+warnings and dead-letter errors, and they are in its tables and any backup, as
+record UUIDs are in any Qdrant snapshot. So a read-level leak plus an ordinary
+tenant account would become targeted deletion of other tenants' records, where
+UUIDv5 needs write access to a database. Any reversible keyed mapping,
+encryption included, has the same property. A reversible id is also not a
+proper UUID: an XOR of two version-4 UUIDs has version 0 and variant 0, and a
+UUIDv8 fixes 6 of its 128 bits, leaving 122 free, too few to hold an arbitrary
+record UUID's 122 random bits and 4 version bits reversibly.
+
 **Rejected: conditional upsert.** Qdrant 1.16 added `update_filter`
 (qdrant/qdrant#7006): an upsert filtered on the writer's incarnation leaves a
 point under another incarnation as it is and skips the writer's point without

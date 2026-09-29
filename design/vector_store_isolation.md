@@ -95,6 +95,14 @@ backends was run). Every one can, almost always by scoping the id.
   by filtering on it, as with Milvus's composite key; the cost is a payload
   field returned by every search (measured in the
   [Qdrant](qdrant_vector_store.md) document).
+- **Reversible derived ids on Qdrant** (for instance the record UUID XOR the
+  incarnation), which would spare a search the payload read. Isolation would
+  then rest on incarnations staying secret: someone who learns two
+  incarnations and a record UUID, from logs, the registry's tables or a
+  backup, could compute a colliding UUID and, through an ordinary tenant
+  account, hide another tenant's record. A one-way UUIDv5 needs write access
+  to a database for that. (Accepted: UUIDv5; the analysis is in the
+  [Qdrant](qdrant_vector_store.md) document.)
 
 ## Consequences
 
