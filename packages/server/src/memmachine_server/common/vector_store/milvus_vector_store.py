@@ -443,8 +443,9 @@ class MilvusVectorStoreParams(BaseModel):
         client (AsyncMilvusClient):
             Async Milvus client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            Shared by the stores, in any process, whose clients connect to the
-            same Milvus database, and by no other store. Started by the caller.
+            Registry of the store's collections, shared by the stores, in any
+            process, whose clients connect to the same Milvus database, and by
+            no other store. Started by the caller.
         request_timeout_seconds (int):
             Seconds any request to Milvus may take (default: 30).
         max_varchar_length (int):
@@ -467,8 +468,9 @@ class MilvusVectorStoreParams(BaseModel):
     collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
         description=(
-            "Shared by the stores, in any process, whose clients connect to "
-            "the same Milvus database, and by no other store. Started by the caller"
+            "Registry of the store's collections, shared by the stores, in any "
+            "process, whose clients connect to the same Milvus database, and by no "
+            "other store. Started by the caller"
         ),
     )
     request_timeout_seconds: int = Field(

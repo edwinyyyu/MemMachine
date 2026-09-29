@@ -441,8 +441,9 @@ class QdrantVectorStoreParams(BaseModel):
         client (AsyncQdrantClient):
             Async Qdrant client instance.
         collection_registry (VectorStoreCollectionRegistry):
-            Shared by the stores, in any process, whose clients connect to the
-            same Qdrant, and by no other store. Started by the caller.
+            Registry of the store's collections, shared by the stores, in any
+            process, whose clients connect to the same Qdrant, and by no other
+            store. Started by the caller.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -455,8 +456,9 @@ class QdrantVectorStoreParams(BaseModel):
     collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
         ...,
         description=(
-            "Shared by the stores, in any process, whose clients connect to "
-            "the same Qdrant, and by no other store. Started by the caller"
+            "Registry of the store's collections, shared by the stores, in any "
+            "process, whose clients connect to the same Qdrant, and by no "
+            "other store. Started by the caller"
         ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
