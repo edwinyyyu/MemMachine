@@ -570,7 +570,6 @@ async def test_milvus_client_kwargs_forwarded():
         uri="https://example.zillizcloud.com",
         token=SecretStr("secret-token"),
         db_name="memory",
-        consistency_level="Strong",
     )
 
     mock_client = AsyncMock()
@@ -646,7 +645,6 @@ async def test_milvus_creates_vector_store():
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
-        consistency_level="Strong",
         tombstone_retention_seconds=3600,
     )
 
@@ -681,7 +679,6 @@ async def test_milvus_creates_vector_store():
     mock_params_cls.assert_called_once_with(
         client=mock_client,
         collection_registry=mock_registry_cls.return_value,
-        consistency_level="Strong",
         request_timeout_seconds=30,
         max_varchar_length=65535,
         purge_batch_size=10000,

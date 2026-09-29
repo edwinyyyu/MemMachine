@@ -87,8 +87,8 @@ behind its choices.
   which the retention must far exceed.
 
 `MilvusConf` also gains `max_varchar_length` (65,535) and `purge_batch_size`
-(10,000), two sizes the Milvus server's own configuration bounds, and its
-`consistency_level` now defaults to `Bounded` and governs every read. The
+(10,000), two sizes the Milvus server's own configuration bounds, and loses
+`consistency_level`: the store reads at Milvus's default, Bounded. The
 wizard points the registry at its SQLite database; the sample configurations
 and the Helm chart point it at the relational database their other components
 use.

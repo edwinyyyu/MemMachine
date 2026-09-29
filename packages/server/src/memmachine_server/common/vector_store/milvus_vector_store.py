@@ -267,7 +267,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         tracker: OperationTracker,
         is_live: Callable[[UUID], Awaitable[bool]],
         request_timeout_seconds: int,
-        consistency_level: str,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
         self._client = client
@@ -279,7 +278,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         self._tracker = tracker
         self._is_live = is_live
         self._request_timeout_seconds = request_timeout_seconds
-        self._consistency_level = consistency_level
 
     async def _fence(self) -> None:
         """Raise if this handle's collection has been deleted.
@@ -393,7 +391,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 search_params={"params": _SEARCH_PARAMS},
                 output_fields=[_RECORD_UUID_FIELD],
                 anns_field=_VECTOR_FIELD,
-                consistency_level=self._consistency_level,
                 timeout=self._request_timeout_seconds,
             )
 
@@ -455,18 +452,16 @@ class MilvusVectorStoreParams(BaseModel):
             The registry of the Milvus deployment the client reaches.
             Every store on that deployment, in any process, uses it, and no
             other store does. The caller starts it before handing it over.
-        consistency_level (str):
-            The Milvus consistency level every read runs at, and the level
-            the native collections the store creates are given.
-        request_timeout_seconds (int): Seconds any request to Milvus may take.
+        request_timeout_seconds (int):
+            Seconds any request to Milvus may take (default: 30).
         max_varchar_length (int):
             Bytes a declared string property can hold: the length of its
-            VARCHAR field. Milvus refuses a length above its
-            proxy.maxVarCharLength.
+            VARCHAR field, at most the server's proxy.maxVarCharLength
+            (default: 65535, Milvus's own limit).
         purge_batch_size (int):
-            The most entities one purge round lists and deletes. Milvus
-            refuses a query whose limit exceeds its
-            quotaAndLimits.limits.maxQueryResultWindow.
+            The most entities one purge round lists and deletes, at most the
+            server's quotaAndLimits.limits.maxQueryResultWindow
+            (default: 10000).
         metrics_factory (MetricsFactory | None): Metrics factory for collecting usage metrics.
     """
 
@@ -478,18 +473,14 @@ class MilvusVectorStoreParams(BaseModel):
         ...,
         description="The registry of the deployment the client reaches",
     )
-    consistency_level: str = Field(
-        default="Bounded",
-        description="The Milvus consistency level every read runs at",
-    )
     request_timeout_seconds: int = Field(
-        ..., gt=0, description="Seconds any request to Milvus may take"
+        30, gt=0, description="Seconds any request to Milvus may take"
     )
     max_varchar_length: int = Field(
-        ..., gt=0, description="Bytes a declared string property can hold"
+        65535, gt=0, description="Bytes a declared string property can hold"
     )
     purge_batch_size: int = Field(
-        ..., gt=0, description="The most entities one purge round lists and deletes"
+        10000, gt=0, description="The most entities one purge round lists and deletes"
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
@@ -500,21 +491,17 @@ class MilvusVectorStoreParams(BaseModel):
 class MilvusVectorStore(VectorStore):
     """Asynchronous Milvus-based implementation of VectorStore.
 
-    A logical collection is a partition-key value, the incarnation of its
-    life, inside a native collection shared by the logical collections of
-    one namespace and configuration. The catalog is the `VectorStoreCollectionRegistry`
-    the store is given: it mints the incarnations and arbitrates creation,
-    deletion and reclamation across processes, which Milvus, with no
-    transactions or unique constraints, cannot. Any process sharing the
-    Milvus backend and the registry may serve any collection.
+    A logical collection is the entities carrying its incarnation in the
+    partition-key field, inside a native collection shared by the logical
+    collections of one namespace and configuration. The
+    `VectorStoreCollectionRegistry` the store is given mints incarnations
+    and arbitrates creation, deletion and reclamation across processes. Any
+    process sharing the Milvus deployment and the registry may serve any
+    collection.
 
-    Every read runs at the configured consistency level, Bounded unless
-    configured. At Bounded a query reflects every write that returned at
-    least the server's `common.gracefulTime` (5 s by default) before it
-    began, and when the server has fallen further behind, it waits rather
-    than reads staler. At Strong a query reflects every write that returned
-    before it began, at the cost of waiting for the server to apply every
-    write up to then, whichever tenant made it.
+    Reads run at Milvus's default consistency level, Bounded: a query
+    reflects every write that returned at least the server's
+    `common.gracefulTime` (5 s by default) before it began.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
@@ -556,7 +543,6 @@ class MilvusVectorStore(VectorStore):
         """Initialize the vector store with the provided parameters."""
         super().__init__()
         self._client = params.client
-        self._consistency_level = params.consistency_level
         self._collection_registry = params.collection_registry
         self._request_timeout_seconds = params.request_timeout_seconds
         self._max_varchar_length = params.max_varchar_length
@@ -592,7 +578,6 @@ class MilvusVectorStore(VectorStore):
             tracker=self._tracker,
             is_live=self._collection_registry.is_live,
             request_timeout_seconds=self._request_timeout_seconds,
-            consistency_level=self._consistency_level,
         )
 
     async def _create_native_collection(
@@ -682,7 +667,6 @@ class MilvusVectorStore(VectorStore):
             await self._client.create_collection(
                 collection_name=native_collection_name,
                 schema=schema,
-                consistency_level=self._consistency_level,
                 properties={"partitionkey.isolation": True},
                 timeout=self._request_timeout_seconds,
             )
@@ -828,7 +812,6 @@ class MilvusVectorStore(VectorStore):
                     filter=_incarnation_filter(claim.incarnation),
                     output_fields=[_ID_FIELD],
                     limit=self._purge_batch_size,
-                    consistency_level=self._consistency_level,
                     timeout=self._request_timeout_seconds,
                 )
                 primary_ids = [entity[_ID_FIELD] for entity in listed]

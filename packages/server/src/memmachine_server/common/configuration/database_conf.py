@@ -294,13 +294,6 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         default="",
         description="Optional Milvus database name.",
     )
-    consistency_level: str = Field(
-        default="Bounded",
-        description=(
-            "The Milvus consistency level every read runs at. "
-            "Supported values: Strong, Session, Bounded, Eventually."
-        ),
-    )
     collection_registry: str = Field(
         ...,
         description=(
@@ -381,10 +374,6 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         """Validate Milvus configuration."""
         if not self.uri:
             raise ValueError("MilvusConf requires a non-empty 'uri'")
-        valid_consistency_levels = {"Strong", "Session", "Bounded", "Eventually"}
-        if self.consistency_level not in valid_consistency_levels:
-            valid = ", ".join(sorted(valid_consistency_levels))
-            raise ValueError(f"Milvus consistency_level must be one of: {valid}")
         return self
 
 

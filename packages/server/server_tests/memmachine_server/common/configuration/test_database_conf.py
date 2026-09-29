@@ -130,7 +130,6 @@ def db_conf_dict() -> dict:
                     "uri": "https://example.zillizcloud.com",
                     "token": "test-token",
                     "db_name": "memory",
-                    "consistency_level": "Strong",
                     "collection_registry": "main_postgres",
                     "request_timeout_seconds": 7,
                 },
@@ -215,7 +214,6 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.uri == "https://example.zillizcloud.com"
     assert milvus_conf.token == SecretStr("test-token")
     assert milvus_conf.db_name == "memory"
-    assert milvus_conf.consistency_level == "Strong"
     assert milvus_conf.collection_registry == "main_postgres"
     assert milvus_conf.request_timeout_seconds == 7
 
@@ -289,7 +287,6 @@ def test_milvus_conf_defaults():
     assert conf.uri == "http://localhost:19530"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
-    assert conf.consistency_level == "Bounded"
     assert conf.tombstone_retention_seconds == 86400
     assert conf.request_timeout_seconds == 30
     assert conf.max_varchar_length == 65535
@@ -319,8 +316,6 @@ def test_milvus_conf_reads_env(monkeypatch):
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
         MilvusConf(collection_registry="db", uri="")
-    with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(collection_registry="db", consistency_level="Linearizable")
 
 
 def test_milvus_conf_rejects_a_milvus_lite_file():

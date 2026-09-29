@@ -355,7 +355,6 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               # uri: https://example.api.gcp-us-west1.zillizcloud.com
               # token: $MILVUS_TOKEN
               # db_name: default
-              consistency_level: Bounded
               collection_registry: profile_storage
               request_timeout_seconds: 30
       ```
@@ -399,7 +398,6 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
               uri: http://localhost:19530 # Milvus server or Zilliz Cloud endpoint
               # token: $MILVUS_TOKEN # Required for Zilliz Cloud or auth-enabled Milvus
               # db_name: default # Optional Milvus database name
-              consistency_level: Bounded # Strong, Session, Bounded, or Eventually
               collection_registry: profile_storage # Relational database holding the collection registry
               request_timeout_seconds: 30 # Bounds every request to Milvus
       ```
@@ -417,7 +415,6 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.password`| Password for database authentication.                             | Depends on provider |
       | `config.uri`  | The URI for the given database.                                      | Depends on provider |
       | `config.token` | Milvus auth token for Zilliz Cloud or auth-enabled Milvus server.   | `""` |
-      | `config.consistency_level` | Milvus: the consistency level every read runs at, `Strong`, `Session`, `Bounded`, or `Eventually`. At `Bounded`, a read reflects every write made at least the server's `common.gracefulTime` (5 s by default) before it; `Strong` reflects every earlier write but waits for the server to apply them, which stalls reads under steady writes. | `Bounded` |
       | `config.metrics_factory_id` | ID of the metrics exporter factory the Qdrant or Neo4j store reports its operation latencies to. | `prometheus` |
       | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry (see [Vector stores](/open_source/databases#vector-stores)). | *Required* |
       | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's records are kept before its purge starts, so every write in flight at the deletion has landed and is reclaimed. | `86400` |

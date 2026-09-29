@@ -146,11 +146,14 @@ behind, the read waits rather than reads staler, and fails over to another
 replica if the node's tsafe stalls for 3 s (`queryNode.waitTsafeStallTimeout`,
 from 2.6.15).
 
-**The store reads at Bounded** (accepted, implemented).
-`MilvusConf.consistency_level` defaults to Bounded, Milvus's own default, and
-the store passes it on every read: the search and the purge's listing. The
-default had been Session since the Milvus backend arrived in #1471, with no
-stated reason. The store states a delay of at most `common.gracefulTime`.
+**The store reads at Bounded** (accepted, implemented), Milvus's default: it
+names no level when it creates a collection, so pymilvus creates it at
+Bounded, and none on a read, so every read runs at the collection's level.
+The level is not configurable (accepted): the stated delay of at most
+`common.gracefulTime` and the tombstone retention depend on it, and it
+becomes a setting when the index and search parameters do. `MilvusConf` had
+`consistency_level` since the Milvus backend arrived in #1471, defaulting to
+Session with no stated reason; a configuration that still sets it is ignored.
 
 Measured on Milvus 2.6.24 (4 CPUs / 5 GB; one native collection in this
 layout, 300 tenants x 1,000 rows of 128 dimensions; 8 tasks searching tenants
