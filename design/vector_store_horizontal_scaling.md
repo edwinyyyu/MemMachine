@@ -1,8 +1,5 @@
 # Vector store horizontal scaling
 
-Status: in review in #1631 (2026-09-29). Each document marks what is accepted,
-what is implemented, and what is proposed.
-
 ## Problem
 
 The `VectorStore` contract said "a collection must be managed by at most one
@@ -99,8 +96,8 @@ Every backend client is the library's asynchronous client: `AsyncQdrantClient`
 and pymilvus's `AsyncMilvusClient`. A synchronous client run on worker threads
 holds a thread of the process's shared executor for the whole of each request,
 so enough slow requests starve every other call of the process (measured in
-the [Milvus](milvus_vector_store.md) document). (Accepted and implemented: a
-library's async client is always used when one exists.)
+the [Milvus](milvus_vector_store.md) document), so a library's async client is
+used whenever one exists.
 
 ## Related work
 

@@ -1,7 +1,6 @@
 # Vector store: the collection registry
 
-Status: accepted 2026-09-29, in review in #1631. Part of [vector store
-horizontal scaling](vector_store_horizontal_scaling.md).
+Part of [vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
@@ -49,8 +48,8 @@ wrote it.
 - The caller owns the registry's lifecycle. The database manager builds and
   starts each Qdrant and Milvus store's registry before it opens the store's
   client, and hands the started registry to the store in its params. The store
-  never starts or stops it. (Decided: a store that started a registry it was
-  given would own a lifecycle it does not control.)
+  never starts or stops it: a store that started a registry it was given
+  would own a lifecycle it does not control.
 
 ### Tables
 
@@ -58,8 +57,8 @@ The registries of every vector store share two tables, defined once at module
 level as the segment store's are, and keyed by `vector_store_name`: the
 backend's key under `resources.databases`, which must match `[a-z0-9_]+` and
 be at most 32 bytes. Two registry objects under one name are one registry.
-(Decided: one table pair with a key column, not a table pair per vector store,
-so the schema is static.)
+One table pair with a key column, rather than a table pair per vector store,
+keeps the schema static.
 
 `collection_registry_ct`, the live collections:
 
@@ -93,8 +92,7 @@ collection's name is derived from them, and every handle that knew them has
 been discarded. It carries `name` only so that an operator looking at a
 tombstone, a dead-lettered one above all, can tell which collection it was, as
 the segment store's queue carries its partition key "for forensics". Dropping
-it was considered. (Decided: keep it, with a comment saying the purge never
-reads it.)
+it was considered; it stays, for inspection.
 
 ### Operations
 

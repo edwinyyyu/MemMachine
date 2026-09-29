@@ -1,7 +1,6 @@
 # Qdrant vector store
 
-Status: accepted and implemented 2026-09-29 in #1631. How the Qdrant store
-meets the shared contracts: [collection
+How the Qdrant store meets the shared contracts: [collection
 registry](vector_store_collection_registry.md),
 [purge](vector_store_purge.md), [consistency](vector_store_consistency.md),
 [isolation](vector_store_isolation.md).
@@ -36,7 +35,6 @@ A point's id is `uuid5(incarnation, record UUID)`, and the record UUID is kept
 in the payload, `sys-record_uuid`. A search returns that one payload field to
 answer each match's record UUID; a delete names the derived ids directly;
 someone inspecting a collection finds a record by filtering on the field.
-(Accepted: derived ids, with the record UUID readable in the payload.)
 
 The id space is the native collection's, shared by its logical collections,
 and Qdrant's upsert replaces a whole point, vectors and payload alike
@@ -81,7 +79,7 @@ point id equals the target's. With UUIDv5 that is a second preimage of SHA-1
 on 122 bits, about 2^122 work, even for someone who knows both incarnations
 and the target's record UUID; known SHA-1 attacks need control of both inputs.
 Isolation then holds as long as the attacker cannot write to Qdrant or the
-registry directly, where isolation is moot anyway. (Accepted: UUIDv5.)
+registry directly, where isolation is moot anyway.
 
 **Rejected: reversible ids.** A point id the store can invert, such as the
 record UUID XOR the incarnation, would let a search recover the record UUID
@@ -129,8 +127,8 @@ search returned 10; 4 returned 10 points sharing nothing with the exact top
 10; none violated the filter. It first appears in 1.15.0 (0 of 60 wrong on
 1.14.1, 15 on 1.15.0, 30-45 on later versions) and is reachable for tenants of
 a few thousand points and up at default settings. The upstream fix,
-qdrant/qdrant#10741, is open. (Accepted: the store is written as if that fix
-has shipped; no graphless layout or exact-search workaround.)
+qdrant/qdrant#10741, is open. The store is written as if that fix has
+shipped: it has no graphless layout or exact-search workaround.
 
 ## Purge
 

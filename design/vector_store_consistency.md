@@ -1,7 +1,6 @@
 # Vector store: consistency
 
-Status: accepted and implemented 2026-09-29 in #1631. Part of [vector store
-horizontal scaling](vector_store_horizontal_scaling.md).
+Part of [vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
@@ -65,7 +64,7 @@ which is unmeasured.
 
 ## Decisions
 
-**`get` is gone** (accepted, implemented). It had one production caller,
+**`get` is gone.** It had one production caller,
 semantic memory's `update_feature`, which read a feature's stored vector back
 to write it again with fresh properties, because `upsert` replaces a whole
 record.
@@ -82,7 +81,7 @@ record.
   embedding, and an update writes the vector store only when given a new
   embedding.
 
-**A query answers UUIDs and scores, nothing more** (accepted, implemented).
+**A query answers UUIDs and scores.**
 Returned properties were copies of what the callers' own stores hold, only as
 fresh as the store's reads, and an invitation to treat them as the record; no
 caller needs them. Each caller resolves a hit through the store that owns the
@@ -90,19 +89,18 @@ mapping: event memory through the segment store's derivative rows, semantic
 memory through the feature row's `vector_uuid` column. Properties are still
 stored and filtered on.
 
-**Every read of a store runs at the store's one configured level** (accepted,
-implemented). On Milvus that is Bounded by default, for searches and for the
-purge's listing alike; the purge is correct at it because the retention
+**Every read of a store runs at one level.** On Milvus that is Milvus's
+default, Bounded, for searches and for the purge's listing alike; the purge is correct at it because the retention
 exceeds the delay (see [purge](vector_store_purge.md)).
 
-**Tests do not require a store to read at Strong** (accepted, implemented). A
+**Tests do not require a store to read at Strong.** A
 test that checks what the backend holds reads it past the store, at Strong
 where the backend has levels (the lifecycle contract's `count_stored` and
 `stored_uuids`). A test whose subject is what the store's own read returns
 first settles: `settle(collection)` returns once the store's reads reflect
 every earlier write, a no-op on Qdrant and one Strong read on Milvus.
 
-**Clients are asynchronous** (accepted, implemented). A library's async client
+**Clients are asynchronous.** A library's async client
 is used whenever one exists; a synchronous client on worker threads holds a
 thread of the process's shared executor for every request's duration, and slow
 requests then starve every other call (measured in the

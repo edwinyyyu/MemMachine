@@ -1,7 +1,6 @@
 # Vector store: tombstones and purge
 
-Status: accepted and implemented 2026-09-29, in review in #1631. Part of
-[vector store horizontal scaling](vector_store_horizontal_scaling.md).
+Part of [vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
@@ -44,8 +43,8 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
   the incarnation empty for good, at the store's usual read level. A round
   that lists records an earlier round deleted, before the deletion is
   reflected, deletes them again; that costs a round, never correctness.
-  (Accepted: the purge reads at the same level as every other read of the
-  store, not a stronger one.)
+  The purge reads at the same level as every other read of the store, not a
+  stronger one.
 - **The retention decides nothing about validity.** A stale write is refused
   by the handle's check after it; the retention only has to outlast any write
   in flight.
@@ -104,11 +103,11 @@ the database clock.
   parameters in seconds with those defaults, so they can become configuration
   without changing the schema.
 
-(Decided: a dead-letter bound rather than retrying forever, because a
-tombstone that never purges must be a visible problem, not garbage that is
-quietly retried; a counter on the queue row rather than a separate table;
-recorded facts rather than a scheduled-time column; seconds, with a base and a
-maximum.)
+A dead-letter bound, rather than retrying forever, makes a tombstone that
+never purges a visible problem instead of garbage that is quietly retried. The
+failures are counted on the queue row rather than in a separate table, and the
+backoff is computed from recorded facts rather than stored as a time to retry
+at.
 
 ### Per-backend rounds
 

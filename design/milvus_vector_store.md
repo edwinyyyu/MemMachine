@@ -1,7 +1,6 @@
 # Milvus vector store
 
-Status: accepted and implemented 2026-09-29 in #1631. How the Milvus store
-meets the shared contracts: [collection
+How the Milvus store meets the shared contracts: [collection
 registry](vector_store_collection_registry.md),
 [purge](vector_store_purge.md), [consistency](vector_store_consistency.md),
 [isolation](vector_store_isolation.md).
@@ -29,8 +28,8 @@ registry](vector_store_collection_registry.md),
   the same index on every deployment, whatever the server's AUTOINDEX
   configuration says, and the search parameters are for it. A search runs
   with `ef = max(limit, 64)` and `refine_k = 2`: knowhere refuses an `ef`
-  below the result count, and Milvus never raises it. (Accepted: no index or
-  search configurability for now.)
+  below the result count, and Milvus never raises it. Neither the index nor
+  the search parameters are configurable yet.
 - **Declared properties:** each has a scalar AUTOINDEX, which Milvus
   resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
@@ -51,8 +50,7 @@ registry](vector_store_collection_registry.md),
   within `proxy.maxVarCharLength`), and a purge batch `purge_batch_size`
   (10,000 unless configured, within
   `quotaAndLimits.limits.maxQueryResultWindow`); both are settings, not
-  constants. (Accepted: a limit the server's configuration bounds is not a
-  Python constant.)
+  constants.
 - **Creation converges:** the collection, its indexes (named by their fields)
   and its load are three steps, each run only when missing.
 - **Milvus Lite is not supported.** It is a separate embedded engine that
@@ -156,9 +154,10 @@ tasks search live tenants; two runs each):
 | Session | none | 20 | 0 | 4.0-4.5 s | 6.4-9.1 ms |
 | Strong | none | 20 | 0 | 2.2-2.4 s | 7.6-12.9 ms |
 
-(Proposed: keep Bounded, as the store reads everywhere; a caller that runs
-rounds back to back pays repeated deletes, never a wrong result. Session waits
-on every write the process makes, which the measurement did not load.)
+The listing stays at Bounded, the level of every other read: the sweeper
+pauses after a busy round, and a caller that runs rounds back to back pays
+repeated deletes, never a wrong result. Session would avoid those, but it waits
+on every write the process makes, which this measurement did not load.
 
 ## Consistency
 
@@ -187,10 +186,10 @@ behind, the read waits rather than reads staler, and fails over to another
 replica if the node's tsafe stalls for 3 s (`queryNode.waitTsafeStallTimeout`,
 from 2.6.15).
 
-**The store reads at Bounded** (accepted, implemented), Milvus's default: it
+**The store reads at Bounded**, Milvus's default: it
 names no level when it creates a collection, so pymilvus creates it at
 Bounded, and none on a read, so every read runs at the collection's level.
-The level is not configurable (accepted): the stated delay of at most
+The level is not configurable: the stated delay of at most
 `common.gracefulTime` and the tombstone retention depend on it, and it
 becomes a setting when the index and search parameters do. `MilvusConf` had
 `consistency_level` since the Milvus backend arrived in #1471, defaulting to
@@ -227,7 +226,7 @@ reads reflect every earlier write (see
 
 ## Client
 
-The store calls pymilvus's `AsyncMilvusClient` (accepted, implemented), whose
+The store calls pymilvus's `AsyncMilvusClient`, whose
 docstring still calls it experimental and partial; it has every call the store
 makes. It had run the synchronous `MilvusClient` under `asyncio.to_thread`,
 where every call held a thread of the event loop's default executor, min(32,

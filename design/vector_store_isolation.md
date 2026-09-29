@@ -1,7 +1,6 @@
 # Vector store: isolation between collections, and record UUIDs
 
-Status: accepted and implemented 2026-09-29 in #1631. Part of [vector store
-horizontal scaling](vector_store_horizontal_scaling.md).
+Part of [vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
@@ -28,9 +27,9 @@ has to be able to keep the promise.
   queued, so a new life starts empty: no dead life's records are adopted by it
   or reclaimed out from under it, whatever record UUIDs either life used.
 - The backends store UUIDs in RFC 9562's hyphenated text form, `str(uuid)`, 36
-  characters. (Accepted: one text form everywhere.) In the registry an
-  incarnation is SQLAlchemy's `Uuid` type, whose storage (native on
-  PostgreSQL, 32-character hex on SQLite) never leaves the registry.
+  characters, everywhere. In the registry an incarnation is SQLAlchemy's `Uuid`
+  type, whose storage (native on PostgreSQL, 32-character hex on SQLite) never
+  leaves the registry.
 
 ## The guarantee
 
@@ -101,8 +100,8 @@ backends was run). Every one can, almost always by scoping the id.
   incarnations and a record UUID, from logs, the registry's tables or a
   backup, could compute a colliding UUID and, through an ordinary tenant
   account, hide another tenant's record. A one-way UUIDv5 needs write access
-  to a database for that. (Accepted: UUIDv5; the analysis is in the
-  [Qdrant](qdrant_vector_store.md) document.)
+  to a database for that. The analysis is in the
+  [Qdrant](qdrant_vector_store.md) document.
 
 ## Consequences
 
