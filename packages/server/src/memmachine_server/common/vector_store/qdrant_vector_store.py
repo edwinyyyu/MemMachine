@@ -437,62 +437,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             return query_results
 
     @override
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        async with self._tracker("get"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return []
-
-            await self._fence()
-            # Always get payload so we can check the incarnation.
-            points = await self._client.retrieve(
-                collection_name=self._native_collection_name,
-                ids=list(uuid_list),
-                with_vectors=return_vector,
-                with_payload=True,
-            )
-
-            points_by_uuid: dict[UUID, models.Record] = {
-                UUID(str(point.id)): point
-                for point in points
-                if point.payload
-                and cast(dict[str, Any], point.payload).get(_PAYLOAD_INCARNATION)
-                == str(self._incarnation)
-            }
-
-            records: list[Record] = []
-            for point_uuid in uuid_list:
-                point = points_by_uuid.get(point_uuid)
-                if point is None:
-                    continue
-
-                vector: list[float] | None = None
-                if return_vector and point.vector is not None:
-                    vector = cast(list[float], point.vector)
-
-                properties: dict[str, PropertyValue] | None = None
-                if return_properties and point.payload is not None:
-                    properties = self._parse_payload(
-                        cast(dict[str, Any] | None, point.payload),
-                    )
-
-                records.append(
-                    Record(
-                        uuid=point_uuid,
-                        vector=vector,
-                        properties=properties,
-                    ),
-                )
-
-            return records
-
-    @override
     async def delete(
         self,
         *,

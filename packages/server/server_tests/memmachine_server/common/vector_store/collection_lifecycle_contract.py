@@ -2,10 +2,13 @@
 The collection lifecycle contract the registry-backed vector stores satisfy.
 
 Each store's test module mixes `CollectionLifecycleContract` into a test
-class and supplies the `store` fixture, a started store, and
+class and supplies the `store` fixture, a started store;
 `count_stored(store, namespace, config)`, the number of records the backend
-physically holds in the native collection those name, which the purge tests
-read past the store's own API. The backend may persist across tests (a
+physically holds in the native collection those name; and
+`stored_uuids(collection)`, the record UUIDs the backend holds under a
+handle's incarnation. Both read past the store's own API, whose reads may
+lag its writes, so a test observes what the backend holds, not what a
+query has caught up with. The backend may persist across tests (a
 shared Qdrant or Milvus server): every test starts by deleting the
 collections it uses, and the purge tests count relative to a drained
 baseline.
@@ -24,7 +27,7 @@ a later purge round.
 import asyncio
 import math
 import random
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -70,11 +73,16 @@ def _uuids(result) -> set:
 
 
 class CollectionLifecycleContract:
-    """Mixed into a store's test class, with its `store` fixture and `count_stored`."""
+    """Mixed into a store's test class, with its `store` fixture, `count_stored` and `stored_uuids`."""
 
     @staticmethod
     async def count_stored(store, namespace: str, config) -> int:
         """Records the backend physically holds in the native collection, live or dead."""
+        raise NotImplementedError
+
+    @staticmethod
+    async def stored_uuids(collection) -> set[UUID]:
+        """Record UUIDs the backend holds under the handle's incarnation."""
         raise NotImplementedError
 
     async def _drained_count(self, store) -> int:
@@ -104,8 +112,6 @@ class CollectionLifecycleContract:
         with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.query(query_vectors=[record.vector], limit=5)
         with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
-            await collection.get(record_uuids=[record.uuid])
-        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.delete(record_uuids=[record.uuid])
 
     @pytest.mark.asyncio
@@ -123,7 +129,6 @@ class CollectionLifecycleContract:
 
         [before] = await new.query(query_vectors=[old_record.vector], limit=5)
         assert before.matches == []
-        assert await new.get(record_uuids=[old_record.uuid]) == []
 
         await new.upsert(records=[new_record])
         [after] = await new.query(query_vectors=[new_record.vector], limit=5)
@@ -309,9 +314,6 @@ class CollectionLifecycleContract:
         await collection.query(query_vectors=[record.vector], limit=1)
         assert checks == 1
         checks = 0
-        await collection.get(record_uuids=[record.uuid])
-        assert checks == 1
-        checks = 0
         await collection.delete(record_uuids=[record.uuid])
         assert checks == 2
 
@@ -415,7 +417,7 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         assert opened is not None
-        assert await opened.get(record_uuids=[record.uuid])
+        assert await self.stored_uuids(opened) == {record.uuid}
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
@@ -482,7 +484,7 @@ class CollectionLifecycleContract:
         assert lost
         record = _records(1)[0]
         await collection.upsert(records=[record])
-        assert await collection.get(record_uuids=[record.uuid])
+        assert await self.stored_uuids(collection) == {record.uuid}
 
     @pytest.mark.asyncio
     async def test_lifecycle_churn_raises_only_domain_errors(self, store):

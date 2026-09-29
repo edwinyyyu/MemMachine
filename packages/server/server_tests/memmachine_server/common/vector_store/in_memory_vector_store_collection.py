@@ -174,21 +174,6 @@ class InMemoryVectorStoreCollection(VectorStoreCollection):
             results.append(QueryResult(matches=matches))
         return results
 
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        out: list[Record] = []
-        for uid in record_uuids:
-            record = self.records.get(uid)
-            if record is None:
-                continue
-            out.append(self._project_record(record, return_vector, return_properties))
-        return out
-
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         for uid in record_uuids:
             self.records.pop(uid, None)

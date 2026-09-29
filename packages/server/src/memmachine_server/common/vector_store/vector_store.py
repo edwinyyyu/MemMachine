@@ -116,34 +116,6 @@ class VectorStoreCollection(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        """
-        Get records from the collection by their UUIDs.
-
-        Args:
-            record_uuids (Iterable[UUID]):
-                Iterable of UUIDs of the records to retrieve.
-            return_vector (bool):
-                Whether to include the vector in the returned records
-                (default: False).
-            return_properties (bool):
-                Whether to include the properties in the returned records
-                (default: True).
-
-        Returns:
-            list[Record]:
-                Iterable of records with the specified UUIDs,
-                ordered as in the input iterable.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     async def delete(
         self,
         *,

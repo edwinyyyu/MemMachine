@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, MutableMapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC
 from typing import Any, cast
 from uuid import UUID, uuid5
 
@@ -240,16 +240,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
             await session.commit()
             feature_id = FeatureIdT(str(result.scalar_one()))
 
-        await self._upsert_vector_record(
-            feature_id=feature_id,
-            set_id=set_id,
-            category_name=category_name,
-            feature=feature,
-            value=value,
-            tag=tag,
-            embedding=embedding,
-            metadata=metadata,
-        )
+        await self._upsert_vector_record(feature_id=feature_id, embedding=embedding)
         return feature_id
 
     async def update_feature(
@@ -294,22 +285,10 @@ class VectorStoreSemanticStorage(SemanticStorage):
         if row is None:
             raise ResourceNotFoundError(f"Feature ID not found: {feature_id}")
 
-        if values or embedding is not None:
-            existing_record = await self._get_existing_vector_record(feature_id)
-            await self._upsert_vector_record(
-                feature_id=feature_id,
-                set_id=row.set_id,
-                category_name=row.semantic_category_id,
-                feature=row.feature,
-                value=row.value,
-                tag=row.tag_id,
-                embedding=(
-                    embedding
-                    if embedding is not None
-                    else np.array(existing_record.vector, dtype=float)
-                ),
-                metadata=row.json_metadata,
-            )
+        # Only an embedding reaches the vector store; everything else this
+        # method can change lives on the row above.
+        if embedding is not None:
+            await self._upsert_vector_record(feature_id=feature_id, embedding=embedding)
 
     async def get_feature(
         self,
@@ -593,42 +572,19 @@ class VectorStoreSemanticStorage(SemanticStorage):
         self,
         *,
         feature_id: FeatureIdT,
-        set_id: SetIdT,
-        category_name: str,
-        feature: str,
-        value: str,
-        tag: str,
         embedding: InstanceOf[np.ndarray],
-        metadata: Mapping[str, Any] | None,
     ) -> None:
-        properties = self._vector_properties(
-            feature_id=feature_id,
-            set_id=set_id,
-            category_name=category_name,
-            feature=feature,
-            value=value,
-            tag=tag,
-            metadata=metadata,
-        )
+        # The record carries the feature id, the one property a search hit is
+        # resolved through; the row holds every other value.
         await self._vector_collection.upsert(
             records=[
                 Record(
                     uuid=feature_vector_uuid(feature_id),
                     vector=[float(item) for item in embedding.tolist()],
-                    properties=properties,
+                    properties={"feature_id": feature_id},
                 )
             ]
         )
-
-    async def _get_existing_vector_record(self, feature_id: FeatureIdT) -> Record:
-        records = await self._vector_collection.get(
-            record_uuids=[feature_vector_uuid(feature_id)],
-            return_vector=True,
-            return_properties=False,
-        )
-        if not records or records[0].vector is None:
-            raise ResourceNotFoundError(f"Vector record not found: {feature_id}")
-        return records[0]
 
     async def _delete_vector_records(self, feature_ids: Sequence[FeatureIdT]) -> None:
         if not feature_ids:
@@ -821,39 +777,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
         for feature_id, history_id in result:
             citations.setdefault(feature_id, []).append(EpisodeIdT(history_id))
         return citations
-
-    @staticmethod
-    def _vector_properties(
-        *,
-        feature_id: FeatureIdT,
-        set_id: SetIdT,
-        category_name: str,
-        feature: str,
-        value: str,
-        tag: str,
-        metadata: Mapping[str, Any] | None,
-    ) -> dict[str, str | int | float | bool | datetime]:
-        properties: dict[str, str | int | float | bool | datetime] = {
-            "feature_id": feature_id,
-            "set_id": set_id,
-            "set": set_id,
-            "semantic_category_id": category_name,
-            "category_name": category_name,
-            "category": category_name,
-            "tag_id": tag,
-            "tag": tag,
-            "feature": feature,
-            "feature_name": feature,
-            "value": value,
-        }
-        properties.update(
-            {
-                key: item
-                for key, item in (metadata or {}).items()
-                if isinstance(item, bool | int | float | str | datetime)
-            }
-        )
-        return properties
 
     @staticmethod
     def _coerce_feature_id(feature_id: FeatureIdT) -> int:

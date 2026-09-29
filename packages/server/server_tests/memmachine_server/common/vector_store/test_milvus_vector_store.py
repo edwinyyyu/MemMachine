@@ -72,6 +72,32 @@ def _make_record(
     )
 
 
+async def _stored(
+    collection: MilvusVectorStoreCollection, record_uuids: list[UUID]
+) -> dict[UUID, Record]:
+    """The records Milvus holds under these UUIDs, read past the store at Strong.
+
+    The store's reads may lag its writes by its consistency level; a Strong
+    read reflects every write that returned before it.
+    """
+    rows = await collection._client.get(
+        collection_name=collection._native_collection_name,
+        ids=[
+            collection._primary_id(collection._incarnation, record_uuid)
+            for record_uuid in record_uuids
+        ],
+        output_fields=collection._output_fields(
+            return_vector=True, return_properties=True
+        ),
+        consistency_level="Strong",
+    )
+    records = (
+        collection._parse_record(row, return_vector=True, return_properties=True)
+        for row in rows
+    )
+    return {record.uuid: record for record in records}
+
+
 @pytest_asyncio.fixture
 async def server_milvus_client(milvus_container):
     client = AsyncMilvusClient(uri=milvus_container.get_connection_url())
@@ -121,7 +147,6 @@ _CLIENT_REQUESTS = (
     "list_indexes",
     "create_index",
     "load_collection",
-    "get",
     "query",
     "upsert",
     "search",
@@ -152,7 +177,6 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     )
     await coll.upsert(records=[record, kept])
     await coll.query(query_vectors=[record.vector], limit=1)
-    await coll.get(record_uuids=[record.uuid])
     await coll.delete(record_uuids=[record.uuid])
     await store.delete_collection(namespace=namespace, name="timed")
     # The purge finds the record the deletion left and reclaims it.
@@ -505,14 +529,9 @@ class TestUpsertAndQuery:
                 ]
             )
 
-        records = await collection.get(
-            record_uuids=[record.uuid],
-            return_vector=True,
-            return_properties=True,
-        )
-        assert len(records) == 1
-        assert records[0].vector == old_vector
-        assert records[0].properties == {"name": "old"}
+        stored = (await _stored(collection, [record.uuid]))[record.uuid]
+        assert stored.vector == old_vector
+        assert stored.properties == {"name": "old"}
 
 
 class TestFilters:
@@ -581,8 +600,8 @@ class TestFilters:
         uuids = await self._query(collection, v1, "created_at", "=", dt_filter)
         assert uuids == {r1.uuid}
 
-        results = await collection.get(record_uuids=[r1.uuid])
-        assert results[0].properties["created_at"] == dt_utc
+        stored = await _stored(collection, [r1.uuid])
+        assert stored[r1.uuid].properties == {"created_at": dt_utc}
 
     @pytest.mark.asyncio
     async def test_is_null_and_not_null(self, collection):
@@ -701,8 +720,8 @@ class TestFilters:
         assert await uuids(In(field="color", values=["blue", "green"])) == {blue.uuid}
         assert await uuids(IsNull(field="size")) == {blue.uuid}
         assert await uuids(Comparison(field="size", op="!=", value=3)) == {blue.uuid}
-        [record] = await collection.get(record_uuids=[red.uuid])
-        assert record.properties == {"color": "red", "size": 3}
+        stored = await _stored(collection, [red.uuid])
+        assert stored[red.uuid].properties == {"color": "red", "size": 3}
 
     @pytest.mark.asyncio
     async def test_a_datetime_reads_back_in_the_timezone_it_was_written_in(
@@ -722,8 +741,6 @@ class TestFilters:
         record = _make_record(vector=v1, properties={"created_at": written})
         await collection.upsert(records=[record])
 
-        [got] = await collection.get(record_uuids=[record.uuid])
-        assert got.properties["created_at"].isoformat() == written.isoformat()
         [result] = await collection.query(query_vectors=[v1], limit=1)
         assert (
             result.matches[0].record.properties["created_at"].isoformat()
@@ -834,24 +851,7 @@ class TestScores:
         await store.delete_collection(namespace=NAMESPACE, name=name)
 
 
-class TestGetAndDelete:
-    @pytest.mark.asyncio
-    async def test_get_by_uuids_preserves_order_and_return_flags(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v2, properties={"name": "b"})
-        await collection.upsert(records=[r1, r2])
-
-        results = await collection.get(
-            record_uuids=[r2.uuid, r1.uuid],
-            return_vector=True,
-            return_properties=False,
-        )
-        assert [record.uuid for record in results] == [r2.uuid, r1.uuid]
-        assert results[0].vector is not None
-        assert results[0].properties is None
-
+class TestDelete:
     @pytest.mark.asyncio
     async def test_delete_records(self, collection):
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -862,8 +862,7 @@ class TestGetAndDelete:
 
         await collection.delete(record_uuids=[r1.uuid])
 
-        results = await collection.get(record_uuids=[r1.uuid, r2.uuid])
-        assert [record.uuid for record in results] == [r2.uuid]
+        assert set(await _stored(collection, [r1.uuid, r2.uuid])) == {r2.uuid}
 
 
 class TestPartitionIsolation:
@@ -890,11 +889,11 @@ class TestPartitionIsolation:
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
         )
 
-        results_a = await coll_a.get(record_uuids=[record_uuid])
-        results_b = await coll_b.get(record_uuids=[record_uuid])
+        stored_a = await _stored(coll_a, [record_uuid])
+        stored_b = await _stored(coll_b, [record_uuid])
 
-        assert results_a[0].properties == {"name": "a"}
-        assert results_b[0].properties == {"name": "b"}
+        assert stored_a[record_uuid].properties == {"name": "a"}
+        assert stored_b[record_uuid].properties == {"name": "b"}
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
@@ -956,3 +955,14 @@ class TestLifecycleContract(CollectionLifecycleContract):
             limit=16384,
         )
         return len(list(rows))
+
+    @staticmethod
+    async def stored_uuids(collection) -> set[UUID]:
+        rows = await collection._client.query(
+            collection_name=collection._native_collection_name,
+            filter=f'partition_key == "{collection._incarnation}"',
+            output_fields=["record_uuid"],
+            limit=16384,
+            consistency_level="Strong",
+        )
+        return {UUID(row["record_uuid"]) for row in rows}

@@ -48,6 +48,25 @@ VECTOR_STORE_NAME = "qdrant_test"
 TOMBSTONE_RETENTION = timedelta(0)
 
 
+async def _stored_uuids(collection) -> set[UUID]:
+    """Record UUIDs Qdrant holds under the handle's incarnation, read past the store."""
+    points, _ = await collection._client.scroll(
+        collection_name=collection._native_collection_name,
+        scroll_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key=_PAYLOAD_INCARNATION,
+                    match=models.MatchValue(value=str(collection._incarnation)),
+                )
+            ]
+        ),
+        limit=10000,
+        with_payload=False,
+        with_vectors=False,
+    )
+    return {UUID(str(point.id)) for point in points}
+
+
 @pytest.fixture
 def in_memory_qdrant_client():
     return AsyncQdrantClient(location=":memory:")
@@ -612,8 +631,8 @@ class TestFilters:
         r1 = _make_record(vector=v1, properties={"name": "test", "created_at": dt})
         await collection.upsert(records=[r1])
 
-        results = list(await collection.get(record_uuids=[r1.uuid]))
-        assert results[0].properties["created_at"] == dt
+        [result] = await collection.query(query_vectors=[v1], limit=1)
+        assert result.matches[0].record.properties["created_at"] == dt
 
     @pytest.mark.asyncio
     async def test_datetime_microseconds_roundtrip(self, collection):
@@ -623,8 +642,8 @@ class TestFilters:
         r1 = _make_record(vector=v1, properties={"name": "micro", "created_at": dt})
         await collection.upsert(records=[r1])
 
-        results = list(await collection.get(record_uuids=[r1.uuid]))
-        assert results[0].properties["created_at"] == dt
+        [result] = await collection.query(query_vectors=[v1], limit=1)
+        assert result.matches[0].record.properties["created_at"] == dt
 
     @pytest.mark.asyncio
     async def test_eq_datetime(self, collection):
@@ -760,8 +779,8 @@ class TestFilters:
         r1 = _make_record(vector=v1, properties={"name": "n", "created_at": naive_dt})
         await collection.upsert(records=[r1])
 
-        results = list(await collection.get(record_uuids=[r1.uuid]))
-        got = results[0].properties["created_at"]
+        [result] = await collection.query(query_vectors=[v1], limit=1)
+        got = result.matches[0].record.properties["created_at"]
         assert isinstance(got, datetime)
         assert got.tzinfo is not None
         assert got == datetime(2024, 6, 15, 12, 30, 0, tzinfo=UTC)
@@ -952,74 +971,6 @@ class TestFilters:
         assert len(matches) == 2
 
 
-# ── Get ──
-
-
-class TestGet:
-    @pytest.mark.asyncio
-    async def test_get_by_uuids(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        v2 = _normalize([0.0, 1.0, 0.0])
-        v3 = _normalize([0.0, 0.0, 1.0])
-
-        r1 = _make_record(vector=v1, properties={"name": "a"})
-        r2 = _make_record(vector=v2, properties={"name": "b"})
-        r3 = _make_record(vector=v3, properties={"name": "c"})
-
-        await collection.upsert(records=[r1, r2, r3])
-
-        results = list(await collection.get(record_uuids=[r3.uuid, r1.uuid]))
-        assert len(results) == 2
-        assert results[0].uuid == r3.uuid
-        assert results[1].uuid == r1.uuid
-
-    @pytest.mark.asyncio
-    async def test_get_missing_uuids(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1)
-        await collection.upsert(records=[r1])
-
-        missing_uuid = uuid4()
-        results = list(await collection.get(record_uuids=[r1.uuid, missing_uuid]))
-        assert len(results) == 1
-        assert results[0].uuid == r1.uuid
-
-    @pytest.mark.asyncio
-    async def test_get_empty_list(self, collection):
-        results = list(await collection.get(record_uuids=[]))
-        assert len(results) == 0
-
-    @pytest.mark.asyncio
-    async def test_get_return_vector_false(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(records=[r1])
-
-        results = list(
-            await collection.get(record_uuids=[r1.uuid], return_vector=False)
-        )
-        assert len(results) == 1
-        assert results[0].vector is None
-        assert results[0].properties is not None
-
-    @pytest.mark.asyncio
-    async def test_get_return_properties_false(self, collection):
-        v1 = _normalize([1.0, 0.0, 0.0])
-        r1 = _make_record(vector=v1, properties={"name": "test"})
-        await collection.upsert(records=[r1])
-
-        results = list(
-            await collection.get(
-                record_uuids=[r1.uuid],
-                return_vector=True,
-                return_properties=False,
-            )
-        )
-        assert len(results) == 1
-        assert results[0].vector is not None
-        assert results[0].properties is None
-
-
 # ── Delete ──
 
 
@@ -1035,9 +986,7 @@ class TestDelete:
         await collection.upsert(records=[r1, r2])
         await collection.delete(record_uuids=[r1.uuid])
 
-        results = list(await collection.get(record_uuids=[r1.uuid, r2.uuid]))
-        assert len(results) == 1
-        assert results[0].uuid == r2.uuid
+        assert await _stored_uuids(collection) == {r2.uuid}
 
 
 # ── Partition isolation (via separate logical collections) ──
@@ -1080,7 +1029,7 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
-    async def test_get_only_returns_own_partition(self, store):
+    async def test_a_query_returns_only_its_own_collections_records(self, store):
         await store.create_collection(
             namespace=NAMESPACE,
             name="tenant_a",
@@ -1103,9 +1052,8 @@ class TestPartitionIsolation:
         await coll_a.upsert(records=[r1])
         await coll_b.upsert(records=[r2])
 
-        results = list(await coll_a.get(record_uuids=[r1.uuid, r2.uuid]))
-        assert len(results) == 1
-        assert results[0].uuid == r1.uuid
+        [result] = await coll_a.query(query_vectors=[v1], limit=10)
+        assert [match.record.uuid for match in result.matches] == [r1.uuid]
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
@@ -1137,9 +1085,7 @@ class TestPartitionIsolation:
         # Attempt to delete r2 using tenant_a's collection — should not work
         await coll_a.delete(record_uuids=[r2.uuid])
 
-        results = list(await coll_b.get(record_uuids=[r2.uuid]))
-        assert len(results) == 1
-        assert results[0].uuid == r2.uuid
+        assert await _stored_uuids(coll_b) == {r2.uuid}
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
@@ -1333,3 +1279,5 @@ class TestLifecycleContract(CollectionLifecycleContract):
         native = QdrantVectorStore._build_native_collection_name(namespace, config)
         result = await store._client.count(collection_name=native, exact=True)
         return result.count
+
+    stored_uuids = staticmethod(_stored_uuids)

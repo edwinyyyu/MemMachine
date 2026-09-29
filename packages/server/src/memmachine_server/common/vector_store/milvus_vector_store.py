@@ -491,51 +491,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             return results
 
     @override
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        async with self._tracker("get"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return []
-
-            await self._fence()
-            primary_ids = [
-                self._primary_id(self._incarnation, uuid) for uuid in uuid_list
-            ]
-            raw_records = await self._client.get(
-                collection_name=self._native_collection_name,
-                ids=primary_ids,
-                output_fields=self._output_fields(
-                    return_vector=return_vector,
-                    return_properties=return_properties,
-                ),
-                timeout=self._request_timeout_seconds,
-            )
-
-            records_by_uuid = {
-                record.uuid: record
-                for record in (
-                    self._parse_record(
-                        cast(Mapping[str, Any], raw_record),
-                        return_vector=return_vector,
-                        return_properties=return_properties,
-                    )
-                    for raw_record in raw_records
-                )
-            }
-            records = [
-                records_by_uuid[record_uuid]
-                for record_uuid in uuid_list
-                if record_uuid in records_by_uuid
-            ]
-            return records
-
-    @override
     async def delete(
         self,
         *,

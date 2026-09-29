@@ -139,3 +139,106 @@ async def test_vector_search_returns_relational_features_in_similarity_order(
     finally:
         await storage.delete_all()
         await storage.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_vector_records_carry_only_the_feature_id(
+    sqlalchemy_sqlite_engine,
+    vector_collection: InMemoryVectorStoreCollection,
+):
+    """The feature row is the authority; the vector record holds a vector and
+    the id a search hit is resolved through."""
+    storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
+    await storage.startup()
+    try:
+        feature_id = await storage.add_feature(
+            set_id="user",
+            category_name="default",
+            feature="likes",
+            value="pizza",
+            tag="food",
+            embedding=np.array([1.0, 0.0], dtype=float),
+            metadata={"source": "chat"},
+        )
+        record_uuid = feature_vector_uuid(feature_id)
+        assert vector_collection.records[record_uuid].properties == {
+            "feature_id": feature_id
+        }
+
+        await storage.update_feature(
+            feature_id,
+            value="sushi",
+            embedding=np.array([0.0, 1.0], dtype=float),
+        )
+        assert vector_collection.records[record_uuid].properties == {
+            "feature_id": feature_id
+        }
+    finally:
+        await storage.delete_all()
+        await storage.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_an_update_without_an_embedding_leaves_the_vector_record_alone(
+    sqlalchemy_sqlite_engine,
+    vector_collection: InMemoryVectorStoreCollection,
+):
+    storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
+    await storage.startup()
+    try:
+        feature_id = await storage.add_feature(
+            set_id="user",
+            category_name="default",
+            feature="likes",
+            value="pizza",
+            tag="food",
+            embedding=np.array([1.0, 0.0], dtype=float),
+        )
+        record_uuid = feature_vector_uuid(feature_id)
+        before = vector_collection.records[record_uuid]
+
+        await storage.update_feature(feature_id, value="sushi", tag="meal")
+
+        assert vector_collection.records[record_uuid] == before
+        feature = await storage.get_feature(feature_id)
+        assert feature is not None
+        assert (feature.value, feature.tag) == ("sushi", "meal")
+    finally:
+        await storage.delete_all()
+        await storage.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_an_update_reads_nothing_back_from_the_vector_store(
+    sqlalchemy_sqlite_engine,
+    vector_collection: InMemoryVectorStoreCollection,
+):
+    """An update neither reads the vector record nor fails when a read would
+    have missed it (#1721): the record here is absent, as a read on a backend
+    that has not yet made it visible would find it."""
+    storage = VectorStoreSemanticStorage(sqlalchemy_sqlite_engine, vector_collection)
+    await storage.startup()
+    try:
+        feature_id = await storage.add_feature(
+            set_id="user",
+            category_name="default",
+            feature="likes",
+            value="pizza",
+            tag="food",
+            embedding=np.array([1.0, 0.0], dtype=float),
+        )
+        record_uuid = feature_vector_uuid(feature_id)
+        del vector_collection.records[record_uuid]
+
+        await storage.update_feature(feature_id, value="sushi")
+        feature = await storage.get_feature(feature_id)
+        assert feature is not None
+        assert feature.value == "sushi"
+
+        await storage.update_feature(
+            feature_id, embedding=np.array([0.0, 1.0], dtype=float)
+        )
+        assert vector_collection.records[record_uuid].vector == [0.0, 1.0]
+    finally:
+        await storage.delete_all()
+        await storage.cleanup()

@@ -338,57 +338,6 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         return {row.rowid: self._deserialize_vector(row.vector) for row in vector_rows}
 
     @override
-    async def get(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-        return_vector: bool = False,
-        return_properties: bool = True,
-    ) -> list[Record]:
-        record_uuids = list(record_uuids)
-        if not record_uuids:
-            return []
-
-        selected_columns = [self._records_table.c.uuid, self._records_table.c.rowid]
-        if return_properties:
-            selected_columns.append(self._records_table.c.properties)
-
-        async with self._create_session() as session:
-            fetched_rows = (
-                await session.execute(
-                    select(*selected_columns).where(
-                        self._records_table.c.uuid.in_(record_uuids),
-                    )
-                )
-            ).all()
-
-            rowid_to_vector: dict[int, list[float]] = {}
-            if return_vector:
-                rowid_to_vector = await self._fetch_vectors(
-                    session, [row.rowid for row in fetched_rows]
-                )
-
-        record_map: dict[UUID, Record] = {}
-        for row in fetched_rows:
-            record_uuid = row.uuid
-
-            properties: dict[str, PropertyValue] | None = None
-            if return_properties:
-                properties = decode_properties(row.properties)
-
-            vector: list[float] | None = rowid_to_vector.get(row.rowid)
-
-            record_map[record_uuid] = Record(
-                uuid=record_uuid, vector=vector, properties=properties
-            )
-
-        return [
-            record_map[record_uuid]
-            for record_uuid in record_uuids
-            if record_uuid in record_map
-        ]
-
-    @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         record_uuids = list(record_uuids)
         if not record_uuids:
