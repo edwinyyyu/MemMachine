@@ -1,8 +1,8 @@
 # Qdrant vector store
 
-Status: accepted and implemented 2026-09-29 in #1631, except conditional
-upsert (proposed). How the Qdrant store meets the shared contracts:
-[collection registry](vector_store_collection_registry.md),
+Status: accepted and implemented 2026-09-29 in #1631. How the Qdrant store
+meets the shared contracts: [collection
+registry](vector_store_collection_registry.md),
 [purge](vector_store_purge.md), [consistency](vector_store_consistency.md),
 [isolation](vector_store_isolation.md).
 
@@ -32,27 +32,43 @@ upsert (proposed). How the Qdrant store meets the shared contracts:
 
 ## Point ids
 
-A point's id is its record's UUID, as it is. (Accepted: ids stay readable;
-deriving them from the incarnation would scope them structurally but hide the
-mapping from operators, and is kept for when it becomes necessary.)
+A point's id is `uuid5(incarnation, record UUID)`, and the record UUID is kept
+in the payload, `sys-record_uuid`. A search returns that one payload field to
+answer each match's record UUID; a delete names the derived ids directly;
+someone inspecting a collection finds a record by filtering on the field.
+(Accepted: derived ids, with the record UUID readable in the payload.)
 
 The id space is the native collection's, shared by its logical collections,
 and Qdrant's upsert replaces a whole point, vectors and payload alike
-(`lib/shard/src/update/points/upsert.rs` at v1.19.1). So a plain upsert of a
-UUID that another collection's point holds replaces that point and moves it to
-the writer's incarnation: the first collection's record goes missing (its
-reads filter it out), and neither collection reads the other's. The contract's
-rule that record UUIDs are service-minted is what keeps that from happening
-today.
+(`lib/shard/src/update/points/upsert.rs` at v1.19.1). With the record UUID as
+the point id, an upsert of a UUID another collection's point held replaced
+that point and moved it to the writer's incarnation. Derived ids differ
+between collections whatever record UUIDs they carry, so the store keeps the
+[isolation](vector_store_isolation.md) guarantee without a rule on callers,
+and a collection created again under a name writes ids its dead predecessor's
+points, awaiting purge, cannot collide with.
 
-**Proposed: conditional upsert.** Qdrant 1.16 added `update_filter`
-(qdrant/qdrant#7006). An upsert with a filter on the writer's incarnation
-inserts new ids as before, updates the writer's own points, and leaves a point
-under another incarnation as it is, skipping the writer's point without an
-error: first write wins. It would let the store meet the
-[isolation](vector_store_isolation.md) guarantee whatever UUID a record
-carries. Its cost stays with the writer (Qdrant 1.19.1, 4 CPUs / 4 GB, 300
-tenants x 1,000 points in this layout):
+Measured on Qdrant 1.19.1 (4 CPUs / 4 GB, gRPC; 300 tenants x 1,000 points of
+128 dimensions in this layout; searches filtered on a tenant, top 10; one idle
+collection for searches, six rounds; a fresh collection per upsert phase,
+three rounds):
+
+| | Record UUID as the point id | Derived id, record UUID in the payload |
+|---|---|---|
+| Searches, 8 clients | 4,748-5,392/s, p50 1.30-1.46 ms | 4,159-4,613/s, p50 1.52-1.67 ms (returning `sys-record_uuid`) |
+| Upserts of 1 point, 8 clients | 4,193-4,722/s | 4,064-4,745/s |
+| Upserts of 10 points, 8 clients | 1,462-1,733/s | 1,627-1,629/s |
+
+A keyword index on `sys-record_uuid` would turn a lookup by hand from a scan
+into an index read, at about 5% of 10-point upsert throughput (1,524-1,570/s);
+it is not added.
+
+**Rejected: conditional upsert.** Qdrant 1.16 added `update_filter`
+(qdrant/qdrant#7006): an upsert filtered on the writer's incarnation leaves a
+point under another incarnation as it is and skips the writer's point without
+an error. It kept bare ids, but a reused UUID's record was silently dropped,
+callers still needed a uniqueness rule, and its cost stayed with the writer
+(Qdrant 1.19.1, same setup):
 
 | Request | p50 plain -> scoped | Server CPU per point |
 |---|---|---|
@@ -62,11 +78,6 @@ tenants x 1,000 points in this layout):
 | 100 points | +4% new, +39% overwrite (noisy) | x1.08 / x1.60 |
 | 1,000 points | +1% new, +12% overwrite | x1.23-1.28 |
 | 8 clients, 1 new point each | 4,384-4,684 -> 3,440-3,554 requests/s (-24%) | x1.10 per request |
-
-With 4 clients searching tenants 0-149 while 4 others upserted into tenants
-150-299, the searchers ran 2,653-2,964 per second beside conditional 1-point
-upserts against 2,729-2,753 beside plain ones, and 2,300-2,367 against
-2,307-2,381 with 5-point upserts; the writers' own throughput dropped 7-9%.
 
 ## Filtered-search correctness (qdrant#10741)
 

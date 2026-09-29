@@ -46,7 +46,7 @@ behind its choices.
 
 | Document | What it covers |
 |---|---|
-| [Qdrant](qdrant_vector_store.md) | Shared native collections, per-tenant graphs, point ids and conditional upsert, filtered-search correctness, purge by filter, consistency on one node and replicated. |
+| [Qdrant](qdrant_vector_store.md) | Shared native collections, per-tenant graphs, derived point ids, filtered-search correctness, purge by filter, consistency on one node and replicated. |
 | [Milvus](milvus_vector_store.md) | Shared native collections, partition-key tenancy, the composite key, the index, purge in batches, consistency levels, the async client. |
 
 ## Lifecycle of a collection

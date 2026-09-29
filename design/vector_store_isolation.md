@@ -1,21 +1,22 @@
 # Vector store: isolation between collections, and record UUIDs
 
-Status: incarnations and the service-minted UUID rule are accepted and
-implemented in #1631. The isolation guarantee and the looser UUID rule it
-allows are proposed. Part of [vector store horizontal
-scaling](vector_store_horizontal_scaling.md).
+Status: accepted and implemented 2026-09-29 in #1631. Part of [vector store
+horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
 A record is addressed by its UUID within its collection, and an upsert
 replaces a whole record. On a backend where the collections of a store share
 one id space, one collection's upsert of a UUID another collection already
-holds would replace that other collection's record. Qdrant is such a backend
-as MemMachine lays it out: many collections share a native collection, and a
-point id is the record UUID. This document answers what keeps collections
-apart, what happens when a UUID is reused (across collections, across lives of
-one collection, or by a caller that chose it), and what the contract can
-promise, given that every backend has to be able to keep the promise.
+holds would replace that other collection's record. Qdrant was such a backend
+as MemMachine laid it out: many collections share a native collection, and a
+point's id was its record's UUID. The contract guarded against it with a rule
+on callers, that a record's UUID is minted by the service and never a value a
+caller supplied, which held only as long as every ingestion path honored it.
+This document answers what keeps collections apart, what happens when a UUID
+is reused (across collections, across lives of one collection, or by a caller
+that chose it), and what the contract can promise, given that every backend
+has to be able to keep the promise.
 
 ## Collection lives
 
@@ -26,76 +27,42 @@ promise, given that every backend has to be able to keep the promise.
 - An incarnation is never re-minted while it is live or its tombstone is
   queued, so a new life starts empty: no dead life's points are adopted by it
   or reclaimed out from under it, whatever record UUIDs either life used.
-- The backends store it in RFC 9562's hyphenated text form, `str(uuid)`.
-  (Accepted: one text form everywhere.) In the registry it is SQLAlchemy's
-  `Uuid` type, whose storage (native on PostgreSQL, 32-character hex on
-  SQLite) never leaves the registry.
+- The backends store UUIDs in RFC 9562's hyphenated text form, `str(uuid)`, 36
+  characters. (Accepted: one text form everywhere.) In the registry an
+  incarnation is SQLAlchemy's `Uuid` type, whose storage (native on
+  PostgreSQL, 32-character hex on SQLite) never leaves the registry.
 
-## Where record UUIDs come from
+## The guarantee
 
-Every record UUID in MemMachine is minted by the service: random, or derived
-(UUIDv5) only from identifiers the service minted itself. The contract makes
-that a rule of `upsert` (accepted, implemented): a record's UUID is never a
-value a caller supplied or one derived from it, even where an ingestion path
-would pass the caller's identifier through, because the collections of one
-store may share the backend's id space.
-
-## Proposed: an isolation guarantee, and a looser UUID rule
-
-The rule above protects isolation only as long as every ingestion path honors
-it. The proposal makes isolation the stores' obligation, whatever UUID a
-record carries, and relaxes the callers' rule to what is still needed.
-
-**Contract text.** The collection docstring's "All data operations are scoped
-to this logical collection" becomes:
+`VectorStoreCollection` states:
 
 > All data operations are scoped to this logical collection, whatever UUIDs
-> its records carry: none reads, replaces or deletes another collection's
-> record.
+> its records carry: a record's UUID names it in this collection only, and
+> the same UUID in another collection names another record.
 
-and `upsert`'s rule becomes:
+A record UUID may come from anywhere, a caller included: reusing one in
+another collection stores another record, and no operation on one collection
+reads, replaces or deletes another's. The rule that the service mints every
+UUID is gone.
 
-> Record UUIDs must be unique across the store, including collections
-> deleted but not yet purged; what happens to a record whose UUID is not is
-> implementation-defined.
+| Store | How ids are scoped to a collection |
+|---|---|
+| SQLite, sqlite-vec | a records table per collection |
+| Milvus | the incarnation in the primary key, `"{incarnation}:{record_uuid}"` (see [Milvus](milvus_vector_store.md)) |
+| Qdrant | the point id is a UUIDv5 of the record UUID under the incarnation, with the record UUID kept in the payload (see [Qdrant](qdrant_vector_store.md)) |
 
-**How each store meets it.**
+A UUIDv5 carries 122 bits, and deriving one from a random incarnation and any
+record UUID gives a caller no way to aim at another collection's point: a
+SHA-1 collision needs control of both inputs.
 
-| Store | Mechanism | A reused UUID's record |
-|---|---|---|
-| SQLite, sqlite-vec | a records table per collection | is stored |
-| Milvus | the incarnation in the primary key (see [Milvus](milvus_vector_store.md)) | is stored |
-| Qdrant | a conditional upsert, first write wins (see [Qdrant](qdrant_vector_store.md)) | is not stored, without an error |
-
-**Why it is easier to use correctly.** Under the committed rule a caller that
-slips (one ingestion path passing a client's identifier through as a record
-UUID) can replace another tenant's record: a security failure far from its
-cause. Under the guarantee the same slip can cost only the slipping caller its
-own record, on one backend. Stealing another collection's record is impossible
-on every store; squatting (claiming a UUID first so another collection's later
-record of it is skipped) requires predicting a UUID another collection will
-use, which service-minted UUIDs rule out, so it is not a reasonable attack
-(accepted). The remaining hazard is an innocent reuse, such as copying a
-collection's records into a new collection under the same UUIDs; the
-uniqueness rule is for that caller.
-
-**The stronger alternative.** The contract could instead say that a UUID names
-a record only within its collection, so a reused UUID is always stored, as
-SQLite and Milvus already behave. Every surveyed backend can scope ids that
-way (below), but on Qdrant only by deriving each point id from the incarnation
-and the record UUID, which makes a point's id unreadable to an operator; and
-Weaviate's shared-collection layout would need the same hashing. (Accepted for
-now: Qdrant point ids stay readable, unless derivation becomes necessary.)
-
-### Can every backend meet the guarantee?
+### Can every backend keep it?
 
 Surveyed from vendor documentation and source (2026-09-29; none of these
-backends was run). Every one can, almost always by scoping the id rather than
-by a conditional write.
+backends was run). Every one can, almost always by scoping the id.
 
 | Backend | Per-tenant unit that scopes ids | Tenant in the native id | Conditional write (outcome on collision) |
 |---|---|---|---|
-| Qdrant | (custom shard keys; ids "only enforced unique within a shard key", which Qdrant calls an anti-pattern) | id must be a u64 or UUID: a derived UUID only | `update_filter` (skipped silently) |
+| Qdrant | (custom shard keys; ids "only enforced unique within a shard key", which Qdrant calls an anti-pattern) | id must be a u64 or UUID: a derived UUID | `update_filter` (skipped silently) |
 | Milvus | collection (deployment caps) | composite VARCHAR key | none found |
 | Pinecone | namespace (100 to 1M per index by plan) | string id, 512 characters | none |
 | Chroma | collection (Chroma Cloud: 1M) | string id (Chroma Cloud: 128 bytes) | `add` of an existing id is skipped silently; no conditional replace |
@@ -109,28 +76,30 @@ by a conditional write.
 | Vespa | streaming-mode group (`g=` in the document id) | document id | test-and-set (412), except when every replica lacks the document |
 | Azure AI Search | index (at most 3,000 per service) | composite key `{tenant}_{record}` (1,024 characters; no colon) | none |
 
-What happens to a colliding record differs (stored separately, refused with an
-error, or skipped silently), which is why the proposed rule leaves it
-implementation-defined.
-
-**On derived UUIDs.** A UUIDv5 carries 122 bits; deriving one from another
-UUIDv5 does not reduce that meaningfully, and a SHA-1 collision needs control
-of both inputs, which a caller does not have over the service's namespace.
-
 ## Alternatives considered
 
-- **Keep only the rule that UUIDs are service-minted** (the committed state).
-  It holds only while every ingestion path honors it.
+- **Keep the rule that UUIDs are service-minted.** It holds only while every
+  ingestion path honors it, and a slip replaces another tenant's record, a
+  security failure far from its cause.
+- **A conditional upsert on Qdrant** (`update_filter` on the writer's
+  incarnation, first write wins). It keeps collections from replacing each
+  other's points, but a reused UUID's record is dropped without an error, the
+  contract has to keep a uniqueness rule for callers, and single-point writes
+  ran 46% slower. It is Qdrant-specific, where scoping the id is what nearly
+  every backend does.
 - **Check before writing** (read the id, then write if it is absent or the
   writer's). Not atomic: another collection's write can land between the read
   and the write.
-- **Last-write-wins on a collision.** It takes the record from whichever
-  collection wrote first. First-write-wins cannot take anything from another
-  collection. (Accepted: first-write-wins is preferred.)
+- **Readable point ids on Qdrant.** Deriving hides the record UUID from the
+  point id, but it stays in the payload, so an operator still finds a record
+  by filtering on it, as with Milvus's composite key; the cost is a payload
+  field returned by every search (measured in the
+  [Qdrant](qdrant_vector_store.md) document).
 
 ## Consequences
 
-- If the proposal is taken, a Qdrant backend needs 1.16 or later, for the
-  conditional upsert; CI tests against 1.19.1.
-- A record written under a reused UUID on Qdrant is dropped without an error.
-  Callers keep minting UUIDs per record, as every caller does today.
+- Existing Qdrant points written before #1631 are orphaned with the rest of
+  its layout changes; their ids are not derived.
+- A lookup by hand on Qdrant filters on `sys-record_uuid`, which scans the
+  collection; a keyword index on it would make that an index read, at a small
+  cost to writes, and is not added.
