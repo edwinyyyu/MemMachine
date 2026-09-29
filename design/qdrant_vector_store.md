@@ -1,9 +1,8 @@
 # Qdrant vector store
 
 Status: accepted and implemented 2026-09-29 in #1631, except conditional
-upsert (proposed) and write ordering on replicated deployments (open). How the
-Qdrant store meets the shared contracts: [collection
-registry](vector_store_collection_registry.md),
+upsert (proposed). How the Qdrant store meets the shared contracts:
+[collection registry](vector_store_collection_registry.md),
 [purge](vector_store_purge.md), [consistency](vector_store_consistency.md),
 [isolation](vector_store_isolation.md).
 
@@ -125,10 +124,10 @@ hazards; 8 threads, 400 points per case):
 
 So sequential writes kept their order under the default, but overlapping
 writes to one point left replicas disagreeing (compared 5 s after the writes),
-against the contract's last clause. The cost of the stricter orderings falls
-on writes, so this measures writes alone, no reads running: each phase on a
-fresh collection, 8 gRPC clients for 10 s, three rounds with the orderings
-rotated:
+against Qdrant's documented `weak` semantics, not against the contract. The
+cost of the stricter orderings falls on writes, so this measures writes alone,
+no reads running: each phase on a fresh collection, 8 gRPC clients for 10 s,
+three rounds with the orderings rotated:
 
 | Upserts | `weak` | `medium` | `strong` |
 |---|---|---|---|
@@ -137,9 +136,9 @@ rotated:
 | single node, 1 point: per second (p50) | 5,570-5,727 (1.2 ms) | 3,533-4,425 (1.7-1.9 ms) | 3,684-4,321 (1.7-1.9 ms) |
 | single node, 10 points: per second (p50) | 1,968-2,103 (1.9 ms) | 1,988-2,096 (2.6-2.8 ms) | 1,918-2,126 (2.5-2.7 ms) |
 
-**Open.** Which ordering the store passes, and whether always or only on
-replicated deployments; the options are in the
-[consistency](vector_store_consistency.md) document.
+The store passes no ordering: the contract does not promise convergence, and
+nothing writes one point from two places at once (see
+[consistency](vector_store_consistency.md)).
 
 ## Consequences
 

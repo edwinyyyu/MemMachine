@@ -16,9 +16,8 @@ registry](vector_store_collection_registry.md),
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
   `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
-  nullable typed field per declared property, `_p_<name>`, plus `_tz_<name>`
-  for a datetime's UTC offset. Dynamic fields are off, so each property is
-  stored once.
+  nullable typed field per declared property, `_p_<name>`. Dynamic fields are
+  off, so each property is stored once.
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
@@ -30,11 +29,10 @@ registry](vector_store_collection_registry.md),
   says. (Accepted: no index configurability for now.)
 - **Declared properties:** each has a scalar index (VARCHAR with INVERTED;
   INT64 and DOUBLE with STL_SORT; BOOL with BITMAP; a datetime as TIMESTAMPTZ
-  with STL_SORT, its offset kept beside it so it reads back in the timezone it
-  was written in). Undeclared properties go in the JSON field, still
-  filterable by path. Negation is the complement, as on Qdrant: a negated
-  condition holds where the property has no value, which Milvus's SQL-style
-  null evaluation does not give on its own.
+  with STL_SORT). Undeclared properties go in the JSON field, still filterable
+  by path. Negation is the complement, as on Qdrant: a negated condition holds
+  where the property has no value, which Milvus's SQL-style null evaluation
+  does not give on its own.
 - **Scores** are the server's (cosine similarity, inner product, and the
   square root of Milvus's squared Euclidean distance).
 - **Server-configured limits stay the server's.** A search `limit` reaches the

@@ -109,8 +109,8 @@ library's async client is always used when one exists.)
   incarnation logic.
 - #1627 makes a vector store one native collection with string-keyed
   partitions, on top of this.
-- #1663 answers queries with UUIDs and cosine scores only; it removed `get`
-  too, which #1631 now does first.
+- #1663 makes scores cosine similarities only; #1631 already removed `get` and
+  answers queries with UUIDs and scores.
 - #1570 tracks moving provisioning (table and collection creation) out of
   runtime startup for every store.
 - #1468 (SQLite store: writes reach the table and the search engine in

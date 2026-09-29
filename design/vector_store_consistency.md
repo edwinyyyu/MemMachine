@@ -1,8 +1,7 @@
 # Vector store: consistency
 
-Status: accepted and implemented 2026-09-29 in #1631, except the write
-ordering of replicated Qdrant deployments, which is open. Part of [vector
-store horizontal scaling](vector_store_horizontal_scaling.md).
+Status: accepted and implemented 2026-09-29 in #1631. Part of [vector store
+horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
@@ -21,28 +20,24 @@ contract said nothing about it. Under that silence:
 
 `VectorStoreCollection` states:
 
-> An `upsert` or `delete` is durable once it returns. Queries reflect it as
-> soon as it returns, or after a delay a store states in its own contract; a
-> query within that delay may miss a record upserted, or return a record
-> deleted, shortly before it. A write to a record that begins after another
-> write to it returned takes effect after that one; writes to one record
-> that overlap in time take effect in some order, the same for every query.
+> An `upsert` or `delete` is durable once it returns; queries may reflect it
+> only after a delay. A store that guarantees more states it.
 
-"Reflect" is about what a query can return; an approximate search may still
-rank a reflected record out of its results. A store with no delay says
-nothing; a store with one states it. The contract promises no read-your-writes
-beyond that delay, and nothing about a query's view across processes except
-through it.
+The contract promises as little as every store can keep, and a store that
+keeps more says so on itself: a store that states nothing may delay. It says
+nothing about overlapping writes to one record, which no caller depends on. It
+promises no read-your-writes, and a query answers only records' UUIDs and
+scores, so no caller can come to depend on reading back what it wrote.
 
 ## What each store states
 
-| Store | Delay before queries reflect a write | Overlapping writes to one record |
+| Store | Delay before queries reflect a write (stated by the store) | Overlapping writes to one record (not in the contract) |
 |---|---|---|
 | SQLite (engine-backed) | none | a known bug: the table and the search engine can apply them in different orders (#1468; fixed by #1469 and #1673) |
 | sqlite-vec | none | one SQL transaction each |
-| Qdrant, one node | none: a write returns once applied | applied in one order |
-| Qdrant, replicated | unbounded: a query reads one replica | diverge across replicas under Qdrant's default `weak` ordering (measured; open, below) |
-| Milvus | at most `common.gracefulTime` (5 s by default) at Bounded, the default level | one write-ahead log order |
+| Qdrant, one node | none, stated: a write returns once applied | applied in one order |
+| Qdrant, replicated | unbounded, not stated: a query reads one replica | can diverge across replicas under Qdrant's default `weak` ordering (measured, below) |
+| Milvus | at most `common.gracefulTime` (5 s by default) at Bounded, the default level; stated | one write-ahead log order |
 
 The measurements and mechanisms are in the [Qdrant](qdrant_vector_store.md)
 and [Milvus](milvus_vector_store.md) documents.
@@ -84,9 +79,16 @@ record.
   only with read-consistency settings the store does not make, and Milvus only
   at Strong, whose wait under steady writes reached a p99 of 3.0-3.5 s.
 - Nothing replaces it. The feature row is the authority for everything but the
-  embedding; the vector record carries only the `feature_id` a search hit is
-  resolved through, and an update writes the vector store only when given a
-  new embedding. #1663 goes further with a `vector_uuid` column.
+  embedding, and an update writes the vector store only when given a new
+  embedding.
+
+**A query answers UUIDs and scores, nothing more** (accepted, implemented).
+Returned properties were copies of what the callers' own stores hold, only as
+fresh as the store's reads, and an invitation to treat them as the record; no
+caller needs them. Each caller resolves a hit through the store that owns the
+mapping: event memory through the segment store's derivative rows, semantic
+memory through the feature row's `vector_uuid` column. Properties are still
+stored and filtered on.
 
 **Every read of a store runs at the store's one configured level** (accepted,
 implemented). On Milvus that is Bounded by default, for searches and for the
@@ -106,26 +108,22 @@ thread of the process's shared executor for every request's duration, and slow
 requests then starve every other call (measured in the
 [Milvus](milvus_vector_store.md) document).
 
-## Open: overlapping writes on replicated Qdrant
+## Overlapping writes on replicated Qdrant
 
 On a three-node Qdrant 1.19.1 cluster with every shard replicated three times,
 two clients upserting different values of one point at once, through different
 nodes, left the replicas holding different values for 115 of 400 points under
 the default `weak` ordering, and for none under `medium` or `strong`.
 Sequential writes, each sent after the previous returned, stayed in order
-under all three (0 of 1,200). So a replicated deployment meets the contract's
-last clause only with `medium` or `strong` ordering, which the store does not
-set. Passing it costs even a single node: single-point upserts ran 3,533-4,425
-per second under `medium` and 3,684-4,321 under `strong`, against 5,570-5,727
-under `weak` (p50 1.7-1.9 ms against 1.2 ms); 10-point upserts ran the same
-under all three. The options:
-
-- pass `medium` on every write, and pay that on every deployment;
-- make the ordering a Qdrant setting, `weak` by default, which a replicated
-  deployment sets;
-- pass `strong`, which costs the same as `medium` but makes writes unavailable
-  while a shard's permanent leader is down, where `medium` re-elects a leader
-  and may diverge briefly around the change.
+under all three (0 of 1,200). The contract does not promise convergence, and
+the store sets no ordering. Passing `medium` or `strong` would cost even a
+single node: single-point upserts ran 3,533-4,425 per second under `medium`
+and 3,684-4,321 under `strong`, against 5,570-5,727 under `weak` (p50 1.7-1.9
+ms against 1.2 ms); 10-point upserts ran the same under all three. Nothing in
+MemMachine writes one record from two places at once and depends on the
+outcome, so the store keeps the default; a caller that did would need `medium`
+(or `strong`, which costs the same but makes writes unavailable while a
+shard's permanent leader is down).
 
 ## Alternatives considered
 
