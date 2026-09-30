@@ -1198,7 +1198,7 @@ class TestCollectionLifecycleAcrossWorkers:
 
     @pytest.mark.asyncio
     async def test_two_workers_creating_at_once_agree_on_one_collection(
-        self, qdrant_container, registry_engine
+        self, new_qdrant_client, registry_engine
     ):
         """Two clients, one registry - the multi-worker shape, in one process.
 
@@ -1206,8 +1206,8 @@ class TestCollectionLifecycleAcrossWorkers:
         incarnation, the collection they agree on must end up indexed, and
         a strict create both issue at once is created once.
         """
-        client_a = qdrant_container.get_async_client()
-        client_b = qdrant_container.get_async_client()
+        client_a = new_qdrant_client()
+        client_b = new_qdrant_client()
         namespace, name = "race_two_ns", "race_two_name"
         config = self._config()
         native = QdrantVectorStore._build_native_collection_name(namespace, config)

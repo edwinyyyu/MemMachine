@@ -18,6 +18,7 @@ from testcontainers.neo4j import Neo4jContainer
 from testcontainers.postgres import PostgresContainer
 from testcontainers.qdrant import QdrantContainer
 
+from memmachine_server.common.configuration.database_conf import QdrantConf
 from memmachine_server.common.embedder.openai_embedder import (
     OpenAIEmbedder,
     OpenAIEmbedderParams,
@@ -411,16 +412,27 @@ def qdrant_container():
         yield container
 
 
+@pytest.fixture(scope="session")
+def new_qdrant_client(qdrant_container):
+    """Build a Qdrant client that times out as a configured store's does."""
+    timeout = QdrantConf.model_fields["request_timeout_seconds"].default
+
+    def build(**kwargs):
+        return qdrant_container.get_async_client(timeout=timeout, **kwargs)
+
+    return build
+
+
 @pytest_asyncio.fixture(scope="session")
-async def qdrant_client(qdrant_container):
-    client = qdrant_container.get_async_client()
+async def qdrant_client(new_qdrant_client):
+    client = new_qdrant_client()
     yield client
     await client.close()
 
 
 @pytest_asyncio.fixture(scope="session")
-async def qdrant_grpc_client(qdrant_container):
-    client = qdrant_container.get_async_client(prefer_grpc=True)
+async def qdrant_grpc_client(new_qdrant_client):
+    client = new_qdrant_client(prefer_grpc=True)
     yield client
     await client.close()
 
