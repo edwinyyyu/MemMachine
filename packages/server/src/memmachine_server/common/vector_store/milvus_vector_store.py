@@ -94,7 +94,9 @@ _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
 
 # The index AUTOINDEX builds on CPU from Milvus 2.6.10, named so every server
 # builds it, whatever its version or AUTOINDEX configuration; partition-key
-# isolation needs the HNSW family.
+# isolation needs the HNSW family. The parameters are AUTOINDEX's: HNSW_SQ
+# named alone takes knowhere's own defaults, a different index with no
+# refinement for refine_k to act on.
 _VECTOR_INDEX_TYPE = "HNSW_SQ"
 _VECTOR_INDEX_PARAMS: dict[str, Any] = {
     "M": 18,
