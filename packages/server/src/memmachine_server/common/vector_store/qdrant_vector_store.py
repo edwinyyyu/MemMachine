@@ -1,7 +1,7 @@
 """Qdrant-based vector store implementation."""
 
 import hashlib
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
@@ -48,17 +48,10 @@ from .data_types import (
     Record,
     VectorStoreCollectionConfig,
 )
-from .declared_properties import require_declared_types
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
     RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
-)
-from .utils import (
-    require_dimensions,
-    require_valid_query_vector,
-    require_valid_score_threshold,
-    validate_filter,
 )
 
 # Point payload keys (stored on every Qdrant point).
@@ -282,8 +275,6 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
 
     def _build_point(self, record: Record) -> models.PointStruct:
         """Build a Qdrant point from a vector store record."""
-        require_declared_types(record.properties, self.config.indexed_properties_schema)
-        require_dimensions(record.vector, self.config.vector_dimensions)
         payload: dict[str, PropertyValue] = {
             _PAYLOAD_INCARNATION: str(self._incarnation),
             _PAYLOAD_RECORD_UUID: str(record.uuid),
@@ -298,17 +289,8 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         )
 
     @override
-    async def upsert(
-        self,
-        *,
-        records: Iterable[Record],
-    ) -> None:
-        async with self._tracker("upsert"):
-            await self._fence()
-            points = [self._build_point(record) for record in records]
-            if points:
-                await self._upsert_points(points)
-            await self._fence()
+    async def _upsert(self, records: list[Record]) -> None:
+        await self._upsert_points([self._build_point(record) for record in records])
 
     async def _upsert_points(self, points: list[models.PointStruct]) -> None:
         """Upsert points, halving a batch refused as sent.
@@ -332,89 +314,63 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             await self._upsert_points(points[mid:])
 
     @override
-    async def query(
+    async def _query(
         self,
+        query_vectors: list[list[float]],
         *,
-        query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
-        property_filter: FilterExpr | None = None,
+        score_threshold: float | None,
+        property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
-        async with self._tracker("query"):
-            query_vectors = [list(query_vector) for query_vector in query_vectors]
-            if not query_vectors:
-                return []
-            for query_vector in query_vectors:
-                require_valid_query_vector(query_vector, self.config.vector_dimensions)
-            require_valid_score_threshold(score_threshold)
-
-            await self._fence()
-            incarnation_filter = _incarnation_filter(self._incarnation)
-            if property_filter:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
-                property_qdrant_filter = (
-                    QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
-                )
-                qdrant_filter = models.Filter(
-                    must=[incarnation_filter, property_qdrant_filter]
-                )
-            else:
-                qdrant_filter = incarnation_filter
-
-            requests = [
-                models.QueryRequest(
-                    query=query_vector,
-                    filter=qdrant_filter,
-                    score_threshold=score_threshold,
-                    limit=limit,
-                    with_vector=False,
-                    with_payload=models.PayloadSelectorInclude(
-                        include=[_PAYLOAD_RECORD_UUID]
-                    ),
-                )
-                for query_vector in query_vectors
-            ]
-
-            batch_results = await self._client.query_batch_points(
-                collection_name=self._native_collection_name,
-                requests=requests,
+        qdrant_filter = _incarnation_filter(self._incarnation)
+        if property_filter is not None:
+            qdrant_filter = models.Filter(
+                must=[
+                    qdrant_filter,
+                    QdrantVectorStoreCollection._build_qdrant_filter(property_filter),
+                ]
             )
 
-            return [
-                QueryResult(
-                    matches=[
-                        QueryMatch(
-                            score=point.score,
-                            record_uuid=UUID(
-                                (point.payload or {})[_PAYLOAD_RECORD_UUID]
-                            ),
-                        )
-                        for point in batch.points
-                    ]
-                )
-                for batch in batch_results
-            ]
-
-    @override
-    async def delete(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-    ) -> None:
-        async with self._tracker("delete"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return
-
-            await self._fence()
-            await self._client.delete(
-                collection_name=self._native_collection_name,
-                points_selector=models.PointIdsList(
-                    points=[str(self._point_id(uuid)) for uuid in uuid_list]
+        requests = [
+            models.QueryRequest(
+                query=query_vector,
+                filter=qdrant_filter,
+                score_threshold=score_threshold,
+                limit=limit,
+                with_vector=False,
+                with_payload=models.PayloadSelectorInclude(
+                    include=[_PAYLOAD_RECORD_UUID]
                 ),
             )
-            await self._fence()
+            for query_vector in query_vectors
+        ]
+
+        batch_results = await self._client.query_batch_points(
+            collection_name=self._native_collection_name,
+            requests=requests,
+        )
+
+        return [
+            QueryResult(
+                matches=[
+                    QueryMatch(
+                        score=point.score,
+                        record_uuid=UUID((point.payload or {})[_PAYLOAD_RECORD_UUID]),
+                    )
+                    for point in batch.points
+                ]
+            )
+            for batch in batch_results
+        ]
+
+    @override
+    async def _delete(self, record_uuids: list[UUID]) -> None:
+        await self._client.delete(
+            collection_name=self._native_collection_name,
+            points_selector=models.PointIdsList(
+                points=[str(self._point_id(uuid)) for uuid in record_uuids]
+            ),
+        )
 
 
 class QdrantVectorStoreParams(RegistryBackedVectorStoreParams):

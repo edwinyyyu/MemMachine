@@ -44,9 +44,11 @@ wrote it.
 - `RegistryBackedVectorStore` (`common/vector_store/registry_backed_vector_store.py`)
   is the base of the Qdrant and Milvus stores and makes every registry call
   they make: create, open-or-create, open and delete, the purge claim, and a
-  handle's liveness fence. A subclass supplies the backend steps: preparing
-  a new collection's storage, building a handle, and one purge round over an
-  incarnation's records. Nothing in the base assumes how the backend lays
+  handle's liveness fence. Its handle's `upsert`, `query` and `delete` check
+  their inputs and the handle's liveness around the backend call. A subclass
+  supplies the backend steps: preparing a new collection's storage, the
+  handle's backend calls (`_upsert`, `_query`, `_delete`), and one purge
+  round over an incarnation's records. Nothing in the base assumes how the backend lays
   records out. Qdrant and Milvus share a native collection per namespace and
   configuration. A backend with a unit per collection, such as a Pinecone or
   turbopuffer namespace, a Chroma collection or a Weaviate tenant, would make
@@ -201,8 +203,9 @@ deleted, every operation on the handle raises
 the same name is a new life the old handle cannot reach.
 
 - Every operation looks up the collection under the handle's name (`get`)
-  before its remote call, and raises unless the row carries the handle's
-  incarnation.
+  once its inputs are checked and before its remote call, and raises unless
+  the row carries the handle's incarnation. An operation with nothing to send
+  (no records, no query vectors, a limit of 0) checks too.
 - Every write looks it up again after the remote call, so a write that
   completed under an incarnation that died meanwhile raises instead of
   reporting success.

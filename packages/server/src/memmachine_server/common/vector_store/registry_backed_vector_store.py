@@ -13,23 +13,33 @@ deleted incarnation's records.
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import override
 from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
+from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
 from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
 from .data_types import (
+    QueryResult,
+    Record,
     VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
 )
-from .utils import require_identifiers
+from .declared_properties import require_declared_types
+from .utils import (
+    require_dimensions,
+    require_identifiers,
+    require_valid_query_vector,
+    require_valid_score_threshold,
+    validate_filter,
+)
 from .vector_store import VectorStore, VectorStoreCollection
 
 logger = logging.getLogger(__name__)
@@ -44,9 +54,12 @@ _OPEN_OR_CREATE_RETRY_DELAY_SECONDS = 1
 class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     """A handle bound to one incarnation of a logical collection.
 
+    Each operation checks its inputs, then that the collection is still live,
+    before the backend call and, for a write, again after it.
+
     For subclasses: `_incarnation` is the incarnation the handle is bound to,
-    `_tracker` times each operation, and `_fence()` raises once the collection
-    has been deleted.
+    and a subclass implements the backend calls `_upsert`, `_query` and
+    `_delete`.
     """
 
     def __init__(
@@ -87,6 +100,126 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     @override
     def config(self) -> VectorStoreCollectionConfig:
         return self._config
+
+    @override
+    async def upsert(self, *, records: Iterable[Record]) -> None:
+        async with self._tracker("upsert"):
+            records = list(records)
+            for record in records:
+                require_declared_types(
+                    record.properties, self._config.indexed_properties_schema
+                )
+                require_dimensions(record.vector, self._config.vector_dimensions)
+            await self._fence()
+            if not records:
+                return
+            await self._upsert(records)
+            await self._fence()
+
+    @override
+    async def query(
+        self,
+        *,
+        query_vectors: Iterable[Sequence[float]],
+        limit: int,
+        score_threshold: float | None = None,
+        property_filter: FilterExpr | None = None,
+    ) -> list[QueryResult]:
+        async with self._tracker("query"):
+            query_vectors = [list(query_vector) for query_vector in query_vectors]
+            for query_vector in query_vectors:
+                require_valid_query_vector(query_vector, self._config.vector_dimensions)
+            require_valid_score_threshold(score_threshold)
+            if property_filter is not None and not validate_filter(property_filter):
+                raise ValueError("Filter contains an invalid property key")
+            await self._fence()
+            if not query_vectors:
+                return []
+            if limit <= 0:
+                return [QueryResult(matches=[]) for _ in query_vectors]
+            return await self._query(
+                query_vectors,
+                limit=limit,
+                score_threshold=score_threshold,
+                property_filter=property_filter,
+            )
+
+    @override
+    async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
+        async with self._tracker("delete"):
+            record_uuids = list(record_uuids)
+            await self._fence()
+            if not record_uuids:
+                return
+            await self._delete(record_uuids)
+            await self._fence()
+
+    @abstractmethod
+    async def _upsert(self, records: list[Record]) -> None:
+        """
+        Write records to the backend under the handle's incarnation.
+
+        Called between two liveness checks, with at least one record, each
+        already checked against the collection's configuration. A record
+        replaces the one with its UUID.
+
+        Args:
+            records (list[Record]): The records to write.
+
+        Raises:
+            Exception: Whatever the backend raises; the upsert raises it.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def _query(
+        self,
+        query_vectors: list[list[float]],
+        *,
+        limit: int,
+        score_threshold: float | None,
+        property_filter: FilterExpr | None,
+    ) -> list[QueryResult]:
+        """
+        Search the handle's incarnation's records for each query vector.
+
+        Called after a liveness check, with at least one query vector and a
+        limit of at least 1, the vectors, threshold and filter already
+        checked.
+
+        Args:
+            query_vectors (list[list[float]]): The vectors to search for.
+            limit (int): The most matches to answer per query vector.
+            score_threshold (float | None):
+                The score a match must reach, or None for any.
+            property_filter (FilterExpr | None):
+                The condition a match's properties must meet, or None.
+
+        Returns:
+            list[QueryResult]:
+                One result per query vector, in order, its matches best
+                first.
+
+        Raises:
+            Exception: Whatever the backend raises; the query raises it.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def _delete(self, record_uuids: list[UUID]) -> None:
+        """
+        Delete the handle's incarnation's records with these UUIDs.
+
+        Called between two liveness checks, with at least one UUID. A UUID
+        the collection holds no record under is not an error.
+
+        Args:
+            record_uuids (list[UUID]): The UUIDs of the records to delete.
+
+        Raises:
+            Exception: Whatever the backend raises; the delete raises it.
+        """
+        raise NotImplementedError
 
 
 class RegistryBackedVectorStoreParams(BaseModel):

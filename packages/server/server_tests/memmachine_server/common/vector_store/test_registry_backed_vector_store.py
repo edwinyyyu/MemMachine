@@ -1,7 +1,7 @@
 """Tests of RegistryBackedVectorStore's creation flow, on a store whose storage preparation the test controls."""
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import override
 from uuid import UUID
 
@@ -41,22 +41,22 @@ type Preparation = Callable[[str, VectorStoreCollectionConfig, UUID], Awaitable[
 
 class _Collection(RegistryBackedVectorStoreCollection):
     @override
-    async def upsert(self, *, records: Iterable[Record]) -> None:
+    async def _upsert(self, records: list[Record]) -> None:
         raise NotImplementedError
 
     @override
-    async def query(
+    async def _query(
         self,
+        query_vectors: list[list[float]],
         *,
-        query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
-        property_filter: FilterExpr | None = None,
+        score_threshold: float | None,
+        property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
         raise NotImplementedError
 
     @override
-    async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
+    async def _delete(self, record_uuids: list[UUID]) -> None:
         raise NotImplementedError
 
 

@@ -100,6 +100,15 @@ class CollectionLifecycleContract:
             await collection.query(query_vectors=[record.vector], limit=5)
         with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.delete(record_uuids=[record.uuid])
+        # So does an operation with nothing to send to the backend.
+        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+            await collection.upsert(records=[])
+        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+            await collection.query(query_vectors=[record.vector], limit=0)
+        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+            await collection.query(query_vectors=[], limit=5)
+        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+            await collection.delete(record_uuids=[])
 
     @pytest.mark.asyncio
     async def test_a_recreated_collection_starts_empty_and_the_old_handle_stays_stale(

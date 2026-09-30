@@ -3,7 +3,7 @@
 import hashlib
 import json
 import math
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
@@ -48,17 +48,10 @@ from .data_types import (
     Record,
     VectorStoreCollectionConfig,
 )
-from .declared_properties import require_declared_types
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
     RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
-)
-from .utils import (
-    require_dimensions,
-    require_valid_query_vector,
-    require_valid_score_threshold,
-    validate_filter,
 )
 
 _ID_FIELD = "id"
@@ -290,8 +283,6 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
         declared = self.config.indexed_properties_schema
-        require_declared_types(record.properties, declared)
-        require_dimensions(record.vector, self.config.vector_dimensions)
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
@@ -330,110 +321,75 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         return distance
 
     @override
-    async def upsert(
-        self,
-        *,
-        records: Iterable[Record],
-    ) -> None:
-        async with self._tracker("upsert"):
-            records = list(records)
-            if not records:
-                return
-
-            entities = [self._build_entity(record) for record in records]
-            await self._fence()
-            await self._client.upsert(
-                collection_name=self._native_collection_name,
-                data=entities,
-                timeout=self._request_timeout_seconds,
-            )
-            await self._fence()
+    async def _upsert(self, records: list[Record]) -> None:
+        await self._client.upsert(
+            collection_name=self._native_collection_name,
+            data=[self._build_entity(record) for record in records],
+            timeout=self._request_timeout_seconds,
+        )
 
     @override
-    async def query(
+    async def _query(
         self,
+        query_vectors: list[list[float]],
         *,
-        query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
-        property_filter: FilterExpr | None = None,
+        score_threshold: float | None,
+        property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
-        async with self._tracker("query"):
-            query_vectors = [list(query_vector) for query_vector in query_vectors]
-            if not query_vectors:
-                return []
-            for query_vector in query_vectors:
-                require_valid_query_vector(query_vector, self.config.vector_dimensions)
-            require_valid_score_threshold(score_threshold)
-            if limit <= 0:
-                return [QueryResult(matches=[]) for _ in query_vectors]
-
-            await self._fence()
-            filter_expr = _incarnation_filter(self._incarnation)
-            if property_filter is not None:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
-                property_expr = _milvus_filter(
-                    property_filter, self.config.indexed_properties_schema
-                )
-                filter_expr = f"({filter_expr}) && ({property_expr})"
-
-            raw_results = await self._client.search(
-                collection_name=self._native_collection_name,
-                data=query_vectors,
-                filter=filter_expr,
-                limit=limit,
-                search_params={"params": {"refine_k": _SEARCH_REFINE_K}},
-                output_fields=[_RECORD_UUID_FIELD],
-                anns_field=_VECTOR_FIELD,
-                timeout=self._request_timeout_seconds,
+        filter_expr = _incarnation_filter(self._incarnation)
+        if property_filter is not None:
+            property_expr = _milvus_filter(
+                property_filter, self.config.indexed_properties_schema
             )
+            filter_expr = f"({filter_expr}) && ({property_expr})"
 
-            results: list[QueryResult] = []
-            for raw_matches in raw_results:
-                matches: list[QueryMatch] = []
-                for raw_match in raw_matches:
-                    entity = cast(Mapping[str, Any], raw_match["entity"])
-                    score = self._score(raw_match["distance"])
-                    if not self._passes_threshold(
-                        score, score_threshold, self.config.similarity_metric
-                    ):
-                        continue
+        raw_results = await self._client.search(
+            collection_name=self._native_collection_name,
+            data=query_vectors,
+            filter=filter_expr,
+            limit=limit,
+            search_params={"params": {"refine_k": _SEARCH_REFINE_K}},
+            output_fields=[_RECORD_UUID_FIELD],
+            anns_field=_VECTOR_FIELD,
+            timeout=self._request_timeout_seconds,
+        )
 
-                    matches.append(
-                        QueryMatch(
-                            score=score,
-                            record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
-                        )
+        results: list[QueryResult] = []
+        for raw_matches in raw_results:
+            matches: list[QueryMatch] = []
+            for raw_match in raw_matches:
+                entity = cast(Mapping[str, Any], raw_match["entity"])
+                score = self._score(raw_match["distance"])
+                if not self._passes_threshold(
+                    score, score_threshold, self.config.similarity_metric
+                ):
+                    continue
+
+                matches.append(
+                    QueryMatch(
+                        score=score,
+                        record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
                     )
-
-                matches.sort(
-                    key=lambda match: match.score,
-                    reverse=self.config.similarity_metric.higher_is_better,
                 )
-                results.append(QueryResult(matches=matches))
 
-            return results
+            matches.sort(
+                key=lambda match: match.score,
+                reverse=self.config.similarity_metric.higher_is_better,
+            )
+            results.append(QueryResult(matches=matches))
+
+        return results
 
     @override
-    async def delete(
-        self,
-        *,
-        record_uuids: Iterable[UUID],
-    ) -> None:
-        async with self._tracker("delete"):
-            uuid_list = list(record_uuids)
-            if not uuid_list:
-                return
-            await self._fence()
-            primary_ids = [self._primary_id(uuid) for uuid in uuid_list]
-            result = await self._client.delete(
-                collection_name=self._native_collection_name,
-                ids=primary_ids,
-                timeout=self._request_timeout_seconds,
-            )
-            _require_every_key_accepted(result, len(primary_ids))
-            await self._fence()
+    async def _delete(self, record_uuids: list[UUID]) -> None:
+        primary_ids = [self._primary_id(uuid) for uuid in record_uuids]
+        result = await self._client.delete(
+            collection_name=self._native_collection_name,
+            ids=primary_ids,
+            timeout=self._request_timeout_seconds,
+        )
+        _require_every_key_accepted(result, len(primary_ids))
 
 
 class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
