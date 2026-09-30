@@ -231,8 +231,9 @@ class NebulaGraphConf(YamlSerializableMixin, PasswordMixin):
 
 # The retention floor: a write in flight when its collection is deleted lands
 # within its client's request timeout plus the server's own delay, seconds to
-# minutes, so the floor is this many request timeouts plus this many seconds.
-_RETENTION_FLOOR_REQUEST_TIMEOUTS = 10
+# minutes, so the floor is the request timeout times this factor, plus these
+# extra seconds.
+_RETENTION_FLOOR_TIMEOUT_FACTOR = 10
 _RETENTION_FLOOR_EXTRA_SECONDS = 300
 
 
@@ -241,13 +242,13 @@ def _require_retention_floor(
 ) -> None:
     """Raise unless the tombstone retention reaches the retention floor."""
     floor = (
-        _RETENTION_FLOOR_REQUEST_TIMEOUTS * request_timeout_seconds
+        _RETENTION_FLOOR_TIMEOUT_FACTOR * request_timeout_seconds
         + _RETENTION_FLOOR_EXTRA_SECONDS
     )
     if tombstone_retention_seconds < floor:
         raise ValueError(
             f"tombstone_retention_seconds ({tombstone_retention_seconds}) must be "
-            f"at least {_RETENTION_FLOOR_REQUEST_TIMEOUTS} x request_timeout_seconds "
+            f"at least {_RETENTION_FLOOR_TIMEOUT_FACTOR} x request_timeout_seconds "
             f"+ {_RETENTION_FLOOR_EXTRA_SECONDS}, {floor}"
         )
 
