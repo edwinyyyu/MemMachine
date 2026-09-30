@@ -255,15 +255,15 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     async def refused(namespace, config, incarnation) -> None:
         raise RuntimeError("the backend refused")
 
-    async def unreachable(namespace, name, *, incarnation=None) -> None:
+    async def unreachable(incarnation) -> None:
         raise ConnectionError("the registry is unreachable")
 
     store.prepare = refused
-    unregister_collection = registry.unregister
-    monkeypatch.setattr(registry, "unregister", unreachable)
+    unregister_incarnation = registry.unregister_incarnation
+    monkeypatch.setattr(registry, "unregister_incarnation", unreachable)
     with pytest.raises(RuntimeError, match="refused"):
         await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    monkeypatch.setattr(registry, "unregister", unregister_collection)
+    monkeypatch.setattr(registry, "unregister_incarnation", unregister_incarnation)
     store.prepare = _prepared
 
     assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None

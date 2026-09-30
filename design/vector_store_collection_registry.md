@@ -37,7 +37,7 @@ wrote it.
 
 - `VectorStoreCollectionRegistry` (`common/vector_store/collection_registry/`)
   is the ABC. Its operations are `startup`, `register`, `mark_live`, `get`,
-  `unregister` and `claim_purgeable_incarnation`.
+  `unregister`, `unregister_incarnation` and `claim_purgeable_incarnation`.
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
   supports PostgreSQL and SQLite, the dialects the segment store supports, and
   its params refuse any other dialect.
@@ -122,8 +122,8 @@ violation, or queued) is re-minted, up to 10 attempts, then
 `VectorStoreAttemptsExhaustedError`. The loop and its bound are the segment
 store's (#1661).
 
-**`mark_live(namespace, name, incarnation)`** marks the row live with an
-`UPDATE` conditional on the incarnation and on the row being pending, and
+**`mark_live(incarnation)`** marks the row live with an `UPDATE` conditional
+on the incarnation, which is unique, and on the row being pending, and
 answers whether it matched. A creation whose collection was deleted while its
 storage was prepared matches nothing, so it cannot mark live a collection
 registered under the name since.
@@ -133,17 +133,17 @@ configuration and whether it is live, or `None`. It is how a handle is opened:
 callers address collections by name, and the name is resolved to an
 incarnation once, at open. It is also how a handle is fenced (below).
 
-**`unregister(namespace, name, incarnation=None)`** is one transaction:
-`DELETE ... RETURNING` the collection's row, pending or live, then insert its
-tombstone with `enqueued_at = now()`. The collection is unreachable when it
-commits. Given an incarnation, it deletes the row only if it carries it: a
-creation whose storage preparation raised takes back its own registration
-that way, never one registered under the name since. Racing deleters
-serialize on the row's write lock and the loser deletes nothing, on
+**`unregister(namespace, name)`** is one transaction: `DELETE ... RETURNING`
+the collection's row, pending or live, then insert its tombstone with
+`enqueued_at = now()`. The collection is unreachable when it commits.
+**`unregister_incarnation(incarnation)`** does the same for the row carrying an
+incarnation: a creation whose storage preparation raised takes back its own
+registration that way, never one registered under the name since. Racing
+deleters serialize on the row's write lock and the loser deletes nothing, on
 PostgreSQL and SQLite alike, so a deletion is idempotent and queues one
-tombstone. (The segment
-store pins its row with the write fence its writes use before its queue
-insert; the registry has no such fence, so the `DELETE` goes first.)
+tombstone. (The segment store pins its row with the write fence its writes use
+before its queue insert; the registry has no such fence, so the `DELETE` goes
+first.)
 
 **`claim_purgeable_incarnation()`** is described in
 [purge](vector_store_purge.md).
@@ -238,11 +238,11 @@ where the backend is remote:
 ## Decisions
 
 - **`unregister` is keyed by name.** Callers delete collections by name, and
-  the name is resolved to its incarnation inside the deleting transaction; an
-  incarnation, when given, narrows the deletion to it. Keying it by
-  incarnation alone would make every caller resolve the name first, in a
-  separate transaction, and would still need the name-keyed path for a caller
-  that holds no handle.
+  the name is resolved to its incarnation inside the deleting transaction.
+  Keying it by incarnation alone would make every caller resolve the name
+  first, in a separate transaction, and would still need the name-keyed path
+  for a caller that holds no handle. `unregister_incarnation` serves the
+  caller that holds the incarnation: a creation taking back its own.
 - **The registry keeps the namespace** in the queue, because a dead
   incarnation's records are located by its namespace and configuration (on
   Qdrant and Milvus, the native collection they name). In #1627, where a store

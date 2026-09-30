@@ -171,7 +171,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             await self._prepare_storage_or_unregister(
                 namespace, name, config, incarnation
             )
-            await self._collection_registry.mark_live(namespace, name, incarnation)
+            await self._collection_registry.mark_live(incarnation)
 
     @override
     async def open_or_create_collection(
@@ -213,9 +213,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 await self._prepare_storage_or_unregister(
                     namespace, name, config, incarnation
                 )
-                if await self._collection_registry.mark_live(
-                    namespace, name, incarnation
-                ):
+                if await self._collection_registry.mark_live(incarnation):
                     return self._build_collection_handle(
                         namespace,
                         name,
@@ -250,9 +248,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             await self._prepare_storage(namespace, config, incarnation)
         except Exception:
             try:
-                await self._collection_registry.unregister(
-                    namespace, name, incarnation=incarnation
-                )
+                await self._collection_registry.unregister_incarnation(incarnation)
             except Exception:
                 logger.exception(
                     "Could not unregister collection (%r, %r) after its "

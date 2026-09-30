@@ -313,7 +313,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             ) from err
 
     @override
-    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> bool:
+    async def mark_live(self, incarnation: UUID) -> bool:
         # Conditional on the incarnation and on the row being pending, so a
         # creation marks the collection it registered, never one registered
         # under the name after its own was deleted.
@@ -322,8 +322,6 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 update(CollectionRow)
                 .where(
                     CollectionRow.vector_store_name == self._vector_store_name,
-                    CollectionRow.namespace == namespace,
-                    CollectionRow.name == name,
                     CollectionRow.incarnation == incarnation,
                     CollectionRow.live.is_(False),
                 )
@@ -356,26 +354,37 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         )
 
     @override
-    async def unregister(
-        self, namespace: str, name: str, *, incarnation: UUID | None = None
-    ) -> None:
-        # One transaction: the collection is unreachable once it commits,
-        # and the queue row is its incarnation's tombstone. The DELETE goes
-        # first and takes the row's write lock, so racing deleters serialize
-        # on it and the loser deletes nothing.
-        conditions = [
-            CollectionRow.vector_store_name == self._vector_store_name,
-            CollectionRow.namespace == namespace,
-            CollectionRow.name == name,
-        ]
-        if incarnation is not None:
-            conditions.append(CollectionRow.incarnation == incarnation)
+    async def unregister(self, namespace: str, name: str) -> None:
+        await self._unregister_where(
+            CollectionRow.namespace == namespace, CollectionRow.name == name
+        )
+
+    @override
+    async def unregister_incarnation(self, incarnation: UUID) -> None:
+        await self._unregister_where(CollectionRow.incarnation == incarnation)
+
+    async def _unregister_where(self, *conditions: ColumnElement[bool]) -> None:
+        """Delete this registry's collection row the conditions select, and queue its tombstone.
+
+        One transaction: the collection is unreachable once it commits, and
+        the queue row is its incarnation's tombstone. The DELETE goes first
+        and takes the row's write lock, so racing deleters serialize on it
+        and the loser deletes nothing.
+        """
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
                     delete(CollectionRow)
-                    .where(*conditions)
-                    .returning(CollectionRow.incarnation, CollectionRow.config)
+                    .where(
+                        CollectionRow.vector_store_name == self._vector_store_name,
+                        *conditions,
+                    )
+                    .returning(
+                        CollectionRow.incarnation,
+                        CollectionRow.namespace,
+                        CollectionRow.name,
+                        CollectionRow.config,
+                    )
                 )
             ).one_or_none()
             if row is None:
@@ -384,8 +393,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 insert(PurgeQueueRow).values(
                     incarnation=row.incarnation,
                     vector_store_name=self._vector_store_name,
-                    namespace=namespace,
-                    name=name,
+                    namespace=row.namespace,
+                    name=row.name,
                     config=row.config,
                     enqueued_at=func.now(),
                 )

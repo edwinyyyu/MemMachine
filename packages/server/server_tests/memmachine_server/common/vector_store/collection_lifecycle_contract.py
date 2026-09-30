@@ -393,7 +393,7 @@ class CollectionLifecycleContract:
             lost_registrations += 1
             incarnation = await register_collection(namespace, name, config)
             await store._prepare_storage(namespace, config, incarnation)
-            await registry.mark_live(namespace, name, incarnation)
+            await registry.mark_live(incarnation)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
         monkeypatch.setattr(registry, "register", another_process_wins)
@@ -437,7 +437,7 @@ class CollectionLifecycleContract:
             nonlocal lost_registrations
             lost_registrations += 1
             incarnation = await register_collection(namespace, name, other_config)
-            await registry.mark_live(namespace, name, incarnation)
+            await registry.mark_live(incarnation)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
         monkeypatch.setattr(registry, "register", another_process_wins)

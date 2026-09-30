@@ -189,7 +189,7 @@ async def test_create_registers_a_fresh_incarnation_with_the_config(
     registry = await _registry(sqlalchemy_engine, vector_store_name)
 
     incarnation = await registry.register(NAMESPACE, "c", CONFIG)
-    assert await registry.mark_live(NAMESPACE, "c", incarnation)
+    assert await registry.mark_live(incarnation)
 
     registered = await registry.get(NAMESPACE, "c")
     assert registered is not None
@@ -210,11 +210,11 @@ async def test_a_collection_is_pending_until_marked_live(
     assert await registry.get(NAMESPACE, "c") == RegisteredCollection(
         incarnation=incarnation, config=CONFIG, live=False
     )
-    assert await registry.mark_live(NAMESPACE, "c", incarnation)
+    assert await registry.mark_live(incarnation)
     assert await registry.get(NAMESPACE, "c") == RegisteredCollection(
         incarnation=incarnation, config=CONFIG, live=True
     )
-    assert not await registry.mark_live(NAMESPACE, "c", incarnation)
+    assert not await registry.mark_live(incarnation)
 
 
 @pytest.mark.asyncio
@@ -225,35 +225,39 @@ async def test_only_the_registered_incarnation_is_marked_live(
     prepared cannot mark live a collection registered under the name since."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     deleted = await registry.register(NAMESPACE, "c", CONFIG)
-    assert not await registry.mark_live(NAMESPACE, "c", uuid4())
+    assert not await registry.mark_live(uuid4())
     await registry.unregister(NAMESPACE, "c")
-    assert not await registry.mark_live(NAMESPACE, "c", deleted)
+    assert not await registry.mark_live(deleted)
 
     registered_since = await registry.register(NAMESPACE, "c", CONFIG)
 
-    assert not await registry.mark_live(NAMESPACE, "c", deleted)
+    assert not await registry.mark_live(deleted)
     assert await registry.get(NAMESPACE, "c") == RegisteredCollection(
         incarnation=registered_since, config=CONFIG, live=False
     )
-    assert await registry.mark_live(NAMESPACE, "c", registered_since)
+    assert await registry.mark_live(registered_since)
 
 
 @pytest.mark.asyncio
-async def test_unregistering_under_an_incarnation_spares_another(
+async def test_unregistering_an_incarnation_spares_the_name_registered_since(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = await registry.register(NAMESPACE, "c", CONFIG)
+    old = await registry.register(NAMESPACE, "c", CONFIG)
+    await registry.unregister(NAMESPACE, "c")
+    since = await registry.register(NAMESPACE, "c", CONFIG)
 
-    await registry.unregister(NAMESPACE, "c", incarnation=uuid4())
+    await registry.unregister_incarnation(old)
+    await registry.unregister_incarnation(uuid4())
     registered = await registry.get(NAMESPACE, "c")
     assert registered is not None
-    assert registered.incarnation == incarnation
-    assert await _queued(registry) == []
+    assert registered.incarnation == since
+    assert await _queued(registry) == [old]
 
-    await registry.unregister(NAMESPACE, "c", incarnation=incarnation)
+    await registry.unregister_incarnation(since)
+    await registry.unregister_incarnation(since)
     assert await registry.get(NAMESPACE, "c") is None
-    assert await _queued(registry) == [incarnation]
+    assert sorted(await _queued(registry)) == sorted([old, since])
 
 
 @pytest.mark.asyncio
@@ -269,7 +273,7 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
             await registry.register(NAMESPACE, "c", CONFIG)
         with pytest.raises(VectorStoreCollectionAlreadyExistsError):
             await registry.register(NAMESPACE, "c", OTHER_CONFIG)
-        await registry.mark_live(NAMESPACE, "c", incarnation)
+        await registry.mark_live(incarnation)
 
 
 @pytest.mark.parametrize(
@@ -307,8 +311,8 @@ async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else
     one = await first.register(NAMESPACE, "c", CONFIG)
     two = await second.register(NAMESPACE, "c", OTHER_CONFIG)
     assert one != two
-    assert await first.mark_live(NAMESPACE, "c", one)
-    assert await second.mark_live(NAMESPACE, "c", two)
+    assert await first.mark_live(one)
+    assert await second.mark_live(two)
     in_first = await first.get(NAMESPACE, "c")
     in_second = await second.get(NAMESPACE, "c")
     assert in_first is not None
@@ -375,7 +379,7 @@ async def test_a_recreated_name_gets_a_new_incarnation(
     await registry.unregister(NAMESPACE, "c")
 
     new = await registry.register(NAMESPACE, "c", CONFIG)
-    await registry.mark_live(NAMESPACE, "c", new)
+    await registry.mark_live(new)
 
     assert new != old
     registered = await registry.get(NAMESPACE, "c")
@@ -856,7 +860,7 @@ async def test_an_incarnation_colliding_with_a_live_collection_is_reminted(
     free, is a collision to mint again, not a taken name."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     live = await registry.register(NAMESPACE, "live", CONFIG)
-    await registry.mark_live(NAMESPACE, "live", live)
+    await registry.mark_live(live)
     minted = iter([live, uuid4()])
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",

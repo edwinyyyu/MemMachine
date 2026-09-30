@@ -104,22 +104,19 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> bool:
+    async def mark_live(self, incarnation: UUID) -> bool:
         """
-        Mark a pending collection live, once its storage is prepared.
+        Mark the collection registered, pending, under an incarnation live.
 
-        The collection is marked if it is still registered, pending, under
-        the incarnation.
+        Called once the collection's storage is prepared.
 
         Args:
-            namespace (str): Namespace of the collection.
-            name (str): Name of the collection within the namespace.
             incarnation (UUID): The incarnation `register` returned.
 
         Returns:
             bool:
-                Whether the collection was pending under the incarnation, and
-                is now live.
+                Whether a collection was registered, pending, under the
+                incarnation, and is now live.
         """
         raise NotImplementedError
 
@@ -139,21 +136,30 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def unregister(
-        self, namespace: str, name: str, *, incarnation: UUID | None = None
-    ) -> None:
+    async def unregister(self, namespace: str, name: str) -> None:
         """
-        Unregister a collection and queue its incarnation for purge.
+        Unregister the collection under a (namespace, name) and queue its incarnation for purge.
 
-        The collection, live or pending, is unreachable when this returns,
+        The collection, pending or live, is unreachable when this returns,
         and purge rounds reclaim its records later. Idempotent.
 
         Args:
             namespace (str): Namespace of the collection.
             name (str): Name of the collection within the namespace.
-            incarnation (UUID | None):
-                If given, unregister the collection only if it is registered
-                under this incarnation (default: None).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def unregister_incarnation(self, incarnation: UUID) -> None:
+        """
+        Unregister the collection registered under an incarnation and queue the incarnation for purge.
+
+        As `unregister`, for a caller holding the incarnation: a collection
+        registered since under the same (namespace, name) carries another
+        incarnation and stays. Idempotent.
+
+        Args:
+            incarnation (UUID): The incarnation the collection is registered under.
         """
         raise NotImplementedError
 
