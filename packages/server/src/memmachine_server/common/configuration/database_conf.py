@@ -229,25 +229,26 @@ class NebulaGraphConf(YamlSerializableMixin, PasswordMixin):
         return self.hosts
 
 
-# A write in flight when its collection is deleted lands within its client's
-# request timeout plus the server's own delay, seconds to minutes.
-_RETENTION_TIMEOUT_MULTIPLE = 10
-_RETENTION_MARGIN_SECONDS = 300
+# The retention floor: a write in flight when its collection is deleted lands
+# within its client's request timeout plus the server's own delay, seconds to
+# minutes, so the floor is this many request timeouts plus this many seconds.
+_RETENTION_FLOOR_REQUEST_TIMEOUTS = 10
+_RETENTION_FLOOR_EXTRA_SECONDS = 300
 
 
-def _require_retention_above_timeout(
+def _require_retention_floor(
     tombstone_retention_seconds: int, request_timeout_seconds: int
 ) -> None:
-    """Raise unless the retention is at least ten request timeouts and five minutes."""
+    """Raise unless the tombstone retention reaches the retention floor."""
     floor = (
-        _RETENTION_TIMEOUT_MULTIPLE * request_timeout_seconds
-        + _RETENTION_MARGIN_SECONDS
+        _RETENTION_FLOOR_REQUEST_TIMEOUTS * request_timeout_seconds
+        + _RETENTION_FLOOR_EXTRA_SECONDS
     )
     if tombstone_retention_seconds < floor:
         raise ValueError(
             f"tombstone_retention_seconds ({tombstone_retention_seconds}) must be "
-            f"at least {_RETENTION_TIMEOUT_MULTIPLE} x request_timeout_seconds "
-            f"+ {_RETENTION_MARGIN_SECONDS}, {floor}"
+            f"at least {_RETENTION_FLOOR_REQUEST_TIMEOUTS} x request_timeout_seconds "
+            f"+ {_RETENTION_FLOOR_EXTRA_SECONDS}, {floor}"
         )
 
 
@@ -298,7 +299,7 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
 
     @model_validator(mode="after")
     def _validate_retention(self) -> Self:
-        _require_retention_above_timeout(
+        _require_retention_floor(
             self.tombstone_retention_seconds, self.request_timeout_seconds
         )
         return self
@@ -401,7 +402,7 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         """Validate Milvus configuration."""
         if not self.uri:
             raise ValueError("MilvusConf requires a non-empty 'uri'")
-        _require_retention_above_timeout(
+        _require_retention_floor(
             self.tombstone_retention_seconds, self.request_timeout_seconds
         )
         return self
