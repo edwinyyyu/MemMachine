@@ -834,6 +834,25 @@ class TestFilters:
                 ]
             )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "vector",
+        [
+            [1.0] * (VECTOR_DIM - 1),
+            [1.0] * (VECTOR_DIM + 1),
+            [math.nan] + [1.0] * (VECTOR_DIM - 1),
+            [math.inf] + [1.0] * (VECTOR_DIM - 1),
+        ],
+        ids=["too_short", "too_long", "nan", "inf"],
+    )
+    async def test_a_vector_the_collection_cannot_hold_is_refused(
+        self, collection, vector
+    ):
+        with pytest.raises(ValueError, match="Vector"):
+            await collection.upsert(records=[_make_record(vector=vector)])
+        with pytest.raises(ValueError, match="Vector"):
+            await collection.query(query_vectors=[vector], limit=1)
+
 
 class TestScores:
     @pytest.mark.asyncio

@@ -1,6 +1,8 @@
 """Shared utilities for vector store implementations."""
 
+import math
 import re
+from collections.abc import Sequence
 
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
@@ -45,6 +47,23 @@ def require_identifiers(namespace: str, name: str) -> None:
         )
     if not validate_identifier(name):
         raise ValueError(f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes")
+
+
+def require_valid_vector(vector: Sequence[float], dimensions: int) -> None:
+    """Raise ValueError unless a vector has the collection's dimensions and finite coordinates."""
+    if len(vector) != dimensions:
+        raise ValueError(
+            f"Vector has {len(vector)} dimensions; the collection has {dimensions}"
+        )
+    if not all(map(math.isfinite, vector)):
+        position = next(
+            position
+            for position, coordinate in enumerate(vector)
+            if not math.isfinite(coordinate)
+        )
+        raise ValueError(
+            f"Vector coordinate {position} is not finite: {vector[position]}"
+        )
 
 
 def validate_filter(expr: FilterExpr) -> bool:

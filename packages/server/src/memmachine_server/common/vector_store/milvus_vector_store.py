@@ -54,7 +54,7 @@ from .registry_backed_vector_store import (
     RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
 )
-from .utils import validate_filter
+from .utils import require_valid_vector, validate_filter
 
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
@@ -282,6 +282,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         """Build a Milvus entity from a vector store record."""
         declared = self._config.indexed_properties_schema
         require_declared_types(record.properties, declared)
+        require_valid_vector(record.vector, self._config.vector_dimensions)
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
@@ -352,6 +353,8 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             if not query_vectors:
                 return []
+            for query_vector in query_vectors:
+                require_valid_vector(query_vector, self._config.vector_dimensions)
             if limit <= 0:
                 return [QueryResult(matches=[]) for _ in query_vectors]
 

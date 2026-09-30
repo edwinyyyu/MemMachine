@@ -54,7 +54,7 @@ from .registry_backed_vector_store import (
     RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
 )
-from .utils import validate_filter
+from .utils import require_valid_vector, validate_filter
 
 # Point payload keys (stored on every Qdrant point).
 # System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
@@ -278,6 +278,7 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         require_declared_types(
             record.properties, self._config.indexed_properties_schema
         )
+        require_valid_vector(record.vector, self._config.vector_dimensions)
         payload: dict[str, PropertyValue] = {
             _PAYLOAD_INCARNATION: str(self._incarnation),
             _PAYLOAD_RECORD_UUID: str(record.uuid),
@@ -338,6 +339,8 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             if not query_vectors:
                 return []
+            for query_vector in query_vectors:
+                require_valid_vector(query_vector, self._config.vector_dimensions)
 
             await self._fence()
             incarnation_filter = _incarnation_filter(self._incarnation)
