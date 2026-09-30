@@ -8,7 +8,7 @@ from uuid import UUID, uuid5
 
 import grpc
 import grpc.aio
-from pydantic import BaseModel, Field, InstanceOf
+from pydantic import Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
@@ -38,23 +38,23 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
-from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
+from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.utils import ensure_tz_aware
 
-from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
+from .collection_registry import RegisteredCollection
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
-    VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionHandleStaleError,
 )
 from .declared_properties import require_declared_types
-from .utils import require_identifiers, validate_filter
-from .vector_store import VectorStore, VectorStoreCollection
+from .registry_backed_vector_store import (
+    RegistryBackedVectorStore,
+    RegistryBackedVectorStoreCollection,
+    RegistryBackedVectorStoreParams,
+)
+from .utils import validate_filter
 
 # Point payload keys (stored on every Qdrant point).
 # System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
@@ -74,11 +74,6 @@ so this is where a query reads the record UUID back, and where someone
 inspecting a collection finds a record by hand.
 """
 
-# Consecutive lost creation races before open-or-create gives up: every
-# retry requires another process to have created and then deleted the
-# collection in between, so this depth means something else is wrong.
-_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
-
 
 def _incarnation_filter(incarnation: UUID) -> models.Filter:
     """Build a Qdrant filter that matches the points of one collection incarnation."""
@@ -92,7 +87,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
     )
 
 
-class QdrantVectorStoreCollection(VectorStoreCollection):
+class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
     """A collection backed by Qdrant."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
@@ -259,29 +254,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         is_live: Callable[[UUID], Awaitable[bool]],
     ) -> None:
         """Initialize with a Qdrant client and the incarnation the handle is bound to."""
+        super().__init__(
+            namespace=namespace,
+            name=name,
+            incarnation=incarnation,
+            config=config,
+            tracker=tracker,
+            is_live=is_live,
+        )
         self._client = client
-        self._tracker = tracker
         self._native_collection_name = native_collection_name
-        self._namespace = namespace
-        self._name = name
-        self._incarnation = incarnation
-        self._config = config
-        self._is_live = is_live
-
-    async def _fence(self) -> None:
-        """Raise if this handle's collection has been deleted.
-
-        Called before every operation, and again after a write, so a write
-        that raced the deletion raises instead of reporting success. Such a
-        write may still have landed; the purge reclaims it.
-        """
-        if not await self._is_live(self._incarnation):
-            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
-
-    @property
-    @override
-    def config(self) -> VectorStoreCollectionConfig:
-        return self._config
 
     def _point_id(self, record_uuid: UUID) -> UUID:
         """The point id of a record: a UUIDv5 of the record UUID under the incarnation.
@@ -420,49 +402,26 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             await self._fence()
 
 
-class QdrantVectorStoreParams(BaseModel):
+class QdrantVectorStoreParams(RegistryBackedVectorStoreParams):
     """
     Parameters for QdrantVectorStore.
 
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.
-        collection_registry (VectorStoreCollectionRegistry):
-            Registry of the store's collections, shared by the stores, in any
-            process, whose clients connect to the same Qdrant, and by no other
-            store. Started by the caller.
-        metrics_factory (MetricsFactory | None):
-            An instance of MetricsFactory for collecting usage metrics
-            (default: None).
     """
 
     client: InstanceOf[AsyncQdrantClient] = Field(
         ...,
         description="Async Qdrant client instance",
     )
-    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
-        ...,
-        description=(
-            "Registry of the store's collections, shared by the stores, in any "
-            "process, whose clients connect to the same Qdrant, and by no "
-            "other store. Started by the caller"
-        ),
-    )
-    metrics_factory: InstanceOf[MetricsFactory] | None = Field(
-        None,
-        description="An instance of MetricsFactory for collecting usage metrics",
-    )
 
 
-class QdrantVectorStore(VectorStore):
+class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
     """Asynchronous Qdrant-based implementation of VectorStore.
 
     A logical collection is the points carrying its incarnation in their
-    payload, inside a native collection shared by the logical collections of
-    one namespace and configuration. The `VectorStoreCollectionRegistry` the
-    store is given mints incarnations and arbitrates creation, deletion and
-    reclamation across processes. Any process connected to the same Qdrant,
-    with the same registry, may serve any collection.
+    payload.
 
     On a single node, queries reflect a write as soon as it returns.
     """
@@ -518,32 +477,15 @@ class QdrantVectorStore(VectorStore):
 
     def __init__(self, params: QdrantVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        super().__init__()
+        super().__init__(params, metrics_prefix="vector_store_qdrant")
         self._client: AsyncQdrantClient = params.client
-
-        self._collection_registry = params.collection_registry
 
         self._hnsw_m = 16
 
-        self._tracker = OperationTracker(
-            params.metrics_factory,
-            prefix="vector_store_qdrant",
-        )
-
     @override
-    async def startup(self) -> None:
-        # The caller owns the client's and the registry's lifecycles.
-        pass
-
-    @override
-    async def shutdown(self) -> None:
-        # The caller owns the client's and the registry's lifecycles.
-        pass
-
     def _build_collection_handle(
         self, namespace: str, name: str, registered: RegisteredCollection
     ) -> QdrantVectorStoreCollection:
-        """Build a QdrantVectorStoreCollection handle bound to the registered incarnation."""
         return QdrantVectorStoreCollection(
             client=self._client,
             native_collection_name=QdrantVectorStore._build_native_collection_name(
@@ -557,10 +499,10 @@ class QdrantVectorStore(VectorStore):
             is_live=self._collection_registry.is_live,
         )
 
+    @override
     async def _create_native_collection(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
-        """Idempotently create the native Qdrant collection and payload indexes."""
         native_collection_name = QdrantVectorStore._build_native_collection_name(
             namespace, config
         )
@@ -613,117 +555,33 @@ class QdrantVectorStore(VectorStore):
                     raise
 
     @override
-    async def create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        require_identifiers(namespace, name)
-        async with self._tracker("create_collection"):
-            # The native collection first, the registry row last, so a crash
-            # between the two leaves at worst an empty native collection,
-            # which the next creation of the same configuration uses. The
-            # registry's primary key decides a creation race.
-            await self._create_native_collection(namespace, config)
-            await self._collection_registry.register(namespace, name, config)
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> QdrantVectorStoreCollection:
-        require_identifiers(namespace, name)
-        async with self._tracker("open_or_create_collection"):
-            attempts = 0
-            # Read-then-create, retried: losing the create means a racing
-            # creator won (open its row), and finding no row after losing
-            # means a racing deleter removed the winner (create again).
-            while True:
-                registered = await self._collection_registry.get(namespace, name)
-                if registered is not None:
-                    if registered.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, registered.config, config
-                        )
-                    return self._build_collection_handle(namespace, name, registered)
-                await self._create_native_collection(namespace, config)
-                try:
-                    incarnation = await self._collection_registry.register(
-                        namespace, name, config
-                    )
-                except VectorStoreCollectionAlreadyExistsError as err:
-                    attempts += 1
-                    if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
-                        raise VectorStoreAttemptsExhaustedError(
-                            f"Opening or creating collection ({namespace!r}, "
-                            f"{name!r}) made no progress after "
-                            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
-                        ) from err
-                    continue
-                return self._build_collection_handle(
-                    namespace,
-                    name,
-                    RegisteredCollection(incarnation=incarnation, config=config),
-                )
-
-    @override
-    async def open_collection(
-        self, *, namespace: str, name: str
-    ) -> QdrantVectorStoreCollection | None:
-        require_identifiers(namespace, name)
-        registered = await self._collection_registry.get(namespace, name)
-        if registered is None:
-            return None
-        return self._build_collection_handle(namespace, name, registered)
-
-    @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
-        require_identifiers(namespace, name)
-        async with self._tracker("delete_collection"):
-            # One registry transaction: the collection is unreachable when
-            # it commits, and its points wait on the queue for the purge.
-            await self._collection_registry.unregister(namespace, name)
-
-    @override
-    async def purge_deleted_collections(self) -> bool:
-        # One purge round per call, on the tombstone that came due first: if
-        # a point remains under its incarnation, one filter-delete removes
-        # them all. The registry keeps or removes the tombstone by whether
-        # the round found points.
-        async with (
-            self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_purgeable_incarnation() as claim,
-        ):
-            if claim is None:
-                return False
-            native_collection_name = QdrantVectorStore._build_native_collection_name(
-                claim.namespace, claim.config
+    async def _purge_round(
+        self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        # If a point remains under the incarnation, one filter-delete removes
+        # them all.
+        native_collection_name = QdrantVectorStore._build_native_collection_name(
+            namespace, config
+        )
+        try:
+            points, _ = await self._client.scroll(
+                collection_name=native_collection_name,
+                scroll_filter=_incarnation_filter(incarnation),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
             )
-            try:
-                points, _ = await self._client.scroll(
-                    collection_name=native_collection_name,
-                    scroll_filter=_incarnation_filter(claim.incarnation),
-                    limit=1,
-                    with_payload=False,
-                    with_vectors=False,
-                )
-            except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
-                # The native collection is gone with everything in it.
-                if not QdrantVectorStore._is_not_found_error(e):
-                    raise
-                points = []
-            claim.any_records_found = bool(points)
-            if claim.any_records_found:
-                await self._client.delete(
-                    collection_name=native_collection_name,
-                    points_selector=models.FilterSelector(
-                        filter=_incarnation_filter(claim.incarnation),
-                    ),
-                    wait=True,
-                )
-            return claim.any_records_found
+        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            # The native collection is gone with everything in it.
+            if not QdrantVectorStore._is_not_found_error(e):
+                raise
+            points = []
+        if points:
+            await self._client.delete(
+                collection_name=native_collection_name,
+                points_selector=models.FilterSelector(
+                    filter=_incarnation_filter(incarnation),
+                ),
+                wait=True,
+            )
+        return bool(points)

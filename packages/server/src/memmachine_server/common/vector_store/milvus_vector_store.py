@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
-from pydantic import BaseModel, Field, InstanceOf
+from pydantic import Field, InstanceOf
 from pymilvus import AsyncMilvusClient, DataType
 from pymilvus.exceptions import MilvusException
 
@@ -34,27 +34,27 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
-from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
+from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import (
     PROPERTY_VALUE_KEY,
     encode_properties,
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
-from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
+from .collection_registry import RegisteredCollection
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
-    VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionHandleStaleError,
 )
 from .declared_properties import require_declared_types
-from .utils import require_identifiers, validate_filter
-from .vector_store import VectorStore, VectorStoreCollection
+from .registry_backed_vector_store import (
+    RegistryBackedVectorStore,
+    RegistryBackedVectorStoreCollection,
+    RegistryBackedVectorStoreParams,
+)
+from .utils import validate_filter
 
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
@@ -94,11 +94,6 @@ _VECTOR_INDEX_PARAMS: dict[str, Any] = {"M": 16, "efConstruction": 128}
 # A search keeps at least this many candidates, and one per result when it
 # asks for more: knowhere refuses an ef below the result count.
 _MIN_SEARCH_EF = 128
-
-# Consecutive lost creation races before open-or-create gives up: every
-# retry requires another process to have created and then deleted the
-# collection in between, so this depth means something else is wrong.
-_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 def _expr_string(value: str) -> str:
@@ -228,7 +223,7 @@ def _incarnation_filter(incarnation: UUID) -> str:
     return f"{_PARTITION_KEY_FIELD} == {_expr_string(str(incarnation))}"
 
 
-class MilvusVectorStoreCollection(VectorStoreCollection):
+class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
     """A logical collection backed by Milvus."""
 
     @staticmethod
@@ -257,30 +252,17 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         request_timeout_seconds: int,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
+        super().__init__(
+            namespace=namespace,
+            name=name,
+            incarnation=incarnation,
+            config=config,
+            tracker=tracker,
+            is_live=is_live,
+        )
         self._client = client
         self._native_collection_name = native_collection_name
-        self._namespace = namespace
-        self._name = name
-        self._incarnation = incarnation
-        self._config = config
-        self._tracker = tracker
-        self._is_live = is_live
         self._request_timeout_seconds = request_timeout_seconds
-
-    async def _fence(self) -> None:
-        """Raise if this handle's collection has been deleted.
-
-        Called before every operation, and again after a write, so a write
-        that raced the deletion raises instead of reporting success. Such a
-        write may still have landed; the purge reclaims it.
-        """
-        if not await self._is_live(self._incarnation):
-            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
-
-    @property
-    @override
-    def config(self) -> VectorStoreCollectionConfig:
-        return self._config
 
     def _primary_id(self, record_uuid: UUID) -> str:
         """The primary key of a record: the incarnation and the record UUID.
@@ -435,17 +417,13 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             await self._fence()
 
 
-class MilvusVectorStoreParams(BaseModel):
+class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
     """
     Parameters for MilvusVectorStore.
 
     Attributes:
         client (AsyncMilvusClient):
             Async Milvus client instance.
-        collection_registry (VectorStoreCollectionRegistry):
-            Registry of the store's collections, shared by the stores, in any
-            process, whose clients connect to the same Milvus database, and by
-            no other store. Started by the caller.
         request_timeout_seconds (int):
             Seconds any request to Milvus may take (default: 30).
         max_varchar_length (int):
@@ -456,22 +434,11 @@ class MilvusVectorStoreParams(BaseModel):
             The most entities one purge round lists and deletes, at most the
             server's quotaAndLimits.limits.maxQueryResultWindow (default:
             10000).
-        metrics_factory (MetricsFactory | None):
-            An instance of MetricsFactory for collecting usage metrics
-            (default: None).
     """
 
     client: InstanceOf[AsyncMilvusClient] = Field(
         ...,
         description="Async Milvus client instance",
-    )
-    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
-        ...,
-        description=(
-            "Registry of the store's collections, shared by the stores, in any "
-            "process, whose clients connect to the same Milvus database, and by no "
-            "other store. Started by the caller"
-        ),
     )
     request_timeout_seconds: int = Field(
         30, gt=0, description="Seconds any request to Milvus may take"
@@ -492,22 +459,13 @@ class MilvusVectorStoreParams(BaseModel):
             "server's quotaAndLimits.limits.maxQueryResultWindow"
         ),
     )
-    metrics_factory: InstanceOf[MetricsFactory] | None = Field(
-        None,
-        description="An instance of MetricsFactory for collecting usage metrics",
-    )
 
 
-class MilvusVectorStore(VectorStore):
+class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
     """Asynchronous Milvus-based implementation of VectorStore.
 
     A logical collection is the entities carrying its incarnation in the
-    partition-key field, inside a native collection shared by the logical
-    collections of one namespace and configuration. The
-    `VectorStoreCollectionRegistry` the store is given mints incarnations
-    and arbitrates creation, deletion and reclamation across processes. Any
-    process connected to the same Milvus database, with the same registry, may
-    serve any collection.
+    partition-key field.
 
     Reads run at Milvus's default consistency level, Bounded: a query
     reflects every write that returned at least the server's
@@ -551,31 +509,16 @@ class MilvusVectorStore(VectorStore):
 
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        super().__init__()
+        super().__init__(params, metrics_prefix="vector_store_milvus")
         self._client = params.client
-        self._collection_registry = params.collection_registry
         self._request_timeout_seconds = params.request_timeout_seconds
         self._max_varchar_length = params.max_varchar_length
         self._purge_batch_size = params.purge_batch_size
-        self._tracker = OperationTracker(
-            params.metrics_factory,
-            prefix="vector_store_milvus",
-        )
 
     @override
-    async def startup(self) -> None:
-        # The caller owns the client's and the registry's lifecycles.
-        pass
-
-    @override
-    async def shutdown(self) -> None:
-        # The caller owns the client's and the registry's lifecycles.
-        pass
-
     def _build_collection_handle(
         self, namespace: str, name: str, registered: RegisteredCollection
     ) -> MilvusVectorStoreCollection:
-        """Build a MilvusVectorStoreCollection handle bound to the registered incarnation."""
         return MilvusVectorStoreCollection(
             client=self._client,
             native_collection_name=MilvusVectorStore._build_native_collection_name(
@@ -590,14 +533,11 @@ class MilvusVectorStore(VectorStore):
             request_timeout_seconds=self._request_timeout_seconds,
         )
 
+    @override
     async def _create_native_collection(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
-        """Ensure the native Milvus collection exists, is indexed and is loaded.
-
-        Each step runs when it is missing, so the next creation completes one
-        that failed part way.
-        """
+        # Created, indexed and loaded as separate steps, each when missing.
         self._validate_metric(config.similarity_metric)
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
@@ -716,118 +656,34 @@ class MilvusVectorStore(VectorStore):
         )
 
     @override
-    async def create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        require_identifiers(namespace, name)
-        async with self._tracker("create_collection"):
-            # The native collection first, the registry row last, so a crash
-            # between the two leaves at worst an empty native collection,
-            # which the next creation of the same configuration uses. The
-            # registry's primary key decides a creation race.
-            await self._create_native_collection(namespace, config)
-            await self._collection_registry.register(namespace, name, config)
-
-    @override
-    async def open_or_create_collection(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> MilvusVectorStoreCollection:
-        require_identifiers(namespace, name)
-        async with self._tracker("open_or_create_collection"):
-            attempts = 0
-            # Read-then-create, retried: losing the create means a racing
-            # creator won (open its row), and finding no row after losing
-            # means a racing deleter removed the winner (create again).
-            while True:
-                registered = await self._collection_registry.get(namespace, name)
-                if registered is not None:
-                    if registered.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, registered.config, config
-                        )
-                    return self._build_collection_handle(namespace, name, registered)
-                await self._create_native_collection(namespace, config)
-                try:
-                    incarnation = await self._collection_registry.register(
-                        namespace, name, config
-                    )
-                except VectorStoreCollectionAlreadyExistsError as err:
-                    attempts += 1
-                    if attempts >= _MAX_OPEN_OR_CREATE_ATTEMPTS:
-                        raise VectorStoreAttemptsExhaustedError(
-                            f"Opening or creating collection ({namespace!r}, "
-                            f"{name!r}) made no progress after "
-                            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
-                        ) from err
-                    continue
-                return self._build_collection_handle(
-                    namespace,
-                    name,
-                    RegisteredCollection(incarnation=incarnation, config=config),
-                )
-
-    @override
-    async def open_collection(
-        self, *, namespace: str, name: str
-    ) -> MilvusVectorStoreCollection | None:
-        require_identifiers(namespace, name)
-        registered = await self._collection_registry.get(namespace, name)
-        if registered is None:
-            return None
-        return self._build_collection_handle(namespace, name, registered)
-
-    @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
-        require_identifiers(namespace, name)
-        async with self._tracker("delete_collection"):
-            # One registry transaction: the collection is unreachable when
-            # it commits, and its entities wait on the queue for the purge.
-            await self._collection_registry.unregister(namespace, name)
-
-    @override
-    async def purge_deleted_collections(self) -> bool:
-        # One purge round per call, on the tombstone that came due first: it
-        # lists up to a batch of the incarnation's entities and deletes them
-        # by primary key. A batch keeps each delete small; one filter-delete
-        # of a large incarnation stalls every tenant while Milvus applies it.
-        async with (
-            self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_purgeable_incarnation() as claim,
+    async def _purge_round(
+        self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        # Lists up to a batch of the incarnation's entities and deletes them by
+        # primary key. A batch keeps each delete small; one filter-delete of a
+        # large incarnation stalls every tenant while Milvus applies it.
+        native_collection_name = MilvusVectorStore._build_native_collection_name(
+            namespace, config
+        )
+        if not await self._client.has_collection(
+            native_collection_name,
+            timeout=self._request_timeout_seconds,
         ):
-            if claim is None:
-                return False
-            native_collection_name = MilvusVectorStore._build_native_collection_name(
-                claim.namespace, claim.config
-            )
-            if await self._client.has_collection(
-                native_collection_name,
+            # The native collection is gone with everything in it.
+            return False
+        listed = await self._client.query(
+            collection_name=native_collection_name,
+            filter=_incarnation_filter(incarnation),
+            output_fields=[_ID_FIELD],
+            limit=self._purge_batch_size,
+            timeout=self._request_timeout_seconds,
+        )
+        primary_ids = [entity[_ID_FIELD] for entity in listed]
+        if primary_ids:
+            result = await self._client.delete(
+                collection_name=native_collection_name,
+                ids=primary_ids,
                 timeout=self._request_timeout_seconds,
-            ):
-                listed = await self._client.query(
-                    collection_name=native_collection_name,
-                    filter=_incarnation_filter(claim.incarnation),
-                    output_fields=[_ID_FIELD],
-                    limit=self._purge_batch_size,
-                    timeout=self._request_timeout_seconds,
-                )
-                primary_ids = [entity[_ID_FIELD] for entity in listed]
-            else:
-                # The native collection is gone with everything in it.
-                primary_ids = []
-            claim.any_records_found = bool(primary_ids)
-            if claim.any_records_found:
-                result = await self._client.delete(
-                    collection_name=native_collection_name,
-                    ids=primary_ids,
-                    timeout=self._request_timeout_seconds,
-                )
-                _require_every_key_accepted(result, len(primary_ids))
-            return claim.any_records_found
+            )
+            _require_every_key_accepted(result, len(primary_ids))
+        return bool(primary_ids)

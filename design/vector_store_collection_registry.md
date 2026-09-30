@@ -41,6 +41,12 @@ wrote it.
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
   supports PostgreSQL and SQLite, the dialects the segment store supports, and
   its params refuse any other dialect.
+- `RegistryBackedVectorStore` (`common/vector_store/registry_backed_vector_store.py`)
+  is the base of the Qdrant and Milvus stores and makes every registry call
+  they make: create, open-or-create, open and delete, the purge claim, and a
+  handle's liveness fence. A subclass supplies the backend steps: creating a
+  native collection, building a handle, and one purge round over an
+  incarnation's records.
 - Every store whose client connects to the same backend data, the same Qdrant
   server or cluster or the same Milvus database, must share one registry, in
   any process; a store connected to other data must not. A store reclaims its
