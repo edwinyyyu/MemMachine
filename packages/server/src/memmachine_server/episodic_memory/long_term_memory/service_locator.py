@@ -1,5 +1,6 @@
 """Helpers for building long-term memory from configuration."""
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -57,6 +58,10 @@ from .long_term_memory import (
 logger = logging.getLogger(__name__)
 
 _EVENT_BACKEND_NAMESPACE = "long_term_memory"
+# Opens of a collection another worker created, a second apart, before the
+# locator gives up waiting for it to become live.
+_MAX_OPEN_ATTEMPTS = 10
+_OPEN_RETRY_DELAY_SECONDS = 1
 
 
 async def long_term_memory_params_from_config(
@@ -127,22 +132,26 @@ async def _event_params(
             },
         )
         # The registry arbitrates creation across processes: a worker that
-        # loses the race to another creating the same partition opens the
-        # winner's collection.
+        # loses the race opens the winner's collection, once it is live.
         with contextlib.suppress(VectorStoreCollectionAlreadyExistsError):
             await vector_store.create_collection(
                 namespace=_EVENT_BACKEND_NAMESPACE,
                 name=partition_key,
                 config=collection_config,
             )
-        collection = await vector_store.open_collection(
-            namespace=_EVENT_BACKEND_NAMESPACE,
-            name=partition_key,
-        )
-        if collection is None:
+        for attempt in range(_MAX_OPEN_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(_OPEN_RETRY_DELAY_SECONDS)
+            collection = await vector_store.open_collection(
+                namespace=_EVENT_BACKEND_NAMESPACE,
+                name=partition_key,
+            )
+            if collection is not None:
+                break
+        else:
             raise RuntimeError(
-                f"Failed to open vector store collection after creation for "
-                f"partition {partition_key!r}"
+                f"The vector store collection of partition {partition_key!r} "
+                f"did not become live after {_MAX_OPEN_ATTEMPTS} attempts to open it"
             )
 
     partition = await segment_store.open_or_create_partition(

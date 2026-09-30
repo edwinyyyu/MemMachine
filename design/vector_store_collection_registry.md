@@ -183,7 +183,10 @@ for it rather than registering; no row means create; losing the create means a
 racing creator took the name; losing the mark means a racing deleter removed
 the collection while its storage was prepared, so the loop creates again.
 After 10 attempts it raises `VectorStoreAttemptsExhaustedError`, which says so
-when the collection stayed pending.
+when the collection stayed pending. The event backend's service locator
+creates a session's collection strictly when it finds none and, on losing that
+create, opens the winner's once it is live, polling a second apart, since
+open-or-create is to be removed (#1625).
 
 The contract tests (`collection_lifecycle_contract.py`) pin both outcomes of a
 lost race on Qdrant and Milvus: the loser opens the winner's collection, or

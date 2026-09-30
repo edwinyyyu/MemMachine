@@ -1,6 +1,6 @@
 """Unit tests for service_locator helpers."""
 
-from unittest.mock import create_autospec
+from unittest.mock import NonCallableMagicMock, create_autospec
 
 import pytest
 
@@ -24,6 +24,7 @@ from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
     PARTITION_KEY_MAX_BYTES,
     validate_partition_key,
 )
+from memmachine_server.episodic_memory.long_term_memory import service_locator
 from memmachine_server.episodic_memory.long_term_memory.service_locator import (
     _EVENT_BACKEND_NAMESPACE,
     _event_params,
@@ -118,21 +119,10 @@ def test_resolve_user_properties_schema_rejects_unknown_type_name():
         _resolve_user_properties_schema({"customer_tier": "date"})
 
 
-@pytest.mark.asyncio
-async def test_event_params_opens_the_collection_a_racing_creator_won():
-    """Two workers can create a session's collection at once; the loser opens the winner's.
-
-    The vector store's registry arbitrates creation across processes, so the
-    strict create this locator issues when the collection is absent can lose
-    to another worker's; the locator then opens the collection that exists
-    instead of failing the request.
-    """
-    config = EventLongTermMemoryConf(
-        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
-    )
-    collection = create_autospec(VectorStoreCollection, instance=True)
-    vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.side_effect = [None, collection]
+def _resource_manager_losing_the_create(
+    vector_store: NonCallableMagicMock,
+) -> CommonResourceManager:
+    """A resource manager whose vector store's strict create loses the race."""
     vector_store.create_collection.side_effect = (
         VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
     )
@@ -152,9 +142,45 @@ async def test_event_params_opens_the_collection_a_racing_creator_won():
         EpisodeStorage, instance=True
     )
     resource_manager.get_metrics_factory.return_value = None
+    return resource_manager
 
-    params = await _event_params(config, resource_manager)
+
+@pytest.mark.asyncio
+async def test_event_params_opens_the_collection_a_racing_creator_won(monkeypatch):
+    """A worker whose strict create loses to another's opens the winner's
+    collection, waiting while the winner's is pending."""
+    monkeypatch.setattr(service_locator, "_OPEN_RETRY_DELAY_SECONDS", 0)
+    config = EventLongTermMemoryConf(
+        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
+    )
+    collection = create_autospec(VectorStoreCollection, instance=True)
+    vector_store = create_autospec(VectorStore, instance=True)
+    # Absent, then pending twice, then live.
+    vector_store.open_collection.side_effect = [None, None, None, collection]
+
+    params = await _event_params(
+        config, _resource_manager_losing_the_create(vector_store)
+    )
 
     assert params.vector_store_collection is collection
     vector_store.create_collection.assert_awaited_once()
-    assert vector_store.open_collection.await_count == 2
+    assert vector_store.open_collection.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_event_params_gives_up_on_a_collection_that_stays_pending(monkeypatch):
+    monkeypatch.setattr(service_locator, "_OPEN_RETRY_DELAY_SECONDS", 0)
+    config = EventLongTermMemoryConf(
+        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
+    )
+    vector_store = create_autospec(VectorStore, instance=True)
+    vector_store.open_collection.return_value = None
+
+    with pytest.raises(RuntimeError, match="did not become live"):
+        await _event_params(config, _resource_manager_losing_the_create(vector_store))
+
+    # The first look, then every attempt after losing the create.
+    assert (
+        vector_store.open_collection.await_count
+        == 1 + service_locator._MAX_OPEN_ATTEMPTS
+    )
