@@ -92,6 +92,17 @@ tenant; one run):
 | HNSW_SQ, `ef = max(k, 64)`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | 0.99 / 1.00 / 1.00 / 1.00 |
 | HNSW_SQ, `ef = 64` | 0.93 / 0.96 / 1.00 / 0.99 | every query refused |
 
+The same data, the store's index against Qdrant's defaults and the Qdrant
+store (one run; memory is the loaded collection's anonymous memory, which
+leaves out the vectors Qdrant keeps memory-mapped):
+
+| Index and search | Recall@10 (100k / 10k / 1k / 100) | Recall@100 | p50 | Memory |
+|---|---|---|---|---|
+| Float32 HNSW, M=16, efConstruction=128, `ef = max(k, 128)` (the store) | 0.995 / 1.00 / 1.00 / 1.00 | 0.986 / 1.00 / 0.997 / 1.00 | 1.0-2.5 ms | 362 MB |
+| Float32 HNSW, M=16, efConstruction=100, `ef = max(k, 100)` (Qdrant's defaults) | 0.985 / 1.00 / 1.00 / 1.00 | 0.965 / 1.00 / 0.990 / 1.00 | 1.0-2.5 ms | 321 MB |
+| HNSW_SQ, `ef = max(k, 64)`, `refine_k = 2` | 0.948 / 0.963 / 1.00 / 0.994 | 0.994 / 1.00 / 0.998 / 1.00 | 1.0-2.4 ms | 190 MB |
+| Qdrant store as configured (m=0, payload_m=16, no search parameters) | 0.977 / 1.00 / 1.00 / 1.00 | 0.940 / 1.00 / 1.00 / 1.00 | 1.7-5.9 ms | 176 MB |
+
 Float32 HNSW with the engines' parameters is the choice that needs no tuning
 of its own, and costs memory: on Milvus 3.0.2 at 600k vectors of 768
 dimensions (tenants of 200k, 50k, 5k and 2,000 of 100; 4 CPUs; one run),
@@ -152,6 +163,12 @@ tasks search live tenants; two runs each):
 | Bounded | none | 83-87 | 630,000-670,000 | 5.7-6.5 s | 23-27 ms |
 | Session | none | 20 | 0 | 4.0-4.5 s | 6.4-9.1 ms |
 | Strong | none | 20 | 0 | 2.2-2.4 s | 7.6-12.9 ms |
+
+At 1M the pattern held (Milvus 3.0.2, the conditions of the first
+measurement above, one dead incarnation of 1M, rounds of 10,000): at the
+one-second pause Bounded took 114.4 and 114.9 s over 101-102 rounds against
+Session's 120.8 and 121.2 s over 101, every entity purged each time; with no
+pause Bounded took 118.9 s over 379 rounds against Session's 25.0 s over 101.
 
 The listing reads at Bounded, as every other read does, and is correct
 there: a Bounded read is at most `common.gracefulTime` (5 s by default) behind
