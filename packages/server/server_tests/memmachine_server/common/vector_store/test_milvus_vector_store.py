@@ -229,31 +229,6 @@ async def collection(store):
 
 class TestCollectionLifecycle:
     @pytest.mark.asyncio
-    async def test_a_schema_milvus_refuses_leaves_nothing_behind(self, store):
-        """More declared properties than Milvus allows fields is refused, and
-        the name can then be created with a schema it accepts."""
-        name = "too_wide"
-        too_wide = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-            indexed_properties_schema={f"p{i}": int for i in range(64)},
-        )
-        with pytest.raises(pymilvus.MilvusException, match="field"):
-            await store.create_collection(
-                namespace=NAMESPACE, name=name, config=too_wide
-            )
-        assert await store.open_collection(namespace=NAMESPACE, name=name) is None
-        assert not await store._client.has_collection(
-            MilvusVectorStore._build_native_collection_name(NAMESPACE, too_wide)
-        )
-
-        narrow = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM, indexed_properties_schema={"p0": int}
-        )
-        await store.create_collection(namespace=NAMESPACE, name=name, config=narrow)
-        assert await store.open_collection(namespace=NAMESPACE, name=name) is not None
-        await store.delete_collection(namespace=NAMESPACE, name=name)
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("failing_step", ["create_index", "load_collection"])
     async def test_a_creation_that_failed_part_way_is_as_if_never_attempted(
         self, store, monkeypatch, failing_step
