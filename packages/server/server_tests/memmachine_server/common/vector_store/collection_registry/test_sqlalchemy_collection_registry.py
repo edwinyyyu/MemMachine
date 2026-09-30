@@ -300,6 +300,19 @@ def test_an_engine_of_another_dialect_is_refused(monkeypatch):
         )
 
 
+def test_a_sqlite_runtime_without_returning_is_refused(monkeypatch):
+    monkeypatch.setattr(
+        "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.sqlite3.sqlite_version_info",
+        (3, 34, 1),
+    )
+    with pytest.raises(ValueError, match="RETURNING"):
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=create_async_engine("sqlite+aiosqlite://"),
+            vector_store_name="store",
+            tombstone_retention_seconds=RETENTION_SECONDS,
+        )
+
+
 @pytest.mark.asyncio
 async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else(
     sqlalchemy_engine, vector_store_name

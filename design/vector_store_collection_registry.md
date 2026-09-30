@@ -39,8 +39,9 @@ wrote it.
   is the ABC. Its operations are `startup`, `register`, `mark_live`, `get`,
   `unregister`, `unregister_incarnation` and `claim_purgeable_incarnation`.
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
-  supports PostgreSQL and SQLite, the dialects the segment store supports, and
-  its params refuse any other dialect.
+  supports PostgreSQL and SQLite 3.35 or newer (for `RETURNING`), as the
+  segment store does, and its params refuse any other dialect or an older
+  SQLite.
 - `RegistryBackedVectorStore` (`common/vector_store/registry_backed_vector_store.py`)
   is the base of the Qdrant and Milvus stores and makes every registry call
   they make: create, open-or-create, open and delete, the purge claim, and a

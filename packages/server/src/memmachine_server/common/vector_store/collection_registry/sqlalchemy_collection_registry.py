@@ -13,6 +13,7 @@ purge claim is a row lock.
 """
 
 import logging
+import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -64,6 +65,10 @@ from .collection_registry import (
 logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
+
+# The first SQLite with RETURNING, which unregistration and counting a failed
+# purge round use.
+_MIN_SQLITE_VERSION = (3, 35)
 
 # Consecutive failed purge rounds after which a tombstone is dead-lettered.
 _MAX_FAILED_PURGE_ROUNDS = 10
@@ -203,6 +208,15 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
             raise ValueError(
                 f"Engine uses the {engine.dialect.name} dialect, which the "
                 "registry does not support. Use PostgreSQL or SQLite."
+            )
+        if (
+            engine.dialect.name == "sqlite"
+            and sqlite3.sqlite_version_info < _MIN_SQLITE_VERSION
+        ):
+            minimum = ".".join(str(part) for part in _MIN_SQLITE_VERSION)
+            raise ValueError(
+                f"SQLite runtime {sqlite3.sqlite_version} lacks the RETURNING "
+                f"support the registry depends on. Use SQLite {minimum} or newer."
             )
         return engine
 
