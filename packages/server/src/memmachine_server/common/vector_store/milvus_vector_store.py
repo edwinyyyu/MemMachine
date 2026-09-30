@@ -229,11 +229,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             return score >= threshold
         return score <= threshold
 
-    @staticmethod
-    def _primary_id(incarnation: UUID, record_uuid: UUID) -> str:
-        """Build a native primary key unique within a shared native collection."""
-        return f"{incarnation}:{record_uuid}"
-
     def __init__(
         self,
         *,
@@ -273,11 +268,20 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
     def config(self) -> VectorStoreCollectionConfig:
         return self._config
 
+    def _primary_id(self, record_uuid: UUID) -> str:
+        """The primary key of a record: the incarnation and the record UUID.
+
+        Collections sharing a native collection never share a primary key, and
+        neither do a deleted collection and one created again under its name.
+        """
+        return f"{self._incarnation}:{record_uuid}"
+
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
         declared = self._config.indexed_properties_schema
+        require_declared_types(record.properties, declared)
         entity: dict[str, Any] = {
-            _ID_FIELD: self._primary_id(self._incarnation, record.uuid),
+            _ID_FIELD: self._primary_id(record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
             _PARTITION_KEY_FIELD: str(self._incarnation),
             _VECTOR_FIELD: record.vector,
@@ -324,14 +328,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             if not records:
                 return
 
+            entities = [self._build_entity(record) for record in records]
             await self._fence()
-            for record in records:
-                require_declared_types(
-                    record.properties, self._config.indexed_properties_schema
-                )
             await self._client.upsert(
                 collection_name=self._native_collection_name,
-                data=[self._build_entity(record) for record in records],
+                data=entities,
                 timeout=self._request_timeout_seconds,
             )
             await self._fence()
@@ -410,9 +411,7 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             if not uuid_list:
                 return
             await self._fence()
-            primary_ids = [
-                self._primary_id(self._incarnation, uuid) for uuid in uuid_list
-            ]
+            primary_ids = [self._primary_id(uuid) for uuid in uuid_list]
             await self._client.delete(
                 collection_name=self._native_collection_name,
                 ids=primary_ids,
@@ -710,7 +709,6 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         require_identifiers(namespace, name)
-        self._validate_metric(config.similarity_metric)
         async with self._tracker("create_collection"):
             # The native collection first, the registry row last, so a crash
             # between the two leaves at worst an empty native collection,
@@ -728,7 +726,6 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
         require_identifiers(namespace, name)
-        self._validate_metric(config.similarity_metric)
         async with self._tracker("open_or_create_collection"):
             attempts = 0
             # Read-then-create, retried: losing the create means a racing

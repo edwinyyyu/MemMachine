@@ -99,10 +99,7 @@ async def _stored(
     """
     rows = await collection._client.get(
         collection_name=collection._native_collection_name,
-        ids=[
-            collection._primary_id(collection._incarnation, record_uuid)
-            for record_uuid in record_uuids
-        ],
+        ids=[collection._primary_id(record_uuid) for record_uuid in record_uuids],
         output_fields=["*"],
         consistency_level="Strong",
     )
