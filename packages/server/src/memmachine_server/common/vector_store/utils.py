@@ -49,20 +49,26 @@ def require_identifiers(namespace: str, name: str) -> None:
         raise ValueError(f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes")
 
 
-def require_valid_vector(vector: Sequence[float], dimensions: int) -> None:
-    """Raise ValueError unless a vector has the collection's dimensions and finite coordinates."""
-    if len(vector) != dimensions:
-        raise ValueError(
-            f"Vector has {len(vector)} dimensions; the collection has {dimensions}"
-        )
-    if not all(map(math.isfinite, vector)):
+def require_valid_query_vector(query_vector: Sequence[float], dimensions: int) -> None:
+    """Raise ValueError unless a query vector has the collection's dimensions and finite coordinates."""
+    require_dimensions(query_vector, dimensions)
+    if not all(map(math.isfinite, query_vector)):
         position = next(
             position
-            for position, coordinate in enumerate(vector)
+            for position, coordinate in enumerate(query_vector)
             if not math.isfinite(coordinate)
         )
         raise ValueError(
-            f"Vector coordinate {position} is not finite: {vector[position]}"
+            f"Query vector coordinate {position} is not finite: "
+            f"{query_vector[position]}"
+        )
+
+
+def require_dimensions(vector: Sequence[float], dimensions: int) -> None:
+    """Raise ValueError unless a vector has the collection's dimensions."""
+    if len(vector) != dimensions:
+        raise ValueError(
+            f"Vector has {len(vector)} dimensions; the collection has {dimensions}"
         )
 
 

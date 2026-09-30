@@ -73,7 +73,7 @@ class VectorStoreCollection(ABC):
             ValueError:
                 If a record's declared property holds a value of another
                 type, or its vector does not have the collection's
-                dimensions or has a coordinate that is not finite.
+                dimensions.
         """
         raise NotImplementedError
 

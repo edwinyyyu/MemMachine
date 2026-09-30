@@ -836,22 +836,24 @@ class TestFilters:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "vector",
-        [
-            [1.0] * (VECTOR_DIM - 1),
-            [1.0] * (VECTOR_DIM + 1),
-            [math.nan] + [1.0] * (VECTOR_DIM - 1),
-            [math.inf] + [1.0] * (VECTOR_DIM - 1),
-        ],
-        ids=["too_short", "too_long", "nan", "inf"],
+        "dimensions", [VECTOR_DIM - 1, VECTOR_DIM + 1], ids=["too_short", "too_long"]
     )
-    async def test_a_vector_the_collection_cannot_hold_is_refused(
-        self, collection, vector
-    ):
-        with pytest.raises(ValueError, match="Vector"):
+    async def test_a_vector_of_another_width_is_refused(self, collection, dimensions):
+        vector = [1.0] * dimensions
+        with pytest.raises(ValueError, match="dimensions"):
             await collection.upsert(records=[_make_record(vector=vector)])
-        with pytest.raises(ValueError, match="Vector"):
+        with pytest.raises(ValueError, match="dimensions"):
             await collection.query(query_vectors=[vector], limit=1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
+    async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
+        self, collection, coordinate
+    ):
+        with pytest.raises(ValueError, match="not finite"):
+            await collection.query(
+                query_vectors=[[coordinate] + [1.0] * (VECTOR_DIM - 1)], limit=1
+            )
 
 
 class TestScores:
