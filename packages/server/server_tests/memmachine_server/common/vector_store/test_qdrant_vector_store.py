@@ -23,6 +23,9 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
+from memmachine_server.common.vector_store.collection_registry import (
+    RegisteredCollection,
+)
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
     SQLAlchemyVectorStoreCollectionRegistryParams,
@@ -338,15 +341,21 @@ class TestUpsertAndQuery:
 
 def _collection_on(client: AsyncQdrantClient) -> QdrantVectorStoreCollection:
     """A handle on a given client, bound to a live incarnation."""
+    incarnation = uuid4()
+    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
     return QdrantVectorStoreCollection(
         client=client,
         native_collection_name="native",
         namespace=NAMESPACE,
         name=NAME,
-        incarnation=uuid4(),
-        config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        incarnation=incarnation,
+        config=config,
         tracker=OperationTracker(None, prefix="test"),
-        is_live=AsyncMock(return_value=True),
+        get_registered_collection=AsyncMock(
+            return_value=RegisteredCollection(
+                incarnation=incarnation, config=config, live=True
+            )
+        ),
     )
 
 

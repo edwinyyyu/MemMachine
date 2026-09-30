@@ -261,7 +261,9 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         incarnation: UUID,
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
-        is_live: Callable[[UUID], Awaitable[bool]],
+        get_registered_collection: Callable[
+            [str, str], Awaitable[RegisteredCollection | None]
+        ],
         request_timeout_seconds: int,
     ) -> None:
         """Initialize with a Milvus client and the incarnation the handle is bound to."""
@@ -271,7 +273,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
             incarnation=incarnation,
             config=config,
             tracker=tracker,
-            is_live=is_live,
+            get_registered_collection=get_registered_collection,
         )
         self._client = client
         self._native_collection_name = native_collection_name
@@ -546,13 +548,16 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
             incarnation=registered.incarnation,
             config=registered.config,
             tracker=self._tracker,
-            is_live=self._collection_registry.is_live,
+            get_registered_collection=self._collection_registry.get,
             request_timeout_seconds=self._request_timeout_seconds,
         )
 
     @override
     async def _prepare_storage(
-        self, namespace: str, config: VectorStoreCollectionConfig
+        self,
+        namespace: str,
+        config: VectorStoreCollectionConfig,
+        incarnation: UUID,
     ) -> None:
         # Created, indexed and loaded as separate steps, each when missing.
         self._validate_metric(config.similarity_metric)

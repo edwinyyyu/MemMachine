@@ -23,6 +23,7 @@ from memmachine_server.common.vector_store import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
+    registry_backed_vector_store,
 )
 
 LIFECYCLE_NAMESPACE = "lifecycle_ns"
@@ -242,17 +243,15 @@ class CollectionLifecycleContract:
         records = _records(2)
 
         # The collection dies between the handle's check and its write.
-        is_live = collection._is_live
+        get = collection._get_registered_collection
 
-        async def deleted_once_checked(incarnation) -> bool:
-            live = await is_live(incarnation)
-            if live:
-                await store.delete_collection(
-                    namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
-                )
-            return live
+        async def deleted_once_checked(namespace, name):
+            registered = await get(namespace, name)
+            if registered is not None:
+                await store.delete_collection(namespace=namespace, name=name)
+            return registered
 
-        collection._is_live = deleted_once_checked
+        collection._get_registered_collection = deleted_once_checked
 
         with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.upsert(records=records)
@@ -285,14 +284,14 @@ class CollectionLifecycleContract:
         collection = await _fresh(store, LIFECYCLE_NAME)
         record = _records(1)[0]
         checks = 0
-        is_live = collection._is_live
+        get = collection._get_registered_collection
 
-        async def counted_is_live(incarnation) -> bool:
+        async def counted_get(namespace, name):
             nonlocal checks
             checks += 1
-            return await is_live(incarnation)
+            return await get(namespace, name)
 
-        collection._is_live = counted_is_live
+        collection._get_registered_collection = counted_get
 
         await collection.upsert(records=[record])
         assert checks == 2
@@ -310,13 +309,13 @@ class CollectionLifecycleContract:
     async def test_a_failed_storage_preparation_registers_nothing(
         self, store, monkeypatch, create
     ):
-        """The storage comes first: a creation that fails there
-        leaves no registered collection whose records have nowhere to go."""
+        """A creation whose storage preparation fails unregisters its
+        pending collection: nothing opens, and the name is free again."""
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
 
-        async def refused(namespace, config) -> None:
+        async def refused(namespace, config, incarnation) -> None:
             raise RuntimeError("the backend refused")
 
         monkeypatch.setattr(store, "_prepare_storage", refused)
@@ -326,12 +325,19 @@ class CollectionLifecycleContract:
                 name=LIFECYCLE_NAME,
                 config=LIFECYCLE_CONFIG,
             )
+        monkeypatch.undo()
 
         assert (
             await store.open_collection(
                 namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
             )
             is None
+        )
+        await store.create_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
+        )
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
 
     @pytest.mark.asyncio
@@ -353,6 +359,9 @@ class CollectionLifecycleContract:
 
         monkeypatch.setattr(registry, "register", lost)
         monkeypatch.setattr(registry, "get", vanished)
+        monkeypatch.setattr(
+            registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
+        )
 
         with pytest.raises(VectorStoreAttemptsExhaustedError):
             await asyncio.wait_for(
@@ -378,11 +387,13 @@ class CollectionLifecycleContract:
         lost_registrations = 0
 
         async def another_process_wins(namespace, name, config):
-            # The other process registers between this caller's lookup and
-            # its own registration.
+            # The other process creates the collection between this caller's
+            # lookup and its own registration.
             nonlocal lost_registrations
             lost_registrations += 1
-            await register(namespace, name, config)
+            incarnation = await register(namespace, name, config)
+            await store._prepare_storage(namespace, config, incarnation)
+            await registry.mark_live(namespace, name, incarnation)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
         monkeypatch.setattr(registry, "register", another_process_wins)
@@ -425,7 +436,8 @@ class CollectionLifecycleContract:
         async def another_process_wins(namespace, name, config):
             nonlocal lost_registrations
             lost_registrations += 1
-            await register(namespace, name, other_config)
+            incarnation = await register(namespace, name, other_config)
+            await registry.mark_live(namespace, name, incarnation)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
         monkeypatch.setattr(registry, "register", another_process_wins)

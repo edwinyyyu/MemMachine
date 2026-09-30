@@ -256,7 +256,9 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         incarnation: UUID,
         config: VectorStoreCollectionConfig,
         tracker: OperationTracker,
-        is_live: Callable[[UUID], Awaitable[bool]],
+        get_registered_collection: Callable[
+            [str, str], Awaitable[RegisteredCollection | None]
+        ],
     ) -> None:
         """Initialize with a Qdrant client and the incarnation the handle is bound to."""
         super().__init__(
@@ -265,7 +267,7 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             incarnation=incarnation,
             config=config,
             tracker=tracker,
-            is_live=is_live,
+            get_registered_collection=get_registered_collection,
         )
         self._client = client
         self._native_collection_name = native_collection_name
@@ -509,12 +511,15 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
             incarnation=registered.incarnation,
             config=registered.config,
             tracker=self._tracker,
-            is_live=self._collection_registry.is_live,
+            get_registered_collection=self._collection_registry.get,
         )
 
     @override
     async def _prepare_storage(
-        self, namespace: str, config: VectorStoreCollectionConfig
+        self,
+        namespace: str,
+        config: VectorStoreCollectionConfig,
+        incarnation: UUID,
     ) -> None:
         native_collection_name = QdrantVectorStore._build_native_collection_name(
             namespace, config

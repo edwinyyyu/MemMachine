@@ -30,6 +30,9 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import decode_properties
+from memmachine_server.common.vector_store.collection_registry import (
+    RegisteredCollection,
+)
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
     SQLAlchemyVectorStoreCollectionRegistryParams,
@@ -929,15 +932,21 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
     compares the primary keys Milvus accepted with those it sent."""
     client = MagicMock(spec=AsyncMilvusClient)
     client.delete = AsyncMock(return_value={"delete_count": 0})
+    incarnation = uuid4()
+    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
     collection = MilvusVectorStoreCollection(
         client=client,
         native_collection_name="native",
         namespace=NAMESPACE,
         name=NAME,
-        incarnation=uuid4(),
-        config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        incarnation=incarnation,
+        config=config,
         tracker=OperationTracker(None, prefix="test"),
-        is_live=AsyncMock(return_value=True),
+        get_registered_collection=AsyncMock(
+            return_value=RegisteredCollection(
+                incarnation=incarnation, config=config, live=True
+            )
+        ),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 

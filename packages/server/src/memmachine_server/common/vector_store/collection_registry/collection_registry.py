@@ -4,7 +4,7 @@ Abstract base class for a collection registry.
 The catalog of a vector store whose backend cannot arbitrate one: which
 logical collections exist, under which incarnation and configuration, and
 which deleted incarnations await purge. Its calls are arbitrated across
-every process sharing it: registration mints an incarnation no live or
+every process sharing it: registration mints an incarnation no registered or
 queued collection carries, unregistration makes the collection unreachable
 when it returns, and a purge claim goes to one purger at a time.
 
@@ -24,10 +24,17 @@ from memmachine_server.common.vector_store.data_types import (
 
 @dataclass(frozen=True)
 class RegisteredCollection:
-    """A live collection: the incarnation its records carry and the configuration it was created with."""
+    """
+    A registered collection.
+
+    Its `incarnation` is the value its records carry, `config` the
+    configuration it was created with, and `live` whether its storage is
+    prepared: a collection is pending until it is marked live.
+    """
 
     incarnation: UUID
     config: VectorStoreCollectionConfig
+    live: bool
 
 
 @dataclass
@@ -69,11 +76,13 @@ class VectorStoreCollectionRegistry(ABC):
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> UUID:
         """
-        Register a new collection under a freshly minted incarnation.
+        Register a new collection, pending, under a freshly minted incarnation.
 
         The (namespace, name) is arbitrated across processes, and the
-        incarnation is one no live or queued collection carries, so the new
-        collection starts empty and no purge reclaims its records.
+        incarnation is one no registered or queued collection carries, so the
+        new collection starts empty and no purge reclaims its records. The
+        collection is pending until `mark_live` marks it, and holds its
+        (namespace, name) meanwhile.
 
         Args:
             namespace (str): Namespace of the collection.
@@ -85,7 +94,9 @@ class VectorStoreCollectionRegistry(ABC):
             UUID: The incarnation the collection's records carry.
 
         Raises:
-            VectorStoreCollectionAlreadyExistsError: The (namespace, name) is taken.
+            VectorStoreCollectionAlreadyExistsError:
+                The (namespace, name) is taken, by a live or a pending
+                collection.
             VectorStoreAttemptsExhaustedError:
                 The registry gave up after repeated inserts were rejected
                 with the (namespace, name) free.
@@ -93,9 +104,30 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> bool:
+        """
+        Mark a pending collection live, once its storage is prepared.
+
+        Only the collection registered under the incarnation is marked: once
+        it is unregistered, nothing is, not even a collection registered
+        under its (namespace, name) since.
+
+        Args:
+            namespace (str): Namespace of the collection.
+            name (str): Name of the collection within the namespace.
+            incarnation (UUID): The incarnation `register` returned.
+
+        Returns:
+            bool:
+                Whether the collection was pending under the incarnation, and
+                is now live.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
         """
-        Look up the live collection under a (namespace, name).
+        Look up the collection registered under a (namespace, name).
 
         Args:
             namespace (str): Namespace of the collection.
@@ -103,34 +135,26 @@ class VectorStoreCollectionRegistry(ABC):
 
         Returns:
             RegisteredCollection | None:
-                The live collection, or None when there is none.
+                The collection, pending or live, or None when there is none.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def is_live(self, incarnation: UUID) -> bool:
-        """
-        Whether a collection is still registered under an incarnation.
-
-        Args:
-            incarnation (UUID): The incarnation a handle is bound to.
-
-        Returns:
-            bool: Whether the incarnation's collection is live.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def unregister(self, namespace: str, name: str) -> None:
+    async def unregister(
+        self, namespace: str, name: str, *, incarnation: UUID | None = None
+    ) -> None:
         """
         Unregister a collection and queue its incarnation for purge.
 
-        The collection is unreachable when this returns, and purge rounds
-        reclaim its records later. Idempotent.
+        The collection, live or pending, is unreachable when this returns,
+        and purge rounds reclaim its records later. Idempotent.
 
         Args:
             namespace (str): Namespace of the collection.
             name (str): Name of the collection within the namespace.
+            incarnation (UUID | None):
+                If given, unregister the collection only if it is registered
+                under this incarnation (default: None).
         """
         raise NotImplementedError
 

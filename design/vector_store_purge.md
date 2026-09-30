@@ -145,8 +145,8 @@ processes need no coordination: the claim arbitrates.
 - Interference (PostgreSQL 16, the claim's earlier two-statement form; 20,000
   live collections and 20,000 tombstones): with two sweepers running rounds
   back to back, about 78 per second, beside 16 interactive workers,
-  interactive throughput and `is_live` p99 were unchanged within run-to-run
-  noise on PostgreSQL. On SQLite, where the sweepers write in the same
+  interactive throughput and the p99 of the handles' liveness lookup were
+  unchanged within run-to-run noise on PostgreSQL. On SQLite, where the sweepers write in the same
   process, throughput dropped 2.5-14% at that rate, as much as with sweepers
   that only commit a one-row write per round, and not measurably at the
   resource manager's pace.

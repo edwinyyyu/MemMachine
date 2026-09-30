@@ -48,17 +48,18 @@ behind its choices.
 
 ## Lifecycle of a collection
 
-1. **Create.** The store prepares the storage the namespace and
-   configuration's collections share (on Qdrant and Milvus, a native
-   collection), then inserts a registry row under a freshly minted
-   incarnation. A racing creator loses at the registry's primary key.
+1. **Create.** The store inserts a registry row, pending, under a freshly
+   minted incarnation, prepares the collection's storage (on Qdrant and
+   Milvus, the native collection its namespace and configuration share), and
+   marks the row live. A racing creator loses at the registry's primary key,
+   and a pending collection is not opened.
 2. **Open.** The registry resolves `(namespace, name)` to the live incarnation
    and its configuration; the handle is bound to that incarnation.
 3. **Use.** Every record a handle writes carries its incarnation, and every
    read and delete is scoped to it. Before each operation, and after each
    write, the handle checks that its incarnation is still live.
-4. **Delete.** One registry transaction removes the live row and queues a
-   tombstone. Every handle of that life is stale from then on, in every
+4. **Delete.** One registry transaction removes the collection's row and
+   queues a tombstone. Every handle of that life is stale from then on, in every
    process.
 5. **Purge.** Once the retention (a day by default) has passed, sweepers in
    every process claim tombstones oldest first and reclaim their records in

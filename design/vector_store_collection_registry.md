@@ -36,7 +36,7 @@ wrote it.
 ### Roles
 
 - `VectorStoreCollectionRegistry` (`common/vector_store/collection_registry/`)
-  is the ABC. Its operations are `startup`, `register`, `get`, `is_live`,
+  is the ABC. Its operations are `startup`, `register`, `mark_live`, `get`,
   `unregister` and `claim_purgeable_incarnation`.
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
   supports PostgreSQL and SQLite, the dialects the segment store supports, and
@@ -45,15 +45,14 @@ wrote it.
   is the base of the Qdrant and Milvus stores and makes every registry call
   they make: create, open-or-create, open and delete, the purge claim, and a
   handle's liveness fence. A subclass supplies the backend steps: preparing
-  the storage a namespace and configuration's collections share, building a
-  handle, and one purge round over an incarnation's records. Nothing in the
-  base assumes how the backend lays records out. Qdrant and Milvus share a
-  native collection per namespace and configuration. A backend with a unit
-  per collection, such as a Pinecone or turbopuffer namespace, a Chroma
-  collection or a Weaviate tenant, would share nothing, or a container of
-  such units. Its handle would make the collection's unit when first needed,
-  since the incarnation that names it is minted at registration, and its
-  purge round would drop it.
+  a new collection's storage, building a handle, and one purge round over an
+  incarnation's records. Nothing in the base assumes how the backend lays
+  records out. Qdrant and Milvus share a native collection per namespace and
+  configuration. A backend with a unit per collection, such as a Pinecone or
+  turbopuffer namespace, a Chroma collection or a Weaviate tenant, would make
+  the collection's unit when it prepares its storage, which runs after the
+  registration that mints the incarnation naming it, and its purge round
+  would drop it.
 - Every store whose client connects to the same backend data, the same Qdrant
   server or cluster or the same Milvus database, must share one registry, in
   any process; a store connected to other data must not. A store reclaims its
@@ -75,13 +74,14 @@ be at most 32 bytes. Two registry objects under one name are one registry.
 One table pair with a key column, rather than a table pair per vector store,
 keeps the schema static.
 
-`collection_registry_ct`, the live collections:
+`collection_registry_ct`, the registered collections, pending or live:
 
 | Column | Type | Role |
 |---|---|---|
 | `vector_store_name`, `namespace`, `name` | string, primary key | The collection's identity. The primary key arbitrates creation. |
 | `incarnation` | UUID, unique | The collection's current life. Its records carry it. |
 | `config` | JSON (JSONB on PostgreSQL) | The configuration the collection was created with. A handle is built from it; open-or-create compares against it. |
+| `live` | boolean | Whether the collection's storage is prepared. A pending collection holds its name; only a live one is opened. |
 
 `collection_registry_gc`, the purge queue, one row per deleted incarnation
 (its *tombstone*; see [purge](vector_store_purge.md)):
@@ -112,27 +112,35 @@ it was considered; it stays, for inspection.
 ### Operations
 
 **`register(namespace, name, config) -> incarnation`.** Mints a random UUID
-(version 4) and inserts the live row. In the same transaction, *after* the
-insert, a locking read checks that the incarnation is not waiting in the purge
-queue. After the insert, a concurrent deletion that moved a colliding row to
-the queue has already committed, because the insert waited on it. After the
-check no queue row for this incarnation can appear before commit, because the
-only live row carrying it is this uncommitted one. A primary-key violation
-with a live row under the key raises
+(version 4) and inserts the collection's row, pending. In the same
+transaction, *after* the insert, a locking read checks that the incarnation is
+not waiting in the purge queue. After the insert, a concurrent deletion that
+moved a colliding row to the queue has already committed, because the insert
+waited on it. After the check no queue row for this incarnation can appear
+before commit, because the only row carrying it is this uncommitted one. A
+primary-key violation with a row, pending or live, under the key raises
 `VectorStoreCollectionAlreadyExistsError`. A rejected incarnation (unique
 violation, or queued) is re-minted, up to 10 attempts, then
 `VectorStoreAttemptsExhaustedError`. The loop and its bound are the segment
 store's (#1661).
 
-**`get(namespace, name)`** returns the live collection's incarnation and
-configuration, or `None`. It is how a handle is opened: callers address
-collections by name, and the name is resolved to an incarnation once, at open.
+**`mark_live(namespace, name, incarnation)`** marks the row live with an
+`UPDATE` conditional on the incarnation and on the row being pending, and
+answers whether it matched. A creation whose collection was deleted while its
+storage was prepared matches nothing, so it cannot mark live a collection
+registered under the name since.
 
-**`is_live(incarnation)`** is how handles are fenced (below).
+**`get(namespace, name)`** returns the collection's incarnation,
+configuration and whether it is live, or `None`. It is how a handle is opened:
+callers address collections by name, and the name is resolved to an
+incarnation once, at open. It is also how a handle is fenced (below).
 
-**`unregister(namespace, name)`** is one transaction: `DELETE ... RETURNING`
-the live row, then insert its tombstone with `enqueued_at = now()`. The
-collection is unreachable when it commits. Racing deleters serialize on the
+**`unregister(namespace, name, incarnation=None)`** is one transaction:
+`DELETE ... RETURNING` the collection's row, pending or live, then insert its
+tombstone with `enqueued_at = now()`. The collection is unreachable when it
+commits. Given an incarnation, it deletes the row only if it carries it: a
+creation whose storage preparation raised takes back its own registration
+that way, never one registered under the name since. Racing deleters serialize on the
 row's write lock and the loser deletes nothing, on PostgreSQL and SQLite
 alike, so a deletion is idempotent and queues one tombstone. (The segment
 store pins its row with the write fence its writes use before its queue
@@ -143,34 +151,42 @@ insert; the registry has no such fence, so the `DELETE` goes first.)
 
 ### Creation
 
-Creation is *storage first, registry last*. The store first prepares the
-storage the collection's namespace and configuration share (on Qdrant and
-Milvus, a native collection that exists, is indexed and is loaded), then
-registers:
+Creation is *registered pending, prepared, then live*. The store registers
+the collection, pending, prepares its storage (on Qdrant and Milvus, the
+native collection its namespace and configuration share, which exists, is
+indexed and is loaded), and marks it live:
 
-- A crash between the two leaves at worst storage no collection uses yet,
-  which the next creation of the same configuration adopts, never a live row
-  whose records have nowhere to go.
 - The registry's primary key is the one arbiter: a racing creator on any
   process loses at the insert, never in the backend.
-- What is prepared is shared by every collection of one namespace and
-  configuration (on Qdrant and Milvus, a native collection), so what a failed
-  creation left is what the next creation would have made, not
-  per-collection garbage.
-- Native creation converges: each step runs only when missing, so a creation
-  that failed part way is completed by the next one as if it had never been
-  attempted. How each backend does it is in the
-  [Qdrant](qdrant_vector_store.md) and [Milvus](milvus_vector_store.md)
-  documents.
+- A pending collection holds its name but is not opened: `open_collection`
+  answers `None`, a `create_collection` of the name raises
+  `VectorStoreCollectionAlreadyExistsError`, and open-or-create waits for it.
+- A preparation that raises unregisters the pending collection when the
+  registry can, which frees the name and queues the incarnation's tombstone.
+  Otherwise, and after a crash, the collection stays pending until it is
+  deleted like any other.
+- Whatever a failed or interrupted preparation leaves is recoverable. Shared
+  storage is completed by the next preparation: each step runs only when
+  missing, so a creation that failed part way is completed by the next one as
+  if it had never been attempted (the [Qdrant](qdrant_vector_store.md) and
+  [Milvus](milvus_vector_store.md) documents say how). Storage of the
+  collection's own is reclaimed by its incarnation's purge rounds once the
+  pending collection is deleted.
+- A collection deleted while its storage is prepared is not marked live, since
+  the mark is conditional on its incarnation: the creation returns, as a
+  creation the deletion followed.
 
-**`open_or_create_collection`** is read-then-create, retried: a live row is
-opened (or refused with `VectorStoreCollectionConfigMismatchError` if its
-configuration differs); no row means create; losing the create means a racing
-creator won, so the loop reads the winner's row and opens it; finding no row
-after losing means a racing deleter removed the winner, so the loop creates
-again. After 10 lost races it raises `VectorStoreAttemptsExhaustedError`. The
-event backend's service locator creates a session's collection strictly when
-it finds none and, on losing that create, opens the winner's.
+**`open_or_create_collection`** is read-then-create, retried a second apart: a
+live row is opened, or refused with `VectorStoreCollectionConfigMismatchError`
+if its configuration differs, as is a pending row of another configuration; a
+pending row of the same configuration is another creator's, so the loop waits
+for it rather than registering; no row means create; losing the create means a
+racing creator took the name; losing the mark means a racing deleter removed
+the collection while its storage was prepared, so the loop creates again.
+After 10 attempts it raises `VectorStoreAttemptsExhaustedError`, which says so
+when the collection stayed pending. The event backend's service locator
+creates a session's collection strictly when it finds none and, on losing that
+create, opens the winner's.
 
 The contract tests (`collection_lifecycle_contract.py`) pin both outcomes of a
 lost race on Qdrant and Milvus: the loser opens the winner's collection, or
@@ -184,11 +200,13 @@ deleted, every operation on the handle raises
 `VectorStoreCollectionHandleStaleError`, and a collection created again under
 the same name is a new life the old handle cannot reach.
 
-- Every operation reads `is_live` before its remote call, to refuse a handle
-  known to be dead.
-- Every write reads it again after the remote call, so a write that completed
-  under an incarnation that died meanwhile raises instead of reporting
-  success.
+- Every operation looks up the collection under the handle's name (`get`)
+  before its remote call, and refuses the handle unless the row carries the
+  handle's incarnation: a handle known to be dead.
+- Every write looks it up again after the remote call, so a write that
+  completed under an incarnation that died meanwhile raises instead of
+  reporting success.
+- A handle receives the registry's `get` alone, not the registry.
 - A read is not checked afterwards. A deleted collection's records stay until a
   purge round claims its tombstone, so a read in flight when the deletion
   commits returns a snapshot from before it, never a state halfway through a
@@ -238,6 +256,16 @@ where the backend is remote:
   backend can arbitrate a create, a delete or a claim.
 - **Process-local locks.** They serialize one process only; the goal is any
   process serving any collection.
+- **Storage first, registry last**, with no pending state (the previous
+  ordering). It suits storage a namespace and configuration's collections
+  share, which a crash between the two leaves for the next creation to
+  adopt, but storage named by a collection's incarnation cannot be made
+  before the registry mints the incarnation. With the pending state, one
+  preparation step, after registration, serves both; the cost is a pending
+  row a crash leaves, deleted like any other.
+- **A liveness lookup by incarnation (`is_live`)** beside `get`. A handle knows
+  its name, and `get` answers the same question in the same round trip, so the
+  registry keeps one lookup.
 - **A lock or coordination service** (etcd, ZooKeeper). It would arbitrate,
   but it would add a stateful dependency for a problem the deployment's
   relational database, which every SQL-backed component already requires,

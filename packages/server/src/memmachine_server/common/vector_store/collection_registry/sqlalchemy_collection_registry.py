@@ -4,10 +4,11 @@ A collection registry in a relational database, through SQLAlchemy.
 Qdrant and Milvus have no transactions or unique constraints, so a catalog
 kept in them cannot arbitrate two processes creating, deleting or
 reclaiming the same logical collection. This registry keeps it in a
-relational database: a table of live collections keyed by vector store,
-namespace and name, each with its incarnation, and a queue of deleted
-incarnations claimed in the order they come due. The primary key
-arbitrates registration, unregistration is one transaction, and a purge
+relational database: a table of registered collections keyed by vector
+store, namespace and name, each with its incarnation and whether it is live
+(its storage prepared), and a queue of deleted incarnations claimed in the order they
+come due. The primary key arbitrates registration, a conditional update
+marks a collection live, unregistration is one transaction, and a purge
 claim is a row lock.
 """
 
@@ -21,6 +22,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, InstanceOf, JsonValue, field_validator
 from sqlalchemy import (
     JSON,
+    Boolean,
     ColumnElement,
     DateTime,
     Index,
@@ -73,7 +75,7 @@ class BaseCollectionRegistry(DeclarativeBase):
 
 
 class CollectionRow(BaseCollectionRegistry):
-    """A live collection of a vector store."""
+    """A registered collection of a vector store, pending or live."""
 
     __tablename__ = "collection_registry_ct"
 
@@ -91,6 +93,8 @@ class CollectionRow(BaseCollectionRegistry):
     config: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO, nullable=False
     )
+    # Whether the collection's storage is prepared; it is pending until then.
+    live: MappedColumn[bool] = mapped_column(Boolean, nullable=False)
 
 
 class PurgeQueueRow(BaseCollectionRegistry):
@@ -246,7 +250,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     ) -> UUID:
         # The primary key arbitrates the (namespace, name) across processes.
         # An insert rejected for another reason, such as a minted incarnation
-        # that is live or awaiting purge, is tried again with a fresh one.
+        # that is registered or awaiting purge, is tried again with a fresh one.
         attempts = 0
         while True:
             incarnation = uuid4()
@@ -289,6 +293,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         name=name,
                         incarnation=incarnation,
                         config=config.model_dump(mode="json"),
+                        live=False,
                     )
                 )
                 queued = (
@@ -308,11 +313,34 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             ) from err
 
     @override
+    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> bool:
+        # Conditional on the incarnation, so a creation marks only the
+        # collection it registered, never one registered under the name
+        # after its own was deleted.
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(CollectionRow)
+                .where(
+                    CollectionRow.vector_store_name == self._vector_store_name,
+                    CollectionRow.namespace == namespace,
+                    CollectionRow.name == name,
+                    CollectionRow.incarnation == incarnation,
+                    CollectionRow.live.is_(False),
+                )
+                .values(live=True)
+            )
+        return result.rowcount == 1
+
+    @override
     async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
-                    select(CollectionRow.incarnation, CollectionRow.config).where(
+                    select(
+                        CollectionRow.incarnation,
+                        CollectionRow.config,
+                        CollectionRow.live,
+                    ).where(
                         CollectionRow.vector_store_name == self._vector_store_name,
                         CollectionRow.namespace == namespace,
                         CollectionRow.name == name,
@@ -324,35 +352,29 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         return RegisteredCollection(
             incarnation=row.incarnation,
             config=VectorStoreCollectionConfig.model_validate(row.config),
+            live=row.live,
         )
 
     @override
-    async def is_live(self, incarnation: UUID) -> bool:
-        async with self._engine.connect() as connection:
-            row = (
-                await connection.execute(
-                    select(CollectionRow.name).where(
-                        CollectionRow.incarnation == incarnation
-                    )
-                )
-            ).scalar_one_or_none()
-        return row is not None
-
-    @override
-    async def unregister(self, namespace: str, name: str) -> None:
+    async def unregister(
+        self, namespace: str, name: str, *, incarnation: UUID | None = None
+    ) -> None:
         # One transaction: the collection is unreachable once it commits,
         # and the queue row is its incarnation's tombstone. The DELETE goes
         # first and takes the row's write lock, so racing deleters serialize
         # on it and the loser deletes nothing.
+        conditions = [
+            CollectionRow.vector_store_name == self._vector_store_name,
+            CollectionRow.namespace == namespace,
+            CollectionRow.name == name,
+        ]
+        if incarnation is not None:
+            conditions.append(CollectionRow.incarnation == incarnation)
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
                     delete(CollectionRow)
-                    .where(
-                        CollectionRow.vector_store_name == self._vector_store_name,
-                        CollectionRow.namespace == namespace,
-                        CollectionRow.name == name,
-                    )
+                    .where(*conditions)
                     .returning(CollectionRow.incarnation, CollectionRow.config)
                 )
             ).one_or_none()
