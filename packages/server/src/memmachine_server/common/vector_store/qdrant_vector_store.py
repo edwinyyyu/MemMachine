@@ -10,7 +10,7 @@ import grpc
 import grpc.aio
 from pydantic import Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
-from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from memmachine_server.common.data_types import (
     OrderedValue,
@@ -301,23 +301,29 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             await self._fence()
             points = [self._build_point(record) for record in records]
             if points:
-                await self._upsert_with_backoff(points)
+                await self._upsert_points(points)
             await self._fence()
 
-    async def _upsert_with_backoff(self, points: Iterable[models.PointStruct]) -> None:
-        """Upsert points, splitting the batch in half on failure and retrying."""
-        points = list(points)
+    async def _upsert_points(self, points: list[models.PointStruct]) -> None:
+        """Upsert points, halving a batch refused as sent.
+
+        Qdrant's REST API refuses a request over its max_request_size_mb with
+        a 400, the status of any request it finds invalid, and a proxy in
+        front of it may refuse one with a 413. A batch refused with either is
+        halved until the halves fit or a single point is refused. Any other
+        error raises at once.
+        """
         try:
             await self._client.upsert(
                 collection_name=self._native_collection_name,
                 points=points,
             )
-        except (ResponseHandlingException, UnexpectedResponse):
-            if len(points) <= 1:
+        except UnexpectedResponse as err:
+            if err.status_code not in (400, 413) or len(points) <= 1:
                 raise
             mid = len(points) // 2
-            await self._upsert_with_backoff(points[:mid])
-            await self._upsert_with_backoff(points[mid:])
+            await self._upsert_points(points[:mid])
+            await self._upsert_points(points[mid:])
 
     @override
     async def query(

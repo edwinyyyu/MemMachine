@@ -28,6 +28,19 @@ registry](vector_store_collection_registry.md),
   is completed by the next.
 - **Client:** `AsyncQdrantClient`, with `request_timeout_seconds` as its
   timeout. Custom sharding was removed in #1671.
+- **Oversized upserts are halved.** Qdrant's REST API refuses a request over
+  `service.max_request_size_mb` (32 unless configured) with a 400 whose
+  message says the JSON payload "is larger than allowed" (measured on
+  1.19.1; the status is not documented), and a proxy in front of it may
+  refuse one with a 413. An upsert refused with either is halved until its
+  halves fit or a single point is refused. A malformed batch is halved too:
+  its status is the same, and only the message, which the store does not
+  parse, tells them apart. Sizing requests to fit beforehand would mean
+  reproducing qdrant-client's undocumented serialization. gRPC takes no
+  such limit (Qdrant's server and qdrant-client both set none; a 140 MB
+  upsert went through). Any other error raises at once: a timed-out request
+  may still be applied, and sending it again only adds load to a server
+  already too slow.
 
 ## Point ids
 

@@ -3,12 +3,14 @@
 import asyncio
 import math
 from datetime import UTC, datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 import pytest_asyncio
 from qdrant_client import AsyncQdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
@@ -20,7 +22,7 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.metrics_factory import MetricsFactory
+from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
     SQLAlchemyVectorStoreCollectionRegistryParams,
@@ -332,6 +334,69 @@ class TestUpsertAndQuery:
     async def test_query_empty_vectors(self, collection):
         all_results = list(await collection.query(query_vectors=[], limit=10))
         assert len(all_results) == 0
+
+
+def _collection_on(client: AsyncQdrantClient) -> QdrantVectorStoreCollection:
+    """A handle on a given client, bound to a live incarnation."""
+    return QdrantVectorStoreCollection(
+        client=client,
+        native_collection_name="native",
+        namespace=NAMESPACE,
+        name=NAME,
+        incarnation=uuid4(),
+        config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        tracker=OperationTracker(None, prefix="test"),
+        is_live=AsyncMock(return_value=True),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 413])
+async def test_a_batch_refused_as_sent_is_halved_until_it_fits(status_code: int):
+    """Qdrant's REST API refuses a request over its size limit with a 400, and
+    a proxy in front of it may with a 413."""
+    upserted: list[list[str]] = []
+
+    async def refuse_more_than_two(
+        *, collection_name: str, points: list[models.PointStruct]
+    ) -> None:
+        if len(points) > 2:
+            raise UnexpectedResponse(status_code, "", b"", httpx.Headers())
+        upserted.append([str(point.id) for point in points])
+
+    client = MagicMock(spec=AsyncQdrantClient)
+    client.upsert = AsyncMock(side_effect=refuse_more_than_two)
+    collection = _collection_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(5)]
+
+    await collection.upsert(records=records)
+
+    assert sorted(len(batch) for batch in upserted) == [1, 2, 2]
+    assert {point_id for batch in upserted for point_id in batch} == {
+        str(collection._point_id(record.uuid)) for record in records
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResponseHandlingException(TimeoutError()),
+        UnexpectedResponse(500, "Internal Server Error", b"", httpx.Headers()),
+    ],
+    ids=["timeout", "server_error"],
+)
+async def test_an_upsert_that_fails_otherwise_is_not_sent_again(error: Exception):
+    """A timed-out request may still be applied, so it is not resent."""
+    client = MagicMock(spec=AsyncQdrantClient)
+    client.upsert = AsyncMock(side_effect=error)
+    collection = _collection_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(4)]
+
+    with pytest.raises(type(error)):
+        await collection.upsert(records=records)
+
+    client.upsert.assert_awaited_once()
 
 
 # ── Filters ──
