@@ -486,3 +486,26 @@ def test_sqlite_vec_vector_store_build_config():
     config = SupportedDB.SQLITE_VEC_VECTOR_STORE.build_config({"path": "vec.db"})
     assert isinstance(config, SQLiteVecVectorStoreConf)
     assert config.path == "vec.db"
+
+
+@pytest.mark.parametrize("conf_class", [QdrantConf, MilvusConf])
+def test_a_retention_below_ten_request_timeouts_and_five_minutes_is_refused(
+    conf_class,
+):
+    conf_class(
+        collection_registry="db",
+        request_timeout_seconds=30,
+        tombstone_retention_seconds=600,
+    )
+    with pytest.raises(ValueError, match="tombstone_retention_seconds"):
+        conf_class(
+            collection_registry="db",
+            request_timeout_seconds=30,
+            tombstone_retention_seconds=599,
+        )
+    with pytest.raises(ValueError, match="tombstone_retention_seconds"):
+        conf_class(
+            collection_registry="db",
+            request_timeout_seconds=100,
+            tombstone_retention_seconds=1000,
+        )

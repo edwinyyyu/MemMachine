@@ -229,6 +229,28 @@ class NebulaGraphConf(YamlSerializableMixin, PasswordMixin):
         return self.hosts
 
 
+# A write in flight when its collection is deleted lands within its client's
+# request timeout plus the server's own delay, seconds to minutes.
+_RETENTION_TIMEOUT_MULTIPLE = 10
+_RETENTION_MARGIN_SECONDS = 300
+
+
+def _require_retention_above_timeout(
+    tombstone_retention_seconds: int, request_timeout_seconds: int
+) -> None:
+    """Raise unless the retention is at least ten request timeouts and five minutes."""
+    floor = (
+        _RETENTION_TIMEOUT_MULTIPLE * request_timeout_seconds
+        + _RETENTION_MARGIN_SECONDS
+    )
+    if tombstone_retention_seconds < floor:
+        raise ValueError(
+            f"tombstone_retention_seconds ({tombstone_retention_seconds}) must be "
+            f"at least {_RETENTION_TIMEOUT_MULTIPLE} x request_timeout_seconds "
+            f"+ {_RETENTION_MARGIN_SECONDS}, {floor}"
+        )
+
+
 class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
     """Configuration options for a Qdrant instance."""
 
@@ -265,8 +287,7 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         description=(
             "Seconds a deleted collection's records are kept before its purge "
             "starts, so every write to Qdrant in flight at the deletion has landed "
-            "and is reclaimed; keep it orders of magnitude above the longest a "
-            "request to Qdrant can be in flight."
+            "and is reclaimed; at least 10 x request_timeout_seconds + 300."
         ),
     )
     request_timeout_seconds: int = Field(
@@ -274,6 +295,13 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         gt=0,
         description="Seconds a request to Qdrant may take before the client gives up.",
     )
+
+    @model_validator(mode="after")
+    def _validate_retention(self) -> Self:
+        _require_retention_above_timeout(
+            self.tombstone_retention_seconds, self.request_timeout_seconds
+        )
+        return self
 
 
 class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
@@ -307,8 +335,7 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         description=(
             "Seconds a deleted collection's records are kept before its purge "
             "starts, so every write to Milvus in flight at the deletion has landed "
-            "and is reclaimed; keep it orders of magnitude above the longest a "
-            "request to Milvus can be in flight."
+            "and is reclaimed; at least 10 x request_timeout_seconds + 300."
         ),
     )
     request_timeout_seconds: int = Field(
@@ -374,6 +401,9 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         """Validate Milvus configuration."""
         if not self.uri:
             raise ValueError("MilvusConf requires a non-empty 'uri'")
+        _require_retention_above_timeout(
+            self.tombstone_retention_seconds, self.request_timeout_seconds
+        )
         return self
 
 

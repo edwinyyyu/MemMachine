@@ -47,7 +47,16 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
   stronger one.
 - **The retention decides nothing about validity.** A stale write is refused
   by the handle's check after it; the retention only has to outlast any write
-  in flight.
+  in flight. A write that lands after its tombstone is gone stays under a dead
+  incarnation no collection reads: leaked storage, never a wrong result.
+- **The configuration enforces a floor of 10 × `request_timeout_seconds` +
+  300 s.** The request timeout is the only part of a write's time in flight
+  the store knows. Neither Qdrant nor Milvus bounds how long a received write
+  can wait before it is applied (their queues are bounded by count), both can
+  apply a write after its client has given up, and Milvus's read delay
+  (`common.gracefulTime`) is server configuration a client cannot read. These
+  take seconds to minutes when no process is paused; the default retention, a
+  day, also covers a process paused between its liveness check and its write.
 - **Only the database's clock is used.** The queue stores the deletion's time,
   `enqueued_at`, written by the database's `now()`. The retention is applied
   by the database's own arithmetic when a claim is decided (`now() - interval`
