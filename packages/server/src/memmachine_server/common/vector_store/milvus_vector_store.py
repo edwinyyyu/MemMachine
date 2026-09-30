@@ -285,9 +285,9 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        declared = self._config.indexed_properties_schema
+        declared = self.config.indexed_properties_schema
         require_declared_types(record.properties, declared)
-        require_dimensions(record.vector, self._config.vector_dimensions)
+        require_dimensions(record.vector, self.config.vector_dimensions)
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
@@ -321,7 +321,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         Milvus returns cosine similarity and inner product as they are, and
         the squared Euclidean distance.
         """
-        if self._config.similarity_metric is SimilarityMetric.EUCLIDEAN:
+        if self.config.similarity_metric is SimilarityMetric.EUCLIDEAN:
             return math.sqrt(max(distance, 0.0))
         return distance
 
@@ -359,7 +359,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
             if not query_vectors:
                 return []
             for query_vector in query_vectors:
-                require_valid_query_vector(query_vector, self._config.vector_dimensions)
+                require_valid_query_vector(query_vector, self.config.vector_dimensions)
             require_valid_score_threshold(score_threshold)
             if limit <= 0:
                 return [QueryResult(matches=[]) for _ in query_vectors]
@@ -370,7 +370,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
                 property_expr = _milvus_filter(
-                    property_filter, self._config.indexed_properties_schema
+                    property_filter, self.config.indexed_properties_schema
                 )
                 filter_expr = f"({filter_expr}) && ({property_expr})"
 
@@ -392,7 +392,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
                     entity = cast(Mapping[str, Any], raw_match["entity"])
                     score = self._score(raw_match["distance"])
                     if not self._passes_threshold(
-                        score, score_threshold, self._config.similarity_metric
+                        score, score_threshold, self.config.similarity_metric
                     ):
                         continue
 
@@ -405,7 +405,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
 
                 matches.sort(
                     key=lambda match: match.score,
-                    reverse=self._config.similarity_metric.higher_is_better,
+                    reverse=self.config.similarity_metric.higher_is_better,
                 )
                 results.append(QueryResult(matches=matches))
 

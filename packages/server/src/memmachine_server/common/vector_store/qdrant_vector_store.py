@@ -280,10 +280,8 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
 
     def _build_point(self, record: Record) -> models.PointStruct:
         """Build a Qdrant point from a vector store record."""
-        require_declared_types(
-            record.properties, self._config.indexed_properties_schema
-        )
-        require_dimensions(record.vector, self._config.vector_dimensions)
+        require_declared_types(record.properties, self.config.indexed_properties_schema)
+        require_dimensions(record.vector, self.config.vector_dimensions)
         payload: dict[str, PropertyValue] = {
             _PAYLOAD_INCARNATION: str(self._incarnation),
             _PAYLOAD_RECORD_UUID: str(record.uuid),
@@ -345,7 +343,7 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             if not query_vectors:
                 return []
             for query_vector in query_vectors:
-                require_valid_query_vector(query_vector, self._config.vector_dimensions)
+                require_valid_query_vector(query_vector, self.config.vector_dimensions)
             require_valid_score_threshold(score_threshold)
 
             await self._fence()

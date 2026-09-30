@@ -35,7 +35,12 @@ _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 class RegistryBackedVectorStoreCollection(VectorStoreCollection):
-    """A handle bound to one incarnation of a logical collection."""
+    """A handle bound to one incarnation of a logical collection.
+
+    For subclasses: `_incarnation` is the incarnation the handle is bound to,
+    `_tracker` times each operation, and `_fence()` raises once the collection
+    has been deleted.
+    """
 
     def __init__(
         self,
@@ -106,6 +111,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
 
     Any process connected to the same database, with the same registry, may
     serve any collection.
+
+    For subclasses: `_collection_registry` is the registry and `_tracker` times
+    each operation, and a subclass implements `_create_native_collection`,
+    `_build_collection_handle` and `_purge_round`.
     """
 
     def __init__(
