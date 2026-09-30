@@ -291,7 +291,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             claim.any_records_found = await self._purge_round(
                 claim.namespace, claim.config, claim.incarnation
             )
-            return claim.any_records_found
+            return True
 
     @abstractmethod
     async def _prepare_storage(

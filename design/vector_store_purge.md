@@ -69,8 +69,9 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
 
 `VectorStore.purge_deleted_collections()` is part of the contract: one bounded
 round per call, on the tombstone that came due first; it returns whether it
-reclaimed anything. The stores whose deletion reclaims physically (both SQLite
-stores) return `False`.
+ran a round, `False` once nothing is due, so a caller drains the queue by
+calling it until `False`. The stores whose deletion reclaims physically (both
+SQLite stores) return `False`.
 
 A round runs inside `claim_purgeable_incarnation()`:
 
@@ -125,8 +126,8 @@ exists holds nothing: the round finds nothing, and the tombstone goes.
 The store never schedules its own purge. The resource manager starts one
 sweeper task per vector store the first time it hands the store out, and
 `close()` cancels them. A sweeper calls `purge_deleted_collections()` again
-after 1 s while rounds reclaim something and after 60 s when one finds nothing
-due; a round that raises is logged and retried a tick later. Sweepers on other
+after 1 s when it ran a round and after 60 s when nothing was due; a round that
+raises is logged and retried a tick later. Sweepers on other
 processes need no coordination: the claim arbitrates.
 
 ### Measured cost of the claim

@@ -95,9 +95,9 @@ async def _purge_deleted_partitions_forever(store: SegmentStore) -> None:
 async def _purge_deleted_collections_forever(store: VectorStore, label: str) -> None:
     """Run the store's purge rounds for as long as the task runs.
 
-    A round that reclaimed something is followed after a short pause, one
-    that reclaimed nothing after the idle interval, and one that raised is
-    logged and retried a tick later. Sweepers in other processes may run
+    A call that ran a round is followed after a short pause, one that found
+    nothing due after the idle interval, and one that raised is logged and
+    retried a tick later. Sweepers in other processes may run
     the same store's purge at the same time.
     """
     while True:

@@ -1033,7 +1033,8 @@ class TestPurgeBatches:
         while await store.purge_deleted_collections():
             await _settle(collection)
             left_after_each_round.append(await left_of_the_incarnation())
-        assert left_after_each_round == [3, 1, 0]
+        # Batches of 2, then a round that finds nothing and removes the tombstone.
+        assert left_after_each_round == [3, 1, 0, 0]
 
 
 class TestLifecycleContract(CollectionLifecycleContract):

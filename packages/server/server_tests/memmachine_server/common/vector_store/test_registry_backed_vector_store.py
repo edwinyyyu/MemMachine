@@ -118,12 +118,10 @@ async def store(tmp_path):
 
 
 async def _purged(store: _Store) -> list[UUID]:
-    """Incarnations the purge rounds claim, until no tombstone is left."""
-    while True:
-        claimed = len(store.purged)
-        await store.purge_deleted_collections()
-        if len(store.purged) == claimed:
-            return store.purged
+    """Incarnations the purge rounds claim, calling the purge until it returns False."""
+    while await store.purge_deleted_collections():
+        pass
+    return store.purged
 
 
 @pytest.mark.asyncio
@@ -322,3 +320,20 @@ async def test_open_or_create_creates_again_after_a_deletion_during_preparation(
     assert len(incarnations) == 2
     assert opened._incarnation == incarnations[1]
     assert await _purged(store) == incarnations[:1]
+
+
+@pytest.mark.asyncio
+async def test_calling_the_purge_until_it_returns_false_drains_every_tombstone(
+    store,
+):
+    """A round that finds nothing still ran, so the calls go on to the next
+    due tombstone."""
+    incarnations = []
+    for name in ("a", "b"):
+        await store.create_collection(namespace=NAMESPACE, name=name, config=CONFIG)
+        registered = await store._collection_registry.get(NAMESPACE, name)
+        assert registered is not None
+        incarnations.append(registered.incarnation)
+        await store.delete_collection(namespace=NAMESPACE, name=name)
+
+    assert sorted(await _purged(store)) == sorted(incarnations)

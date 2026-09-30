@@ -276,6 +276,6 @@ class VectorStore(ABC):
 
         Returns:
             bool:
-                Whether the round reclaimed records.
+                Whether the call ran a round; False when nothing was due.
         """
         raise NotImplementedError
