@@ -23,9 +23,10 @@ has to be able to keep the promise.
   registration, one per collection life (see [collection
   registry](vector_store_collection_registry.md)). Every read, write and
   delete of a handle is scoped to it.
-- An incarnation is never re-minted while it is live or its tombstone is
-  queued, so a new life starts empty: no dead life's records are adopted by it
-  or reclaimed out from under it, whatever record UUIDs either life used.
+- An incarnation is never re-minted while it is registered, pending or live,
+  or its tombstone is queued, so a new life starts empty: no dead life's
+  records are adopted by it or reclaimed out from under it, whatever record
+  UUIDs either life used.
 - The backends store UUIDs in RFC 9562's hyphenated text form, `str(uuid)`, 36
   characters, everywhere. In the registry an incarnation is SQLAlchemy's `Uuid`
   type, whose storage (native on PostgreSQL, 32-character hex on SQLite) never

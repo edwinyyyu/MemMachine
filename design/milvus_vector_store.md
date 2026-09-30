@@ -36,13 +36,13 @@ registry](vector_store_collection_registry.md),
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
   a TIMESTAMPTZ field. Milvus caps a collection at `proxy.maxFieldNum` fields
   (64 on 2.6, 256 on 3.0), so a configuration declares at most 59 properties
-  on 2.6, one fewer per datetime. A TIMESTAMPTZ field holds only the instant, which is all a
-  filter compares; the datetime's UTC offset is stored beside it so the stored
-  record is the one written, as the other stores keep it, though nothing in
-  the store reads it back. Undeclared properties go in the JSON field, still
-  filterable by path. Negation is the complement, as on Qdrant: a negated
-  condition holds where the property has no value, which Milvus's SQL-style
-  null evaluation does not give on its own.
+  on 2.6, one fewer per datetime. A TIMESTAMPTZ field holds the instant, which
+  is all a filter compares; the datetime's UTC offset is stored beside it so
+  the stored record is the one written, as the other stores keep it.
+  Undeclared properties go in the JSON field, still filterable by path.
+  Negation is the complement, as on Qdrant: a negated condition holds where
+  the property has no value, which Milvus's SQL-style null evaluation does not
+  give on its own.
 - **Scores** are the server's (cosine similarity, inner product, and the
   square root of Milvus's squared Euclidean distance).
 - **Server-configured limits stay the server's.** A search `limit` reaches the
@@ -54,11 +54,15 @@ registry](vector_store_collection_registry.md),
   constants.
 - **Creation converges:** the collection, its indexes (named by their fields)
   and its load are three steps, each run only when missing.
+- **A delete raises unless Milvus accepted every key sent.** Milvus counts the
+  primary keys a delete accepts, present or not (milvus-io/milvus#51566), and
+  pymilvus's async client returns rather than raises for a delete Milvus
+  rejected, so the store compares that count with the keys it sent.
 - **Milvus Lite is not supported.** It is a separate embedded engine that
   scores, indexes and enforces collection properties differently; a URI with
   no scheme, which pymilvus reads as a Lite file, is refused. Every call the
   store makes exists in Milvus 2.6.8 and later; CI tests against 2.6.24, and
-  the store's tests pass against 3.0.2.
+  the store's tests pass against 2.6.8 and 3.0.2.
 
 ### Why a shared collection
 
@@ -160,10 +164,14 @@ of 1M points instead stalled every tenant's reads and writes for 2.7-9 s at
 Session consistency. Listing by the incarnation field took 57-63 ms per round
 of 10,000 against 70-75 ms by primary-key range (1.4M rows, Milvus 2.6.24).
 
-The listing reads at Bounded, which waits for nothing when the query node
-keeps up, so a round can list entities the previous round deleted but the
-node has not applied yet, and delete them again. At the resource manager's
-one-second pause after a busy round this does not happen. Measured (Milvus
+The listing reads at Bounded, as every other read does, and is correct there:
+a Bounded read is at most `common.gracefulTime` (5 s by default) behind and
+waits rather than read staler, far inside the tombstone retention, so a round
+that lists nothing has found the incarnation empty. When the query node keeps
+up, a Bounded read waits for nothing, so a round can list entities the
+previous round deleted but the node has not applied yet, and delete them
+again. At the resource manager's one-second pause after a busy round this does
+not happen. Measured (Milvus
 2.6.24, 4 CPUs / 5 GB; one dead incarnation of 200,000 entities among 50 live
 tenants of 2,000, 128 dimensions; rounds of 10,000 on the async client while 4
 tasks search live tenants; two runs each):
@@ -182,12 +190,6 @@ measurement above, one dead incarnation of 1M, rounds of 10,000): at the
 one-second pause Bounded took 114.4 and 114.9 s over 101-102 rounds against
 Session's 120.8 and 121.2 s over 101, every entity purged each time; with no
 pause Bounded took 118.9 s over 379 rounds against Session's 25.0 s over 101.
-
-The listing reads at Bounded, as every other read does, and is correct
-there: a Bounded read is at most `common.gracefulTime` (5 s by default) behind
-and waits rather than read staler, far inside the tombstone retention, so a
-round that lists nothing has found the incarnation empty and every record is
-purged. A listing that lags a round only repeats that round's deletes.
 
 ## Consistency
 
@@ -216,12 +218,11 @@ behind, the read waits rather than reads staler, and fails over to another
 replica if the node's tsafe stalls for 3 s (`queryNode.waitTsafeStallTimeout`,
 from 2.6.15).
 
-**The store reads at Bounded**, Milvus's default: it
-names no level when it creates a collection, so pymilvus creates it at
-Bounded, and none on a read, so every read runs at the collection's level.
-The level is not configurable: the stated delay of at most
-`common.gracefulTime` and the tombstone retention depend on it, and it
-becomes a setting when the index and search parameters do. `MilvusConf` had
+**The store reads at Bounded**, Milvus's default: it names no level when it
+creates a collection, so pymilvus creates it at Bounded, and none on a read,
+so every read runs at the collection's level. The level is not configurable:
+the stated delay of at most `common.gracefulTime` and the tombstone retention
+depend on it. `MilvusConf` had
 `consistency_level` since the Milvus backend arrived in #1471, defaulting to
 Session with no stated reason; a configuration that still sets it is ignored.
 
@@ -256,12 +257,12 @@ reads reflect every earlier write (see
 
 ## Client
 
-The store calls pymilvus's `AsyncMilvusClient`, whose
-docstring still calls it experimental and partial; it has every call the store
-makes. It had run the synchronous `MilvusClient` under `asyncio.to_thread`,
-where every call held a thread of the event loop's default executor, min(32,
-CPUs + 4) threads shared by every `to_thread` call of the process, for as long
-as Milvus took to answer, a read's wait for its level included. Measured
+The store calls pymilvus's `AsyncMilvusClient`, whose docstring still calls it
+experimental and partial; it has every call the store makes. It had run the
+synchronous `MilvusClient` under `asyncio.to_thread`, where every call held a
+thread of the event loop's default executor, min(32, CPUs + 4) threads shared
+by every `to_thread` call of the process, for as long as Milvus took to
+answer, a read's wait for its level included. Measured
 (collection Bounded; writers in another process; the measured process running
 8 Bounded searches plus G gets by id at level L; 15 executor threads for the
 synchronous client; two rounds):

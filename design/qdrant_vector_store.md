@@ -29,18 +29,16 @@ registry](vector_store_collection_registry.md),
 - **Client:** `AsyncQdrantClient`, with `request_timeout_seconds` as its
   timeout. Custom sharding was removed in #1671.
 - **Oversized upserts are halved.** Qdrant's REST API refuses a request over
-  `service.max_request_size_mb` (32 unless configured) with a 400 whose
-  message says the JSON payload "is larger than allowed" (measured on
+  `service.max_request_size_mb` (32 unless configured) with a 400 (measured on
   1.19.1; the status is not documented), and a proxy in front of it may
   refuse one with a 413. An upsert refused with either is halved until its
-  halves fit or a single point is refused. A malformed batch is halved too:
-  its status is the same, and only the message, which the store does not
-  parse, tells them apart. Sizing requests to fit beforehand would mean
-  reproducing qdrant-client's undocumented serialization. gRPC takes no
-  such limit (Qdrant's server and qdrant-client both set none; a 140 MB
-  upsert went through). Any other error raises at once: a timed-out request
-  may still be applied, and sending it again only adds load to a server
-  already too slow.
+  halves fit or a single point is refused. A malformed batch is halved too,
+  since only the message, which the store does not parse, tells the two 400s
+  apart. Sizing requests beforehand would mean reproducing qdrant-client's
+  undocumented serialization. gRPC has no such limit: Qdrant's server and
+  qdrant-client set none, and a 140 MB upsert went through. Any other error
+  raises at once: a timed-out request may still be applied, and sending it
+  again adds load to a server already too slow.
 
 ## Point ids
 
@@ -94,7 +92,7 @@ and the target's record UUID; known SHA-1 attacks need control of both inputs.
 Isolation then holds as long as the attacker cannot write to Qdrant or the
 registry directly, where isolation is moot anyway.
 
-**Rejected: reversible ids.** A point id the store can invert, such as the
+**Why not reversible ids.** A point id the store can invert, such as the
 record UUID XOR the incarnation, would let a search recover the record UUID
 from the point id and return no payload. But whatever lets the store invert
 the mapping lets anyone holding the incarnations aim it: with the target's
@@ -112,7 +110,7 @@ proper UUID: an XOR of two version-4 UUIDs has version 0 and variant 0, and a
 UUIDv8 fixes 6 of its 128 bits, leaving 122 free, too few to hold an arbitrary
 record UUID's 122 random bits and 4 version bits reversibly.
 
-**Rejected: conditional upsert.** Qdrant 1.16 added `update_filter`
+**Why not a conditional upsert.** Qdrant 1.16 added `update_filter`
 (qdrant/qdrant#7006): an upsert filtered on the writer's incarnation leaves a
 point under another incarnation as it is and skips the writer's point without
 an error. It kept bare ids, but a reused UUID's record was silently dropped,

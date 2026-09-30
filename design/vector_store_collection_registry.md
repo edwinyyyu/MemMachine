@@ -101,13 +101,11 @@ Index `collection_registry_gc__vs_ea` on (`vector_store_name`, `enqueued_at`)
 bounds the purge claim, equality before order. The index follows the
 repository's naming scheme (table, two letters per column).
 
-The queue carries `namespace` and `config` because nothing else knows where a
-dead incarnation's records are once the collection is gone: the native
-collection's name is derived from them, and every handle that knew them has
-been discarded. It carries `name` only so that an operator looking at a
-tombstone, a dead-lettered one above all, can tell which collection it was, as
-the segment store's queue carries its partition key "for forensics". Dropping
-it was considered; it stays, for inspection.
+The queue carries `namespace` and `config` because nothing else locates a
+dead incarnation's records once the collection is gone (on Qdrant and Milvus,
+the native collection's name is derived from them). It carries `name` so an
+operator looking at a tombstone, a dead-lettered one above all, can tell which
+collection it was, as the segment store's queue carries its partition key.
 
 ### Operations
 
@@ -140,9 +138,10 @@ incarnation once, at open. It is also how a handle is fenced (below).
 tombstone with `enqueued_at = now()`. The collection is unreachable when it
 commits. Given an incarnation, it deletes the row only if it carries it: a
 creation whose storage preparation raised takes back its own registration
-that way, never one registered under the name since. Racing deleters serialize on the
-row's write lock and the loser deletes nothing, on PostgreSQL and SQLite
-alike, so a deletion is idempotent and queues one tombstone. (The segment
+that way, never one registered under the name since. Racing deleters
+serialize on the row's write lock and the loser deletes nothing, on
+PostgreSQL and SQLite alike, so a deletion is idempotent and queues one
+tombstone. (The segment
 store pins its row with the write fence its writes use before its queue
 insert; the registry has no such fence, so the `DELETE` goes first.)
 
@@ -184,9 +183,7 @@ for it rather than registering; no row means create; losing the create means a
 racing creator took the name; losing the mark means a racing deleter removed
 the collection while its storage was prepared, so the loop creates again.
 After 10 attempts it raises `VectorStoreAttemptsExhaustedError`, which says so
-when the collection stayed pending. The event backend's service locator
-creates a session's collection strictly when it finds none and, on losing that
-create, opens the winner's.
+when the collection stayed pending.
 
 The contract tests (`collection_lifecycle_contract.py`) pin both outcomes of a
 lost race on Qdrant and Milvus: the loser opens the winner's collection, or
@@ -201,12 +198,12 @@ deleted, every operation on the handle raises
 the same name is a new life the old handle cannot reach.
 
 - Every operation looks up the collection under the handle's name (`get`)
-  before its remote call, and refuses the handle unless the row carries the
-  handle's incarnation: a handle known to be dead.
+  before its remote call, and raises unless the row carries the handle's
+  incarnation.
 - Every write looks it up again after the remote call, so a write that
   completed under an incarnation that died meanwhile raises instead of
   reporting success.
-- A handle receives the registry's `get` alone, not the registry.
+- A handle is given the registry's `get` alone.
 - A read is not checked afterwards. A deleted collection's records stay until a
   purge round claims its tombstone, so a read in flight when the deletion
   commits returns a snapshot from before it, never a state halfway through a
@@ -228,7 +225,7 @@ where the backend is remote:
 
 - deletion is `DELETE ... RETURNING` then the queue insert, since there is no
   write fence to pin the row with;
-- a handle is fenced by a liveness read before and after, not by a row lock
+- a handle is fenced by a registry lookup before and after, not by a row lock
   held across the write, since the write is not in the database;
 - the purge is one tombstone per call, each backend deleting the way it
   measured best;
@@ -238,14 +235,15 @@ where the backend is remote:
 ## Decisions
 
 - **`unregister` is keyed by name.** Callers delete collections by name, and
-  the name is resolved to the live incarnation inside the deleting
-  transaction. Keying it by incarnation would make every caller resolve the
-  name first, in a separate transaction, and would still need the name-keyed
-  path for a caller that holds no handle.
+  the name is resolved to its incarnation inside the deleting transaction; an
+  incarnation, when given, narrows the deletion to it. Keying it by
+  incarnation alone would make every caller resolve the name first, in a
+  separate transaction, and would still need the name-keyed path for a caller
+  that holds no handle.
 - **The registry keeps the namespace** in the queue, because a dead
   incarnation's records are located by its namespace and configuration (on
-  Qdrant and Milvus, the native collection they name). In #1627, where a store is one native
-  collection, the queue no longer needs it.
+  Qdrant and Milvus, the native collection they name). In #1627, where a store
+  is one native collection, the queue no longer needs it.
 - **`startup` keeps its name.** It creates the tables when missing, which is
   provisioning. Renaming it to `provision`, and taking provisioning out of
   runtime startup, is a change for every store at once, tracked in #1570.
@@ -281,5 +279,5 @@ where the backend is remote:
 - Existing Qdrant and Milvus data is orphaned: the per-namespace registry
   collections are no longer read, and existing records carry name-keyed values
   no incarnation resolves. No migration; pre-GA.
-- A liveness read costs every operation one indexed lookup on the registry's
-  database (two for a write).
+- The liveness check costs every operation one primary-key lookup on the
+  registry's database (two for a write).

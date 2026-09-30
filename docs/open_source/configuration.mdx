@@ -417,10 +417,10 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
       | `config.token` | Milvus auth token for Zilliz Cloud or auth-enabled Milvus server.   | `""` |
       | `config.metrics_factory_id` | ID of the metrics exporter factory the Qdrant or Neo4j store reports its operation latencies to. | `prometheus` |
       | `config.collection_registry` | Qdrant and Milvus: the name of a relational database under `resources.databases` that holds the store's collection registry (see [Vector stores](/open_source/databases#vector-stores)). | *Required* |
-      | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's records are kept before its purge starts, so every write in flight at the deletion has landed and is reclaimed; at least 10 × `request_timeout_seconds` + 300. | `86400` |
+      | `config.tombstone_retention_seconds` | Qdrant and Milvus: whole seconds a deleted collection's records are kept before they are purged; at least 10 × `request_timeout_seconds` + 300. | `86400` |
       | `config.request_timeout_seconds` | Qdrant and Milvus: whole seconds a request to the vector store may take before the client gives up; must be positive. | `30` |
-      | `config.max_varchar_length` | Milvus: bytes a declared string property can hold, the length of its VARCHAR field; Milvus refuses a length above its `proxy.maxVarCharLength`. | `65535` |
-      | `config.purge_batch_size` | Milvus: the most entities one purge round lists and deletes; Milvus refuses a query whose limit exceeds its `quotaAndLimits.limits.maxQueryResultWindow`. | `10000` |
+      | `config.max_varchar_length` | Milvus: bytes a declared string property can hold, at most the server's `proxy.maxVarCharLength`. | `65535` |
+      | `config.purge_batch_size` | Milvus: the most entities one purge round lists and deletes, at most the server's `quotaAndLimits.limits.maxQueryResultWindow`. | `10000` |
       | `config.path`  | The path for the given database.                                    | Depends on provider |
       | `config.username` | Username for internal graph store authentication.                | Depends on provider |
       | `my_storage_id` | The specific configuration for the system's internal graph store.  | *Required*  |

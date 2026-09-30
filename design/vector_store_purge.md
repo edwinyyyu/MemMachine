@@ -22,8 +22,8 @@ and retried.
 
 ### Tombstones
 
-`unregister` removes the live row and queues the incarnation's *tombstone* in
-one transaction (see [collection
+`unregister` removes the collection's row and queues the incarnation's
+*tombstone* in one transaction (see [collection
 registry](vector_store_collection_registry.md)). The collection is unreachable
 when it commits. Its records stay in the backend until purge rounds reclaim
 them.
@@ -34,17 +34,14 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
 - **Why wait.** A write that passed its liveness check before the deletion
   committed can land after it, and the backend cannot refuse it. Every such
   write has landed once the longest a request can be in flight has passed;
-  `request_timeout_seconds` (30 unless configured) bounds that.
-- **Whom the round must see.** A round lists the incarnation's records with the
+  `request_timeout_seconds` (30 unless configured) bounds the client's part.
+- **What a round sees.** A round lists the incarnation's records with the
   store's own reads, which may lag writes by a delay the store states (see
   [consistency](vector_store_consistency.md)): at most 5 s on Milvus at
-  Bounded. So the retention must also exceed that delay. It exceeds both by
-  orders of magnitude, so a round that runs after it and finds nothing proves
-  the incarnation empty for good, at the store's usual read level. A round
-  that lists records an earlier round deleted, before the deletion is
-  reflected, deletes them again; that costs a round, never correctness.
-  The purge reads at the same level as every other read of the store, not a
-  stronger one.
+  Bounded. The retention exceeds that delay too, so a round that runs after
+  it and finds nothing proves the incarnation empty. A round that lists
+  records an earlier round deleted, before the deletion is reflected, deletes
+  them again: a repeated round, never a wrong result.
 - **The retention decides nothing about validity.** A stale write is refused
   by the handle's check after it; the retention only has to outlast any write
   in flight. A write that lands after its tombstone is gone stays under a dead
@@ -85,9 +82,9 @@ A round runs inside `claim_purgeable_incarnation()`:
    tombstone; that costs a repeated round and nothing more, since by the time
    any round runs no write can land, so a round finding nothing still proves
    the incarnation empty.
-2. **Round.** The store looks for records under the incarnation in the native
-   collection the tombstone's `namespace` and `config` name, deletes what it
-   finds (per backend, below), and reports whether it found any.
+2. **Round.** The store looks for records under the incarnation where the
+   tombstone's `namespace` and `config` locate them, deletes what it finds
+   (per backend, below), and reports whether it found any.
 3. **Record.** In the claim's transaction: a round that found nothing removes
    the tombstone, which frees the incarnation; a round that found records keeps
    it due and clears its failed rounds.
@@ -101,8 +98,8 @@ the database clock.
 - **Backoff.** After its f-th consecutive failure, a tombstone is claimed
   again once `min(purge_retry_backoff_seconds * 2^(f-1),
   max_purge_retry_backoff_seconds)` has passed since `last_failed_at`: 30 s,
-  60 s, 120 s and so on, at most 1 h. The tombstones behind it are claimed meanwhile, so
-  one failing tombstone does not hold the queue.
+  60 s, 120 s and so on, at most 1 h. The tombstones behind it are claimed
+  meanwhile, so one failing tombstone does not hold the queue.
 - **Dead-lettering.** After 10 consecutive failures, about 3 hours of retries,
   the tombstone is dead-lettered: kept, never re-minted, no longer claimed,
   and reported by an error log naming the incarnation, the last error, and the
@@ -113,10 +110,7 @@ the database clock.
   without changing the schema.
 
 A dead-letter bound, rather than retrying forever, makes a tombstone that
-never purges a visible problem instead of garbage that is quietly retried. The
-failures are counted on the queue row rather than in a separate table, and the
-backoff is computed from recorded facts rather than stored as a time to retry
-at.
+never purges a visible problem instead of garbage that is quietly retried.
 
 ### Per-backend rounds
 
@@ -146,8 +140,9 @@ processes need no coordination: the claim arbitrates.
   live collections and 20,000 tombstones): with two sweepers running rounds
   back to back, about 78 per second, beside 16 interactive workers,
   interactive throughput and the p99 of the handles' liveness lookup were
-  unchanged within run-to-run noise on PostgreSQL. On SQLite, where the sweepers write in the same
-  process, throughput dropped 2.5-14% at that rate, as much as with sweepers
+  unchanged within run-to-run noise on PostgreSQL. On SQLite, where the
+  sweepers write in the same process, throughput dropped 2.5-14% at that
+  rate, as much as with sweepers
   that only commit a one-row write per round, and not measurably at the
   resource manager's pace.
 

@@ -14,7 +14,7 @@ correctness:
   and re-creating a name did not end the old life (#1563).
 
 The goal is that any number of MemMachine server processes, on any hosts, can
-serve any collection of a shared Qdrant or Milvus deployment, with:
+serve any collection of a Qdrant or Milvus they share, with:
 
 - creation of a name arbitrated once;
 - deletion final, not undone by a write in flight;
@@ -59,8 +59,8 @@ behind its choices.
    read and delete is scoped to it. Before each operation, and after each
    write, the handle checks that its incarnation is still live.
 4. **Delete.** One registry transaction removes the collection's row and
-   queues a tombstone. Every handle of that life is stale from then on, in every
-   process.
+   queues a tombstone. Every handle of that life is stale from then on, in
+   every process.
 5. **Purge.** Once the retention (a day by default) has passed, sweepers in
    every process claim tombstones oldest first and reclaim their records in
    bounded rounds, until a round finds none and the tombstone goes.
@@ -82,8 +82,8 @@ behind its choices.
   `resources.databases`, that holds the store's registry;
 - `tombstone_retention_seconds` (86,400): how long a deleted collection's
   records stay before their purge starts;
-- `request_timeout_seconds` (30): the bound on every request to the backend,
-  which the retention must far exceed.
+- `request_timeout_seconds` (30): the bound on every request to the backend.
+  The retention must be at least 10 times it plus 300 seconds.
 
 `MilvusConf` also gains `max_varchar_length` (65,535) and `purge_batch_size`
 (10,000), two sizes the Milvus server's own configuration bounds, and loses
@@ -97,9 +97,8 @@ use.
 Every backend client is the library's asynchronous client: `AsyncQdrantClient`
 and pymilvus's `AsyncMilvusClient`. A synchronous client run on worker threads
 holds a thread of the process's shared executor for the whole of each request,
-so enough slow requests starve every other call of the process (measured in
-the [Milvus](milvus_vector_store.md) document), so a library's async client is
-used whenever one exists.
+and enough slow requests starve every other call of the process (measured in
+the [Milvus](milvus_vector_store.md) document).
 
 ## Related work
 
@@ -121,5 +120,4 @@ used whenever one exists.
 - Existing Qdrant and Milvus data is orphaned, and an existing native Milvus
   collection has to be dropped. No migration; pre-GA.
 - Milvus Lite is not supported; the Milvus store needs a Milvus server.
-- Every Qdrant or Milvus deployment needs a relational database for its
-  registry.
+- Every Qdrant or Milvus store needs a relational database for its registry.
