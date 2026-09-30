@@ -228,9 +228,27 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     async def _create_native_collection(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
-        """Ensure the native collection of a namespace and configuration exists.
+        """
+        Ensure the native collection of a namespace and configuration exists.
 
-        Completes one that a failed creation left part-built.
+        The native collection holds the records of every collection with
+        this namespace and configuration, and of no other, so two
+        configurations never share one. It is ensured before each
+        registration, by any number of processes at once, so this must be
+        idempotent and safe to race, and must complete a native collection
+        a failed call left part-built.
+
+        Args:
+            namespace (str):
+                Namespace of the collection being created.
+            config (VectorStoreCollectionConfig):
+                Configuration of the collection being created.
+
+        Raises:
+            Exception:
+                Whatever the backend raises. The collection is then not
+                registered, and the next creation of the configuration
+                completes what this call left.
         """
         raise NotImplementedError
 
@@ -238,15 +256,57 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     def _build_collection_handle(
         self, namespace: str, name: str, registered: RegisteredCollection
     ) -> CollectionT:
-        """Build a handle bound to the registered incarnation."""
+        """
+        Build a handle bound to a registered collection's incarnation.
+
+        The collection's native collection was ensured before it was
+        registered.
+
+        Args:
+            namespace (str):
+                Namespace of the collection.
+            name (str):
+                Name of the collection within the namespace.
+            registered (RegisteredCollection):
+                The collection's incarnation and configuration.
+
+        Returns:
+            CollectionT:
+                A handle bound to the incarnation, whose operations raise
+                once the collection is deleted.
+        """
         raise NotImplementedError
 
     @abstractmethod
     async def _purge_round(
         self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
     ) -> bool:
-        """Delete records carrying a deleted incarnation, and return whether it found any.
+        """
+        Delete records carrying a deleted incarnation, and return whether it found any.
 
-        Returning False removes the incarnation's tombstone.
+        Runs under a purge claim, after the tombstone's retention. Returning
+        False removes the tombstone, so it must return False only when no
+        record under the incarnation remains; a round may delete some of the
+        records and return True, to be run again. It must be safe to repeat,
+        and to run on two purgers at once. The native collection may be
+        gone, in which case no record remains.
+
+        Args:
+            namespace (str):
+                Namespace of the deleted collection.
+            config (VectorStoreCollectionConfig):
+                Configuration of the deleted collection; with the namespace,
+                it names the native collection.
+            incarnation (UUID):
+                The incarnation the deleted collection's records carry.
+
+        Returns:
+            bool:
+                Whether the round found records under the incarnation.
+
+        Raises:
+            Exception:
+                Whatever the backend raises. The round then counts as
+                failed, and the tombstone is claimed again after a backoff.
         """
         raise NotImplementedError
