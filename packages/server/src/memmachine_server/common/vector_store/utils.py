@@ -64,6 +64,12 @@ def require_valid_query_vector(query_vector: Sequence[float], dimensions: int) -
         )
 
 
+def require_valid_score_threshold(score_threshold: float | None) -> None:
+    """Raise ValueError if a score threshold is NaN."""
+    if score_threshold is not None and math.isnan(score_threshold):
+        raise ValueError("Score threshold is NaN")
+
+
 def require_dimensions(vector: Sequence[float], dimensions: int) -> None:
     """Raise ValueError unless a vector has the collection's dimensions."""
     if len(vector) != dimensions:

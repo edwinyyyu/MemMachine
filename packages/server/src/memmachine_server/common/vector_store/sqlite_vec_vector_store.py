@@ -51,6 +51,7 @@ from .declared_properties import require_declared_types
 from .utils import (
     require_dimensions,
     require_valid_query_vector,
+    require_valid_score_threshold,
     validate_filter,
     validate_identifier,
 )
@@ -204,6 +205,7 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
             return []
         for query_vector in query_vectors:
             require_valid_query_vector(query_vector, self._config.vector_dimensions)
+        require_valid_score_threshold(score_threshold)
 
         if limit <= 0:
             return [QueryResult(matches=[]) for _ in query_vectors]

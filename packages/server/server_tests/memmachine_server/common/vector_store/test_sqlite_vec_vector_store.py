@@ -629,6 +629,15 @@ class TestFilters:
                 query_vectors=[[coordinate] + [1.0] * (VECTOR_DIM - 1)], limit=1
             )
 
+    @pytest.mark.asyncio
+    async def test_a_nan_score_threshold_is_refused(self, collection):
+        with pytest.raises(ValueError, match="threshold is NaN"):
+            await collection.query(
+                query_vectors=[_normalize([1.0, 0.0, 0.0])],
+                limit=1,
+                score_threshold=math.nan,
+            )
+
 
 class TestDelete:
     @pytest.mark.asyncio
