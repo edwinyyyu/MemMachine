@@ -153,10 +153,11 @@ tasks search live tenants; two runs each):
 | Session | none | 20 | 0 | 4.0-4.5 s | 6.4-9.1 ms |
 | Strong | none | 20 | 0 | 2.2-2.4 s | 7.6-12.9 ms |
 
-The listing stays at Bounded, the level of every other read: the sweeper
-pauses after a busy round, and a caller that runs rounds back to back pays
-repeated deletes, never a wrong result. Session would avoid those, but it waits
-on every write the process makes, which this measurement did not load.
+The listing reads at Bounded, as every other read does, and is correct
+there: a Bounded read is at most `common.gracefulTime` (5 s by default) behind
+and waits rather than read staler, far inside the tombstone retention, so a
+round that lists nothing has found the incarnation empty and every record is
+purged. A listing that lags a round only repeats that round's deletes.
 
 ## Consistency
 
