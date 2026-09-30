@@ -492,17 +492,21 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
 
     @override
     def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredCollection
+        self,
+        namespace: str,
+        name: str,
+        incarnation: UUID,
+        config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
         return MilvusVectorStoreCollection(
             client=self._client,
             native_collection_name=MilvusVectorStore._build_native_collection_name(
-                namespace, registered.config
+                namespace, config
             ),
             namespace=namespace,
             name=name,
-            incarnation=registered.incarnation,
-            config=registered.config,
+            incarnation=incarnation,
+            config=config,
             tracker=self._tracker,
             get_registered_collection=self._collection_registry.get,
             request_timeout_seconds=self._request_timeout_seconds,

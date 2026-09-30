@@ -1,5 +1,6 @@
 """Unit tests for service_locator helpers."""
 
+from datetime import UTC, datetime
 from unittest.mock import NonCallableMagicMock, create_autospec
 
 import pytest
@@ -15,6 +16,7 @@ from memmachine_server.common.vector_store import (
     VectorStore,
     VectorStoreCollection,
     VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionPendingError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
@@ -119,13 +121,14 @@ def test_resolve_user_properties_schema_rejects_unknown_type_name():
         _resolve_user_properties_schema({"customer_tier": "date"})
 
 
-def _resource_manager_losing_the_create(
-    vector_store: NonCallableMagicMock,
-) -> CommonResourceManager:
-    """A resource manager whose vector store's strict create loses the race."""
-    vector_store.create_collection.side_effect = (
-        VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
-    )
+_PENDING = VectorStoreCollectionPendingError(
+    _EVENT_BACKEND_NAMESPACE, "raced", datetime(2026, 1, 1, tzinfo=UTC)
+)
+_TAKEN = VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
+
+
+def _resource_manager(vector_store: NonCallableMagicMock) -> CommonResourceManager:
+    """A resource manager handing out the vector store."""
     embedder = create_autospec(Embedder, instance=True)
     embedder.dimensions = 3
     embedder.similarity_metric = SimilarityMetric.COSINE
@@ -155,16 +158,35 @@ async def test_event_params_opens_the_collection_a_racing_creator_won(monkeypatc
     )
     collection = create_autospec(VectorStoreCollection, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    # Absent, then pending twice, then live.
-    vector_store.open_collection.side_effect = [None, None, None, collection]
+    vector_store.open_collection.side_effect = [None, _PENDING, _PENDING, collection]
+    vector_store.create_collection.side_effect = _TAKEN
 
-    params = await _event_params(
-        config, _resource_manager_losing_the_create(vector_store)
-    )
+    params = await _event_params(config, _resource_manager(vector_store))
 
     assert params.vector_store_collection is collection
     vector_store.create_collection.assert_awaited_once()
     assert vector_store.open_collection.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_event_params_creates_the_collection_when_the_winners_creation_is_undone(
+    monkeypatch,
+):
+    """A worker whose strict create lost to a creation that then failed, and
+    was unregistered, creates the collection itself."""
+    monkeypatch.setattr(service_locator, "_OPEN_RETRY_DELAY_SECONDS", 0)
+    config = EventLongTermMemoryConf(
+        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
+    )
+    collection = create_autospec(VectorStoreCollection, instance=True)
+    vector_store = create_autospec(VectorStore, instance=True)
+    vector_store.open_collection.side_effect = [None, None, collection]
+    vector_store.create_collection.side_effect = [_TAKEN, None]
+
+    params = await _event_params(config, _resource_manager(vector_store))
+
+    assert params.vector_store_collection is collection
+    assert vector_store.create_collection.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -174,13 +196,12 @@ async def test_event_params_gives_up_on_a_collection_that_stays_pending(monkeypa
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.return_value = None
+    vector_store.open_collection.side_effect = _PENDING
 
-    with pytest.raises(RuntimeError, match="did not become live"):
-        await _event_params(config, _resource_manager_losing_the_create(vector_store))
+    with pytest.raises(RuntimeError, match="not live"):
+        await _event_params(config, _resource_manager(vector_store))
 
-    # The first look, then every attempt after losing the create.
     assert (
-        vector_store.open_collection.await_count
-        == 1 + service_locator._MAX_OPEN_ATTEMPTS
+        vector_store.open_collection.await_count == service_locator._MAX_OPEN_ATTEMPTS
     )
+    vector_store.create_collection.assert_not_awaited()

@@ -947,7 +947,10 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
         tracker=OperationTracker(None, prefix="test"),
         get_registered_collection=AsyncMock(
             return_value=RegisteredCollection(
-                incarnation=incarnation, config=config, live=True
+                incarnation=incarnation,
+                config=config,
+                live=True,
+                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         ),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,

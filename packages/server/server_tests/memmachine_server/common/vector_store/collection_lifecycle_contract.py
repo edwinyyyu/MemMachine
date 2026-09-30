@@ -23,6 +23,7 @@ from memmachine_server.common.vector_store import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
     registry_backed_vector_store,
 )
 
@@ -528,6 +529,7 @@ class CollectionLifecycleContract:
                 except (
                     VectorStoreCollectionAlreadyExistsError,
                     VectorStoreCollectionConfigMismatchError,
+                    VectorStoreCollectionPendingError,
                 ):
                     pass
 

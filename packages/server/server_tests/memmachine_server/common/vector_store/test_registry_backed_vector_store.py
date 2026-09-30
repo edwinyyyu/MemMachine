@@ -13,14 +13,11 @@ from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.vector_store import (
     QueryResult,
     Record,
-    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionPendingError,
     registry_backed_vector_store,
-)
-from memmachine_server.common.vector_store.collection_registry import (
-    RegisteredCollection,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -79,13 +76,17 @@ class _Store(RegistryBackedVectorStore[_Collection]):
 
     @override
     def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredCollection
+        self,
+        namespace: str,
+        name: str,
+        incarnation: UUID,
+        config: VectorStoreCollectionConfig,
     ) -> _Collection:
         return _Collection(
             namespace=namespace,
             name=name,
-            incarnation=registered.incarnation,
-            config=registered.config,
+            incarnation=incarnation,
+            config=config,
             tracker=self._tracker,
             get_registered_collection=self._collection_registry.get,
         )
@@ -125,7 +126,7 @@ async def _purged(store: _Store) -> list[UUID]:
 
 
 @pytest.mark.asyncio
-async def test_a_collection_is_invisible_while_its_storage_is_prepared(store):
+async def test_a_collection_is_pending_while_its_storage_is_prepared(store):
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -139,7 +140,11 @@ async def test_a_collection_is_invisible_while_its_storage_is_prepared(store):
     )
     await started.wait()
 
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    with pytest.raises(VectorStoreCollectionPendingError) as pending:
+        await store.open_collection(namespace=NAMESPACE, name=NAME)
+    registered = await store._collection_registry.get(NAMESPACE, NAME)
+    assert registered is not None
+    assert pending.value.registered_at == registered.registered_at
     with pytest.raises(VectorStoreCollectionAlreadyExistsError):
         await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
@@ -266,10 +271,11 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     monkeypatch.setattr(registry, "unregister_incarnation", unregister_incarnation)
     store.prepare = _prepared
 
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    with pytest.raises(VectorStoreCollectionPendingError):
+        await store.open_collection(namespace=NAMESPACE, name=NAME)
     with pytest.raises(VectorStoreCollectionAlreadyExistsError):
         await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    with pytest.raises(VectorStoreAttemptsExhaustedError, match="pending"):
+    with pytest.raises(VectorStoreCollectionPendingError):
         await store.open_or_create_collection(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )

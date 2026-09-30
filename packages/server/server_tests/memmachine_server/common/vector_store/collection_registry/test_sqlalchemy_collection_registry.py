@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -19,9 +20,6 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from memmachine_server.common.vector_store.collection_registry import (
-    RegisteredCollection,
-)
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     _MAX_FAILED_PURGE_ROUNDS,
     CollectionRow,
@@ -207,13 +205,16 @@ async def test_a_collection_is_pending_until_marked_live(
 
     incarnation = await registry.register(NAMESPACE, "c", CONFIG)
 
-    assert await registry.get(NAMESPACE, "c") == RegisteredCollection(
-        incarnation=incarnation, config=CONFIG, live=False
+    pending = await registry.get(NAMESPACE, "c")
+    assert pending is not None
+    assert (pending.incarnation, pending.config, pending.live) == (
+        incarnation,
+        CONFIG,
+        False,
     )
+    assert pending.registered_at.tzinfo is not None
     assert await registry.mark_live(incarnation)
-    assert await registry.get(NAMESPACE, "c") == RegisteredCollection(
-        incarnation=incarnation, config=CONFIG, live=True
-    )
+    assert await registry.get(NAMESPACE, "c") == replace(pending, live=True)
     assert not await registry.mark_live(incarnation)
 
 
@@ -232,9 +233,9 @@ async def test_only_the_registered_incarnation_is_marked_live(
     registered_since = await registry.register(NAMESPACE, "c", CONFIG)
 
     assert not await registry.mark_live(deleted)
-    assert await registry.get(NAMESPACE, "c") == RegisteredCollection(
-        incarnation=registered_since, config=CONFIG, live=False
-    )
+    registered = await registry.get(NAMESPACE, "c")
+    assert registered is not None
+    assert (registered.incarnation, registered.live) == (registered_since, False)
     assert await registry.mark_live(registered_since)
 
 

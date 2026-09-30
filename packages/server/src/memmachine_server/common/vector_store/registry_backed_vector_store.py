@@ -31,6 +31,7 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
 )
 from .declared_properties import require_declared_types
 from .utils import (
@@ -257,7 +258,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
 
     Any process connected to the same database, with the same registry, may
     serve any collection. A collection is pending until its storage is
-    prepared: meanwhile `open_collection` answers None,
+    prepared: meanwhile opening it raises VectorStoreCollectionPendingError,
     `open_or_create_collection` waits for it, and creating its name raises
     VectorStoreCollectionAlreadyExistsError. One a crash left pending is
     deleted like any other.
@@ -321,12 +322,11 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             # another creator took the name meanwhile, and losing the mark
             # means a deleter removed this one while its storage was prepared
             # (create again).
-            pending = False
+            registered: RegisteredCollection | None = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
                 registered = await self._collection_registry.get(namespace, name)
-                pending = registered is not None and not registered.live
                 if registered is not None:
                     if registered.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
@@ -334,7 +334,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                         )
                     if registered.live:
                         return self._build_collection_handle(
-                            namespace, name, registered
+                            namespace, name, registered.incarnation, config
                         )
                     continue
                 try:
@@ -348,17 +348,12 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 )
                 if await self._collection_registry.mark_live(incarnation):
                     return self._build_collection_handle(
-                        namespace,
-                        name,
-                        RegisteredCollection(
-                            incarnation=incarnation, config=config, live=True
-                        ),
+                        namespace, name, incarnation, config
                     )
-            if pending:
-                raise VectorStoreAttemptsExhaustedError(
-                    f"Collection ({namespace!r}, {name!r}) stayed pending through "
-                    f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts to open it; if its "
-                    "creation was abandoned, delete it to create it again"
+            # The last lookup found the collection pending.
+            if registered is not None:
+                raise VectorStoreCollectionPendingError(
+                    namespace, name, registered.registered_at
                 )
             raise VectorStoreAttemptsExhaustedError(
                 f"Opening or creating collection ({namespace!r}, {name!r}) made "
@@ -396,9 +391,15 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     async def open_collection(self, *, namespace: str, name: str) -> CollectionT | None:
         require_identifiers(namespace, name)
         registered = await self._collection_registry.get(namespace, name)
-        if registered is None or not registered.live:
+        if registered is None:
             return None
-        return self._build_collection_handle(namespace, name, registered)
+        if not registered.live:
+            raise VectorStoreCollectionPendingError(
+                namespace, name, registered.registered_at
+            )
+        return self._build_collection_handle(
+            namespace, name, registered.incarnation, registered.config
+        )
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
@@ -461,21 +462,26 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
 
     @abstractmethod
     def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredCollection
+        self,
+        namespace: str,
+        name: str,
+        incarnation: UUID,
+        config: VectorStoreCollectionConfig,
     ) -> CollectionT:
         """
-        Build a handle bound to a registered collection's incarnation.
+        Build a handle bound to a live collection's incarnation.
 
-        The collection is live: its storage was prepared before it was
-        marked so.
+        The collection's storage was prepared before it was marked live.
 
         Args:
             namespace (str):
                 Namespace of the collection.
             name (str):
                 Name of the collection within the namespace.
-            registered (RegisteredCollection):
-                The collection's incarnation and configuration.
+            incarnation (UUID):
+                The incarnation the collection is registered under.
+            config (VectorStoreCollectionConfig):
+                The configuration the collection was created with.
 
         Returns:
             CollectionT:

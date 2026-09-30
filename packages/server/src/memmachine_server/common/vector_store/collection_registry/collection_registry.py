@@ -15,6 +15,7 @@ Qdrant, or the same Milvus database.
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from memmachine_server.common.vector_store.data_types import (
@@ -28,13 +29,15 @@ class RegisteredCollection:
     A registered collection.
 
     Its `incarnation` is the value its records carry, `config` the
-    configuration it was created with, and `live` whether its storage is
-    prepared: a collection is pending until it is marked live.
+    configuration it was created with, `live` whether its storage is
+    prepared (a collection is pending until it is marked live), and
+    `registered_at` when it was registered, on the registry's clock.
     """
 
     incarnation: UUID
     config: VectorStoreCollectionConfig
     live: bool
+    registered_at: datetime
 
 
 @dataclass

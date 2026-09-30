@@ -1,6 +1,7 @@
 """Data types for vector store."""
 
 from collections.abc import Mapping
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import (
@@ -89,6 +90,21 @@ class VectorStoreCollectionAlreadyExistsError(Exception):
         self.namespace = namespace
         self.name = name
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
+
+
+class VectorStoreCollectionPendingError(Exception):
+    """Raised when opening a collection whose creation has not completed."""
+
+    def __init__(self, namespace: str, name: str, registered_at: datetime) -> None:
+        """Initialize with the namespace, name, and registration time of the pending collection."""
+        self.namespace = namespace
+        self.name = name
+        self.registered_at = registered_at
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) has been pending since "
+            f"{registered_at.isoformat()}; if its creation was abandoned, "
+            "delete it to create it again."
+        )
 
 
 class VectorStoreCollectionConfigMismatchError(Exception):

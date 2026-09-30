@@ -84,6 +84,7 @@ keeps the schema static.
 | `incarnation` | UUID, unique | The collection's current life. Its records carry it. |
 | `config` | JSON (JSONB on PostgreSQL) | The configuration the collection was created with. A handle is built from it; open-or-create compares against it. |
 | `live` | boolean | Whether the collection's storage is prepared. A pending collection holds its name; only a live one is opened. |
+| `registered_at` | timestamp | When the collection was registered, on the database clock. An operator finds a collection stuck pending by it, and opening a pending collection reports it. |
 
 `collection_registry_gc`, the purge queue, one row per deleted incarnation
 (its *tombstone*; see [purge](vector_store_purge.md)):
@@ -160,8 +161,10 @@ indexed and is loaded), and marks it live:
 - The registry's primary key is the one arbiter: a racing creator on any
   process loses at the insert, never in the backend.
 - A pending collection holds its name but is not opened: `open_collection`
-  answers `None`, a `create_collection` of the name raises
+  raises `VectorStoreCollectionPendingError`, which says since when it has
+  been pending, a `create_collection` of the name raises
   `VectorStoreCollectionAlreadyExistsError`, and open-or-create waits for it.
+  `None` from `open_collection` means only that no collection holds the name.
 - A preparation that raises unregisters the pending collection when the
   registry can, which frees the name and queues the incarnation's tombstone.
   Otherwise, and after a crash, the collection stays pending until it is
@@ -184,11 +187,13 @@ pending row of the same configuration is another creator's, so the loop waits
 for it rather than registering; no row means create; losing the create means a
 racing creator took the name; losing the mark means a racing deleter removed
 the collection while its storage was prepared, so the loop creates again.
-After 10 attempts it raises `VectorStoreAttemptsExhaustedError`, which says so
-when the collection stayed pending. The event backend's service locator
-creates a session's collection strictly when it finds none and, on losing that
-create, opens the winner's once it is live, polling a second apart, since
-open-or-create is to be removed (#1625).
+After 10 attempts it raises `VectorStoreCollectionPendingError` if the last
+lookup found the collection pending, and `VectorStoreAttemptsExhaustedError`
+otherwise. The event backend's service locator, since open-or-create is to be
+removed (#1625), composes open and a strict create itself: up to 10 attempts a
+second apart, each opening the collection and creating it when there is none;
+losing the create, or finding the collection pending, moves to the next
+attempt.
 
 The contract tests (`collection_lifecycle_contract.py`) pin both outcomes of a
 lost race on Qdrant and Milvus: the loser opens the winner's collection, or

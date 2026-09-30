@@ -8,6 +8,7 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
 )
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -21,4 +22,5 @@ __all__ = [
     "VectorStoreCollectionConfig",
     "VectorStoreCollectionConfigMismatchError",
     "VectorStoreCollectionHandleStaleError",
+    "VectorStoreCollectionPendingError",
 ]

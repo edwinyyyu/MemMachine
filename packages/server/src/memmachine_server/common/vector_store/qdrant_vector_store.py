@@ -455,17 +455,21 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
 
     @override
     def _build_collection_handle(
-        self, namespace: str, name: str, registered: RegisteredCollection
+        self,
+        namespace: str,
+        name: str,
+        incarnation: UUID,
+        config: VectorStoreCollectionConfig,
     ) -> QdrantVectorStoreCollection:
         return QdrantVectorStoreCollection(
             client=self._client,
             native_collection_name=QdrantVectorStore._build_native_collection_name(
-                namespace, registered.config
+                namespace, config
             ),
             namespace=namespace,
             name=name,
-            incarnation=registered.incarnation,
-            config=registered.config,
+            incarnation=incarnation,
+            config=config,
             tracker=self._tracker,
             get_registered_collection=self._collection_registry.get,
         )

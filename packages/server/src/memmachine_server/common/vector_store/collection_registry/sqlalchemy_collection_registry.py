@@ -44,6 +44,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 
+from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
@@ -95,6 +96,9 @@ class CollectionRow(BaseCollectionRegistry):
     )
     # Whether the collection's storage is prepared; it is pending until then.
     live: MappedColumn[bool] = mapped_column(Boolean, nullable=False)
+    registered_at: MappedColumn[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class PurgeQueueRow(BaseCollectionRegistry):
@@ -294,6 +298,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         incarnation=incarnation,
                         config=config.model_dump(mode="json"),
                         live=False,
+                        registered_at=func.now(),
                     )
                 )
                 queued = (
@@ -338,6 +343,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         CollectionRow.incarnation,
                         CollectionRow.config,
                         CollectionRow.live,
+                        CollectionRow.registered_at,
                     ).where(
                         CollectionRow.vector_store_name == self._vector_store_name,
                         CollectionRow.namespace == namespace,
@@ -351,6 +357,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             incarnation=row.incarnation,
             config=VectorStoreCollectionConfig.model_validate(row.config),
             live=row.live,
+            registered_at=ensure_tz_aware(row.registered_at),
         )
 
     @override
