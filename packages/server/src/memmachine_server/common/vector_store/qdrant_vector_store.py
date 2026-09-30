@@ -527,11 +527,9 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
         distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
             config.similarity_metric
         ]
-        # The collection and its indexes are created under separate guards. Sharing
-        # one meant a collection that already existed - a second worker, or a retry
-        # after a crash between the two calls - raised on create_collection, took
-        # the already-exists path, and left the collection with no payload indexes
-        # at all.
+        # The collection and each payload index are created under their own
+        # already-exists guard, so a creation that finds the collection there
+        # still creates the indexes it lacks.
         try:
             await self._client.create_collection(
                 collection_name=native_collection_name,

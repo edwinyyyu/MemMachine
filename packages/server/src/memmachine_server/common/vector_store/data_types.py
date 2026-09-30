@@ -127,12 +127,7 @@ class VectorStoreCollectionHandleStaleError(Exception):
 
 
 class VectorStoreAttemptsExhaustedError(Exception):
-    """The store exhausted its internal attempts; diagnose the cause.
-
-    Raised when an operation kept failing in a way that should not recur
-    under normal operation. An immediate retry is unlikely to succeed;
-    the underlying error is chained as the cause.
-    """
+    """Raised when an operation gave up after repeated attempts that made no progress."""
 
 
 class Record(BaseModel):

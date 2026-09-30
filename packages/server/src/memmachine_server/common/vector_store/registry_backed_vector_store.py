@@ -123,8 +123,9 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     """A vector store whose collections a VectorStoreCollectionRegistry arbitrates.
 
     Any process connected to the same database, with the same registry, may
-    serve any collection. A collection is invisible until its storage is
-    prepared: meanwhile opens answer None and creations of its name raise
+    serve any collection. A collection is pending until its storage is
+    prepared: meanwhile `open_collection` answers None,
+    `open_or_create_collection` waits for it, and creating its name raises
     VectorStoreCollectionAlreadyExistsError. One a crash left pending is
     deleted like any other.
 
@@ -225,8 +226,8 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             if pending:
                 raise VectorStoreAttemptsExhaustedError(
                     f"Collection ({namespace!r}, {name!r}) stayed pending through "
-                    f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts to open it; one left "
-                    "pending is deleted to create it again"
+                    f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts to open it; if its "
+                    "creation was abandoned, delete it to create it again"
                 )
             raise VectorStoreAttemptsExhaustedError(
                 f"Opening or creating collection ({namespace!r}, {name!r}) made "
@@ -302,17 +303,16 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         """
         Prepare the storage a newly registered collection needs.
 
-        The collection is registered pending under the incarnation, and is
-        marked live, and opened, only once this returns. Its storage may be
-        shared with the other collections of its namespace and
-        configuration, such as a native collection they are all stored in, and
-        may be its own. Shared storage is prepared by any number of
-        processes at once, so preparing it must be idempotent and safe to
-        race; what serves one namespace and configuration serves no other.
-        Whatever a failed or interrupted call leaves must be recoverable:
-        completed by a later call for the same namespace and configuration,
-        or reclaimed by the purge rounds of the incarnation once its pending
-        collection is deleted.
+        The collection is registered, pending, under the incarnation, and is
+        marked live once this returns. Its storage may be shared with the
+        other collections of its namespace and configuration, such as a
+        native collection they are all stored in, and may be its own. Shared
+        storage is prepared by any number of processes at once, so preparing
+        it must be idempotent and safe to race; what serves one namespace and
+        configuration serves no other. Whatever a failed or interrupted call
+        leaves must be recoverable: completed by a later call for the same
+        namespace and configuration, or reclaimed by the purge rounds of the
+        incarnation once its pending collection is deleted.
 
         Args:
             namespace (str):

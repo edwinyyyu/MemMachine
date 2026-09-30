@@ -137,7 +137,7 @@ def _declared_literal(value: PropertyValue) -> str:
 
 
 def _fits(value: PropertyValue, declared_type: type[PropertyValue]) -> bool:
-    """Whether a value can be compared with, or stored in, a declared property."""
+    """Whether a filter value can be compared with a declared property."""
     if isinstance(value, bool):
         return declared_type is bool
     if isinstance(value, int | float):
@@ -488,7 +488,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
 
     Reads run at Milvus's default consistency level, Bounded: a query
     reflects every write that returned at least the server's
-    `common.gracefulTime` (5 s by default) before it began.
+    `common.gracefulTime` before it began.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {

@@ -289,7 +289,8 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         description=(
             "Seconds a deleted collection's records are kept before its purge "
             "starts, so every write to Qdrant in flight at the deletion has landed "
-            "and is reclaimed; at least 10 x request_timeout_seconds + 300."
+            f"and is reclaimed; at least {_RETENTION_FLOOR_TIMEOUT_FACTOR} x "
+            f"request_timeout_seconds + {_RETENTION_FLOOR_EXTRA_SECONDS}."
         ),
     )
     request_timeout_seconds: int = Field(
@@ -337,7 +338,8 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         description=(
             "Seconds a deleted collection's records are kept before its purge "
             "starts, so every write to Milvus in flight at the deletion has landed "
-            "and is reclaimed; at least 10 x request_timeout_seconds + 300."
+            f"and is reclaimed; at least {_RETENTION_FLOOR_TIMEOUT_FACTOR} x "
+            f"request_timeout_seconds + {_RETENTION_FLOOR_EXTRA_SECONDS}."
         ),
     )
     request_timeout_seconds: int = Field(

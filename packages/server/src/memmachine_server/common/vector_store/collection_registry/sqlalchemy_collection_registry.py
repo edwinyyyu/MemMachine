@@ -6,10 +6,10 @@ kept in them cannot arbitrate two processes creating, deleting or
 reclaiming the same logical collection. This registry keeps it in a
 relational database: a table of registered collections keyed by vector
 store, namespace and name, each with its incarnation and whether it is live
-(its storage prepared), and a queue of deleted incarnations claimed in the order they
-come due. The primary key arbitrates registration, a conditional update
-marks a collection live, unregistration is one transaction, and a purge
-claim is a row lock.
+(its storage prepared), and a queue of deleted incarnations claimed in the
+order they come due. The primary key arbitrates registration, a conditional
+update marks a collection live, unregistration is one transaction, and a
+purge claim is a row lock.
 """
 
 import logging
@@ -314,9 +314,9 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @override
     async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> bool:
-        # Conditional on the incarnation, so a creation marks only the
-        # collection it registered, never one registered under the name
-        # after its own was deleted.
+        # Conditional on the incarnation and on the row being pending, so a
+        # creation marks the collection it registered, never one registered
+        # under the name after its own was deleted.
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 update(CollectionRow)

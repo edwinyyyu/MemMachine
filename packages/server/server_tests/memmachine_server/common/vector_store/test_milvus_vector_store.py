@@ -154,8 +154,8 @@ async def store(milvus_client, tmp_path):
     await registry_engine.dispose()
 
 
-# AsyncMilvusClient's constructor timeout bounds only the connection; a request
-# is bounded only by the timeout passed to it, so every request must carry it.
+# AsyncMilvusClient's constructor timeout bounds the connection, not a request,
+# so every request must carry its own.
 _CLIENT_REQUESTS = (
     "has_collection",
     "create_collection",

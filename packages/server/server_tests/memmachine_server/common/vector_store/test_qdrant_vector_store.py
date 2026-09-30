@@ -1254,19 +1254,12 @@ class TestCollectionLifecycleAcrossWorkers:
     async def test_indexes_are_created_when_the_collection_already_exists(
         self, qdrant_client, registry_engine
     ):
-        """A collection that exists without its indexes must still get them.
+        """A collection that exists without its indexes still gets them.
 
-        _prepare_storage creates the collection and its payload indexes
-        in one try block and swallows "already exists" for the whole block. So a
-        second creator - another worker, or a retry after one died between the
-        two calls - takes the exception path and never creates an index. Its
-        docstring claims it creates both idempotently; this pins that claim.
-
-        The incarnation key is declared is_tenant. Verified against Qdrant 1.19:
-        filtering stays correct without the index - a filtered query on an
-        unindexed collection returns only the matching tenant's points - so what
-        is lost is the multitenant storage layout and query speed, not
-        isolation.
+        A second creator, another worker or a retry after one died between the
+        two calls, finds the collection there and creates the indexes it lacks.
+        Without the tenant index on the incarnation, filtering stays correct but
+        the multitenant storage layout and its query speed are lost.
         """
         namespace, name = "raced_ns", "raced_name"
         config = self._config()

@@ -500,9 +500,8 @@ class ConfigurationWizard:
                     )
                 }
             case self.MILVUS_VECTOR_STORE_ID:
-                # The localhost default assumes a Milvus standalone server on
-                # port 19530; user can edit cfg.yml to point at a remote Milvus
-                # or Zilliz Cloud URI/token.
+                # The default URI is a Milvus server on localhost:19530; the
+                # user edits cfg.yml to point at another Milvus or Zilliz Cloud.
                 databases.milvus_confs = {
                     self.MILVUS_VECTOR_STORE_ID: MilvusConf(
                         collection_registry=self.SQLITE_DB_ID,

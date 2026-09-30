@@ -169,13 +169,13 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
     await started.wait()
     store.prepare = _prepared
     registry = store._collection_registry
-    register = registry.register
+    register_collection = registry.register
     registrations = 0
 
     async def counted(namespace, name, config):
         nonlocal registrations
         registrations += 1
-        return await register(namespace, name, config)
+        return await register_collection(namespace, name, config)
 
     monkeypatch.setattr(registry, "register", counted)
     opening = asyncio.create_task(
@@ -261,11 +261,11 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
         raise ConnectionError("the registry is unreachable")
 
     store.prepare = refused
-    unregister = registry.unregister
+    unregister_collection = registry.unregister
     monkeypatch.setattr(registry, "unregister", unreachable)
     with pytest.raises(RuntimeError, match="refused"):
         await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    monkeypatch.setattr(registry, "unregister", unregister)
+    monkeypatch.setattr(registry, "unregister", unregister_collection)
     store.prepare = _prepared
 
     assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
@@ -282,11 +282,11 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
 
 
 @pytest.mark.asyncio
-async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_marked_ready(
+async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_marked_live(
     store,
 ):
-    """The creation returns, as a creation the deletion followed; only a
-    collection registered under the name since could become live."""
+    """The creation returns, as one the deletion followed, and the collection
+    stays deleted."""
     incarnations: list[UUID] = []
 
     async def deleted_meanwhile(namespace, config, incarnation) -> None:

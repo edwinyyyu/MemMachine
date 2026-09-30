@@ -200,7 +200,7 @@ async def test_create_registers_a_fresh_incarnation_with_the_config(
 
 
 @pytest.mark.asyncio
-async def test_a_collection_is_pending_and_not_live_until_marked_ready(
+async def test_a_collection_is_pending_until_marked_live(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
@@ -218,11 +218,11 @@ async def test_a_collection_is_pending_and_not_live_until_marked_ready(
 
 
 @pytest.mark.asyncio
-async def test_only_the_registered_incarnation_is_marked_ready(
+async def test_only_the_registered_incarnation_is_marked_live(
     sqlalchemy_engine, vector_store_name
 ):
     """A creation whose collection was deleted while its storage was
-    prepared cannot mark the collection registered under the name since."""
+    prepared cannot mark live a collection registered under the name since."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     deleted = await registry.register(NAMESPACE, "c", CONFIG)
     assert not await registry.mark_live(NAMESPACE, "c", uuid4())
@@ -384,7 +384,9 @@ async def test_a_recreated_name_gets_a_new_incarnation(
 
 
 @pytest.mark.asyncio
-async def test_a_claim_names_where_the_points_are(sqlalchemy_engine, vector_store_name):
+async def test_a_claim_names_where_the_records_are(
+    sqlalchemy_engine, vector_store_name
+):
     """The claim carries what a purge round needs to find the records: incarnation, namespace, configuration."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = await registry.register(NAMESPACE, "c", OTHER_CONFIG)
@@ -672,7 +674,7 @@ async def test_a_round_that_reports_nothing_is_an_error(
 async def test_an_incarnation_awaiting_purge_is_never_reminted(
     sqlalchemy_engine, vector_store_name, monkeypatch
 ):
-    """A minted incarnation colliding with queued garbage is rejected and re-minted."""
+    """A minted incarnation colliding with a queued tombstone is rejected and re-minted."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     dead = await registry.register(NAMESPACE, "a", CONFIG)
     await registry.unregister(NAMESPACE, "a")
@@ -878,7 +880,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
     The deletion frees the incarnation's row and queues its tombstone in one
     uncommitted transaction; the colliding mint's insert waits on it. Only a
     queue check made after the insert sees the tombstone once the deletion
-    commits: one made before reads the queue too early and registers a live
+    commits: one made before reads the queue too early and registers a
     collection under an incarnation awaiting purge.
     """
     registry = await _registry(sqlalchemy_engine, vector_store_name)

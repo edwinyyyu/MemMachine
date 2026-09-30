@@ -68,7 +68,7 @@ class VectorStoreCollectionRegistry(ABC):
 
     @abstractmethod
     async def startup(self) -> None:
-        """Startup."""
+        """Make the registry ready for use; its owner calls it before the first use."""
         raise NotImplementedError
 
     @abstractmethod
@@ -108,9 +108,8 @@ class VectorStoreCollectionRegistry(ABC):
         """
         Mark a pending collection live, once its storage is prepared.
 
-        Only the collection registered under the incarnation is marked: once
-        it is unregistered, nothing is, not even a collection registered
-        under its (namespace, name) since.
+        The collection is marked if it is still registered, pending, under
+        the incarnation.
 
         Args:
             namespace (str): Namespace of the collection.

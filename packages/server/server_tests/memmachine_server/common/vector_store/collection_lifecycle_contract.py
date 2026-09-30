@@ -59,7 +59,7 @@ class CollectionLifecycleContract:
 
     @staticmethod
     async def count_stored(store, namespace: str, config) -> int:
-        """Records the backend physically holds in the native collection, live or dead."""
+        """Records the backend holds in the native collection, deleted collections' included."""
         raise NotImplementedError
 
     @staticmethod
@@ -243,10 +243,10 @@ class CollectionLifecycleContract:
         records = _records(2)
 
         # The collection dies between the handle's check and its write.
-        get = collection._get_registered_collection
+        get_registered_collection = collection._get_registered_collection
 
         async def deleted_once_checked(namespace, name):
-            registered = await get(namespace, name)
+            registered = await get_registered_collection(namespace, name)
             if registered is not None:
                 await store.delete_collection(namespace=namespace, name=name)
             return registered
@@ -284,14 +284,14 @@ class CollectionLifecycleContract:
         collection = await _fresh(store, LIFECYCLE_NAME)
         record = _records(1)[0]
         checks = 0
-        get = collection._get_registered_collection
+        get_registered_collection = collection._get_registered_collection
 
-        async def counted_get(namespace, name):
+        async def counted_get_registered_collection(namespace, name):
             nonlocal checks
             checks += 1
-            return await get(namespace, name)
+            return await get_registered_collection(namespace, name)
 
-        collection._get_registered_collection = counted_get
+        collection._get_registered_collection = counted_get_registered_collection
 
         await collection.upsert(records=[record])
         assert checks == 2
@@ -306,7 +306,7 @@ class CollectionLifecycleContract:
     @pytest.mark.parametrize(
         "create", ["create_collection", "open_or_create_collection"]
     )
-    async def test_a_failed_storage_preparation_registers_nothing(
+    async def test_a_failed_storage_preparation_frees_the_name(
         self, store, monkeypatch, create
     ):
         """A creation whose storage preparation fails unregisters its
@@ -383,7 +383,7 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        register = registry.register
+        register_collection = registry.register
         lost_registrations = 0
 
         async def another_process_wins(namespace, name, config):
@@ -391,7 +391,7 @@ class CollectionLifecycleContract:
             # lookup and its own registration.
             nonlocal lost_registrations
             lost_registrations += 1
-            incarnation = await register(namespace, name, config)
+            incarnation = await register_collection(namespace, name, config)
             await store._prepare_storage(namespace, config, incarnation)
             await registry.mark_live(namespace, name, incarnation)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
@@ -429,14 +429,14 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        register = registry.register
+        register_collection = registry.register
         other_config = VectorStoreCollectionConfig(vector_dimensions=4)
         lost_registrations = 0
 
         async def another_process_wins(namespace, name, config):
             nonlocal lost_registrations
             lost_registrations += 1
-            incarnation = await register(namespace, name, other_config)
+            incarnation = await register_collection(namespace, name, other_config)
             await registry.mark_live(namespace, name, incarnation)
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
@@ -463,7 +463,7 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        register = registry.register
+        register_collection = registry.register
         lost = False
 
         async def lose_once(namespace, name, config):
@@ -471,7 +471,7 @@ class CollectionLifecycleContract:
             if not lost:
                 lost = True
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
-            return await register(namespace, name, config)
+            return await register_collection(namespace, name, config)
 
         monkeypatch.setattr(registry, "register", lose_once)
 

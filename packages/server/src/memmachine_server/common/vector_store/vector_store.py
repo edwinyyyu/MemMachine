@@ -171,7 +171,7 @@ class VectorStore(ABC):
         config: VectorStoreCollectionConfig,
     ) -> None:
         """
-        Create a logical collection in the vector store and return a handle to it.
+        Create a logical collection in the vector store.
 
         A (namespace, name) pair uniquely identifies a collection.
         The configuration (dimensions, similarity metric, schema)
