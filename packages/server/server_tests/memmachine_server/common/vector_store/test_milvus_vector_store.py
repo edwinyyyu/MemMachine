@@ -453,9 +453,7 @@ class TestUpsertAndQuery:
         assert captured_kwargs["data"] == [collection._build_entity(record)]
 
     @pytest.mark.asyncio
-    async def test_a_query_may_ask_for_more_results_than_the_minimum_ef(
-        self, collection
-    ):
+    async def test_a_query_may_ask_for_hundreds_of_results(self, collection):
         records = [
             _make_record(vector=_normalize([1.0, float(i), 0.0])) for i in range(3)
         ]

@@ -87,13 +87,19 @@ _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
     datetime: DataType.TIMESTAMPTZ,
 }
 
-# HNSW with the parameters of MemMachine's own HNSW engines (hnswlib and
-# usearch); partition-key isolation needs the HNSW family.
-_VECTOR_INDEX_TYPE = "HNSW"
-_VECTOR_INDEX_PARAMS: dict[str, Any] = {"M": 16, "efConstruction": 128}
-# A search keeps at least this many candidates, and one per result when it
-# asks for more: knowhere refuses an ef below the result count.
-_MIN_SEARCH_EF = 128
+# The index AUTOINDEX builds on CPU from Milvus 2.6.10, named so every server
+# builds it, whatever its version or AUTOINDEX configuration; partition-key
+# isolation needs the HNSW family.
+_VECTOR_INDEX_TYPE = "HNSW_SQ"
+_VECTOR_INDEX_PARAMS: dict[str, Any] = {
+    "M": 18,
+    "efConstruction": 240,
+    "sq_type": "SQ4U",
+    "refine": True,
+    "refine_type": "FP16",
+}
+# Candidates per result rescored against the half-precision vectors.
+_SEARCH_REFINE_K = 8
 
 
 def _expr_string(value: str) -> str:
@@ -364,7 +370,7 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
                 data=query_vectors,
                 filter=filter_expr,
                 limit=limit,
-                search_params={"params": {"ef": max(limit, _MIN_SEARCH_EF)}},
+                search_params={"params": {"refine_k": _SEARCH_REFINE_K}},
                 output_fields=[_RECORD_UUID_FIELD],
                 anns_field=_VECTOR_FIELD,
                 timeout=self._request_timeout_seconds,

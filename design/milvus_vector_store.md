@@ -21,12 +21,16 @@ registry](vector_store_collection_registry.md),
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
-  HNSW indexes, which the store's is.
-- **Vector index:** HNSW on float32 vectors, M=16, efConstruction=128,
-  searched with `ef = max(limit, 128)`: the numbers MemMachine's own HNSW
-  engines (hnswlib and usearch) use. knowhere refuses an `ef` below the result
-  count, and Milvus never raises it. Neither the index nor the search is
-  configurable yet.
+  HNSW indexes; the store's HNSW_SQ is one.
+- **Vector index:** HNSW_SQ, 4-bit codes with FP16 refinement, M=18,
+  efConstruction=240: what AUTOINDEX builds on CPU from Milvus 2.6.10
+  (`autoIndex.params.build`, `autoindex_param_nocuda.go`). Naming it builds
+  the same index on every server, whatever its version (2.6.8 and 2.6.9 build
+  float32 HNSW) or AUTOINDEX configuration. A search sets only
+  `refine_k = 8` and leaves `ef` at knowhere's default, `max(limit, 16)`:
+  knowhere walks the graph on the 4-bit codes keeping `max(ef, limit x
+  refine_k)` candidates, and rescores `limit x refine_k` of them against the
+  FP16 vectors. Neither the index nor the search is configurable yet.
 - **Declared properties:** each has a scalar AUTOINDEX, which Milvus
   resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
@@ -76,40 +80,49 @@ Milvus also caps a deployment's collection count.
 
 ### Why this index
 
-Milvus's defaults are cheap rather than accurate. AUTOINDEX builds HNSW_SQ
-(4-bit codes with FP16 refinement) from 2.6.10, chosen for memory, and with no
-search parameters knowhere searches with `ef = max(k, 16)` and rescores only
-the k results the 4-bit codes picked (`refine_k = 1`); the change that made
-it the default says to raise `ef` and `refine_k` if recall is insufficient
-(milvus-io/milvus#47386). Measured on Milvus 2.6.24 (180k vectors of 384
-dimensions from a mixture of 64 clusters; tenants of 100k, 10k, 1k and 100
-rows; 100 queries per tenant size; recall@k against exact search within the
-tenant; one run):
+Milvus's defaults are cheap rather than accurate. AUTOINDEX's HNSW_SQ was
+chosen for memory, and with no search parameters knowhere rescores only the
+results the 4-bit codes picked (`refine_k = 1`); the change that made it the
+default says to raise `ef` and `refine_k` if recall is insufficient
+(milvus-io/milvus#47386). The store keeps every default but `refine_k`.
 
-| Index and search | Recall@10 (100k / 10k / 1k / 100) | Recall@100 |
-|---|---|---|
-| AUTOINDEX, no search parameters | 0.73 / 0.78 / 0.93 / 0.84 | 0.88 / 0.93 / 0.86 / 1.00 |
-| HNSW_SQ, `ef = max(k, 64)`, `refine_k = 2` | 0.93 / 0.96 / 1.00 / 0.99 | 0.99 / 1.00 / 1.00 / 1.00 |
-| HNSW_SQ, `ef = 64` | 0.93 / 0.96 / 1.00 / 0.99 | every query refused |
+Measured on Milvus 2.6.24 (180k vectors of 384 dimensions from a mixture of
+64 clusters; tenants of 100k, 10k, 1k and 100 rows; 100 queries per tenant
+size; recall@k against exact search within the tenant), on the 100k-row
+tenant, over two runs unless marked:
 
-The same data, the store's index against Qdrant's defaults and the Qdrant
-store (one run; memory is the loaded collection's anonymous memory, which
-leaves out the vectors Qdrant keeps memory-mapped):
+| Index and search | Recall@10 | Recall@100 | Search p50, k=10 / k=100 |
+|---|---|---|---|
+| AUTOINDEX, no search parameters (one run) | 0.73 | 0.88 | |
+| HNSW_SQ, `refine_k = 4` | 0.945-0.955 | 0.998-0.999 | 2.2 / 2.6-3.0 ms |
+| HNSW_SQ, `refine_k = 8` (the store) | 0.988-0.990 | 0.999 | 2.2-2.3 / 2.7-3.0 ms |
+| HNSW_SQ, `refine_k = 16` | 0.993-0.994 | 0.999 | 2.4 / 3.7-4.0 ms |
+| HNSW_SQ, `ef = max(k, 128)`, `refine_k = 4` | 0.989-0.990 | 0.998-0.999 | 2.3-2.4 / 2.5-2.6 ms |
+| Float32 HNSW, M=18, efConstruction=240 | 0.855-0.860 | 0.984-0.986 | 2.3-2.6 / 2.5-2.6 ms |
+| Float32 HNSW, M=18, efConstruction=240, `ef = max(k, 128)` | 0.998-1.000 | 0.992-0.993 | 2.3-2.5 / 2.5-2.6 ms |
+| Qdrant store as configured (one run) | 0.977 | 0.940 | 5.8 / 5.9 ms |
 
-| Index and search | Recall@10 (100k / 10k / 1k / 100) | Recall@100 | p50 | Memory |
-|---|---|---|---|---|
-| Float32 HNSW, M=16, efConstruction=128, `ef = max(k, 128)` (the store) | 0.995 / 1.00 / 1.00 / 1.00 | 0.986 / 1.00 / 0.997 / 1.00 | 1.0-2.5 ms | 362 MB |
-| Float32 HNSW, M=16, efConstruction=100, `ef = max(k, 100)` (Qdrant's defaults) | 0.985 / 1.00 / 1.00 / 1.00 | 0.965 / 1.00 / 0.990 / 1.00 | 1.0-2.5 ms | 321 MB |
-| HNSW_SQ, `ef = max(k, 64)`, `refine_k = 2` | 0.948 / 0.963 / 1.00 / 0.994 | 0.994 / 1.00 / 0.998 / 1.00 | 1.0-2.4 ms | 190 MB |
-| Qdrant store as configured (m=0, payload_m=16, no search parameters) | 0.977 / 1.00 / 1.00 / 1.00 | 0.940 / 1.00 / 1.00 / 1.00 | 1.7-5.9 ms | 176 MB |
+Smaller tenants recall 0.99 or more in every HNSW_SQ row with `refine_k` of
+4 or more. The build is not deterministic: one float32 index scored 0.987 and
+0.998 at recall@10 in two runs, so a difference of 0.01 is noise.
 
-Float32 HNSW with the engines' parameters is the choice that needs no tuning
-of its own, and costs memory: on Milvus 3.0.2 at 600k vectors of 768
-dimensions (tenants of 200k, 50k, 5k and 2,000 of 100; 4 CPUs; one run),
-HNSW_SQ took 0.8 GB less than float32 HNSW and 2.9 against 3.7 ms of CPU per
-search on the 200k tenant, at similar recall. Partition-key isolation halved
-the index-build CPU there (855 against 448 CPU-seconds) for about 0.2 GB more
-memory, with search throughput unchanged.
+The loss is the 4-bit codes', not the graph's. Across 96 comparisons in two
+runs, MemMachine's own HNSW engines' parameters (hnswlib and usearch: M=16,
+efConstruction=128) recalled up to 0.03 less than AUTOINDEX's and at most
+0.002 more, and building took 1.3 to 1.7 times as long with AUTOINDEX's.
+Raising `ef` changed little once enough candidates were rescored; `refine_k`
+decided it (with `ef = max(k, 128)`: 0.80, 0.94 and 0.99 at recall@10 for
+`refine_k` of 1, 2 and 4, one run). With the default `ef`, `refine_k = 8` is
+the least measured that comes within 0.01 of float32 HNSW searched with
+`ef = max(k, 128)` at k=10 and beats it at k=100, at a latency within noise
+of `refine_k = 4`; 16 recalls within noise of 8 and adds 1 ms at k=100.
+
+Memory, measured on Milvus 3.0.2 at 600k vectors of 768 dimensions (tenants
+of 200k, 50k, 5k and 2,000 of 100; 4 CPUs; one run): HNSW_SQ took 0.8 GB less
+than float32 HNSW and 2.9 against 3.7 ms of CPU per search on the 200k
+tenant, at similar recall. Partition-key isolation halved the index-build CPU
+there (855 against 448 CPU-seconds) for about 0.2 GB more memory, with search
+throughput unchanged.
 
 ## The composite key
 
