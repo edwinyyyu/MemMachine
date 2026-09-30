@@ -291,22 +291,23 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         """
         return uuid5(self._incarnation, str(record_uuid))
 
-    def _build_payload(
-        self,
-        properties: dict[str, PropertyValue],
-    ) -> dict[str, PropertyValue]:
-        """Build Qdrant-compatible payload from record properties."""
+    def _build_point(self, record: Record) -> models.PointStruct:
+        """Build a Qdrant point from a vector store record."""
+        require_declared_types(
+            record.properties, self._config.indexed_properties_schema
+        )
         payload: dict[str, PropertyValue] = {
             _PAYLOAD_INCARNATION: str(self._incarnation),
+            _PAYLOAD_RECORD_UUID: str(record.uuid),
         }
-        for key, value in properties.items():
-            if value is None:
-                continue
+        for key, value in record.properties.items():
             if isinstance(value, datetime):
                 payload[key] = ensure_tz_aware(value)
             else:
                 payload[key] = value
-        return payload
+        return models.PointStruct(
+            id=str(self._point_id(record.uuid)), vector=record.vector, payload=payload
+        )
 
     @override
     async def upsert(
@@ -316,21 +317,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         async with self._tracker("upsert"):
             await self._fence()
-            points: list[models.PointStruct] = []
-            for record in records:
-                require_declared_types(
-                    record.properties, self._config.indexed_properties_schema
-                )
-                points.append(
-                    models.PointStruct(
-                        id=str(self._point_id(record.uuid)),
-                        vector=record.vector,
-                        payload={
-                            **self._build_payload(record.properties),
-                            _PAYLOAD_RECORD_UUID: str(record.uuid),
-                        },
-                    )
-                )
+            points = [self._build_point(record) for record in records]
             if points:
                 await self._upsert_with_backoff(points)
             await self._fence()
@@ -365,7 +352,7 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                 return []
 
             await self._fence()
-            partition_key_filter = _incarnation_filter(self._incarnation)
+            incarnation_filter = _incarnation_filter(self._incarnation)
             if property_filter:
                 if not validate_filter(property_filter):
                     raise ValueError("Filter contains an invalid property key")
@@ -373,10 +360,10 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
                     QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
                 )
                 qdrant_filter = models.Filter(
-                    must=[partition_key_filter, property_qdrant_filter]
+                    must=[incarnation_filter, property_qdrant_filter]
                 )
             else:
-                qdrant_filter = partition_key_filter
+                qdrant_filter = incarnation_filter
 
             requests = [
                 models.QueryRequest(
