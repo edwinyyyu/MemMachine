@@ -513,7 +513,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
         )
 
     @override
-    async def _create_native_collection(
+    async def _prepare_storage(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
         native_collection_name = QdrantVectorStore._build_native_collection_name(

@@ -551,7 +551,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         )
 
     @override
-    async def _create_native_collection(
+    async def _prepare_storage(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
         # Created, indexed and loaded as separate steps, each when missing.

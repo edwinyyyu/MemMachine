@@ -44,9 +44,16 @@ wrote it.
 - `RegistryBackedVectorStore` (`common/vector_store/registry_backed_vector_store.py`)
   is the base of the Qdrant and Milvus stores and makes every registry call
   they make: create, open-or-create, open and delete, the purge claim, and a
-  handle's liveness fence. A subclass supplies the backend steps: creating a
-  native collection, building a handle, and one purge round over an
-  incarnation's records.
+  handle's liveness fence. A subclass supplies the backend steps: preparing
+  the storage a namespace and configuration's collections share, building a
+  handle, and one purge round over an incarnation's records. Nothing in the
+  base assumes how the backend lays records out. Qdrant and Milvus share a
+  native collection per namespace and configuration. A backend with a unit
+  per collection, such as a Pinecone or turbopuffer namespace, a Chroma
+  collection or a Weaviate tenant, would share nothing, or a container of
+  such units. Its handle would make the collection's unit when first needed,
+  since the incarnation that names it is minted at registration, and its
+  purge round would drop it.
 - Every store whose client connects to the same backend data, the same Qdrant
   server or cluster or the same Milvus database, must share one registry, in
   any process; a store connected to other data must not. A store reclaims its
@@ -83,9 +90,9 @@ keeps the schema static.
 |---|---|---|
 | `incarnation` | UUID, primary key | The deleted life whose records remain. |
 | `vector_store_name` | string | Whose purge claims the tombstone. |
-| `namespace` | string | With `config`, names the native collection the records are in. |
+| `namespace` | string | With `config`, locates the records in the store. |
 | `name` | string | Kept for inspection; the purge does not read it. |
-| `config` | JSON | With `namespace`, names the native collection. |
+| `config` | JSON | With `namespace`, locates the records in the store. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
 | `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised. |
 | `last_failed_at` | timestamp, nullable | When the last of them raised, on the database clock. |
@@ -136,18 +143,20 @@ insert; the registry has no such fence, so the `DELETE` goes first.)
 
 ### Creation
 
-Creation is *native first, registry last*. The store first makes sure the
-native collection its configuration names exists, is indexed and is loaded,
-then registers:
+Creation is *storage first, registry last*. The store first prepares the
+storage the collection's namespace and configuration share (on Qdrant and
+Milvus, a native collection that exists, is indexed and is loaded), then
+registers:
 
-- A crash between the two leaves an empty native collection that the next
-  creation of the same configuration adopts, never a live row whose records
-  have nowhere to go.
+- A crash between the two leaves at worst storage no collection uses yet,
+  which the next creation of the same configuration adopts, never a live row
+  whose records have nowhere to go.
 - The registry's primary key is the one arbiter: a racing creator on any
   process loses at the insert, never in the backend.
-- Native collections are shared by every logical collection of one namespace
-  and configuration, so an empty one left by a failed creation is the one the
-  next creation would have made, not per-collection garbage.
+- What is prepared is shared by every collection of one namespace and
+  configuration (on Qdrant and Milvus, a native collection), so what a failed
+  creation left is what the next creation would have made, not
+  per-collection garbage.
 - Native creation converges: each step runs only when missing, so a creation
   that failed part way is completed by the next one as if it had never been
   attempted. How each backend does it is in the
@@ -216,8 +225,8 @@ where the backend is remote:
   name first, in a separate transaction, and would still need the name-keyed
   path for a caller that holds no handle.
 - **The registry keeps the namespace** in the queue, because a dead
-  incarnation's records can be found only through the native collection its
-  namespace and configuration name. In #1627, where a store is one native
+  incarnation's records are located by its namespace and configuration (on
+  Qdrant and Milvus, the native collection they name). In #1627, where a store is one native
   collection, the queue no longer needs it.
 - **`startup` keeps its name.** It creates the tables when missing, which is
   provisioning. Renaming it to `provision`, and taking provisioning out of

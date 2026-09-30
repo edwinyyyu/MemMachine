@@ -1247,7 +1247,7 @@ class TestCollectionLifecycleAcrossWorkers:
     ):
         """A collection that exists without its indexes must still get them.
 
-        _create_native_collection creates the collection and its payload indexes
+        _prepare_storage creates the collection and its payload indexes
         in one try block and swallows "already exists" for the whole block. So a
         second creator - another worker, or a retry after one died between the
         two calls - takes the exception path and never creates an index. Its

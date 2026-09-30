@@ -48,8 +48,9 @@ behind its choices.
 
 ## Lifecycle of a collection
 
-1. **Create.** The store ensures the native collection for the namespace and
-   configuration exists, then inserts a registry row under a freshly minted
+1. **Create.** The store prepares the storage the namespace and
+   configuration's collections share (on Qdrant and Milvus, a native
+   collection), then inserts a registry row under a freshly minted
    incarnation. A racing creator loses at the registry's primary key.
 2. **Open.** The registry resolves `(namespace, name)` to the live incarnation
    and its configuration; the handle is bound to that incarnation.

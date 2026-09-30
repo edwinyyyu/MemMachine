@@ -1,11 +1,12 @@
 """
 Base classes for a vector store whose collections a collection registry arbitrates.
 
-A logical collection is the records carrying its incarnation inside a native
-collection shared by the logical collections of one namespace and
-configuration. The registry mints incarnations and arbitrates creation,
-deletion and reclamation across processes; a subclass provides the native
-operations.
+The registry mints each collection's incarnation and arbitrates creation,
+deletion and reclamation across processes. The backend holds records, each
+carrying its collection's incarnation, and a subclass decides how: it
+prepares the storage a namespace and configuration's collections share,
+builds a handle for one collection, and purges a deleted incarnation's
+records.
 """
 
 from abc import abstractmethod
@@ -113,7 +114,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     serve any collection.
 
     For subclasses: `_collection_registry` is the registry and `_tracker` times
-    each operation, and a subclass implements `_create_native_collection`,
+    each operation, and a subclass implements `_prepare_storage`,
     `_build_collection_handle` and `_purge_round`.
     """
 
@@ -145,11 +146,11 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     ) -> None:
         require_identifiers(namespace, name)
         async with self._tracker("create_collection"):
-            # The native collection first, the registry row last, so a crash
-            # between the two leaves at worst an empty native collection,
-            # which the next creation of the same configuration uses. The
-            # registry's primary key decides a creation race.
-            await self._create_native_collection(namespace, config)
+            # The storage first, the registry row last, so a crash between
+            # the two leaves at worst storage no collection uses yet, which
+            # the next creation of the same namespace and configuration uses.
+            # The registry's primary key decides a creation race.
+            await self._prepare_storage(namespace, config)
             await self._collection_registry.register(namespace, name, config)
 
     @override
@@ -174,7 +175,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                             namespace, name, registered.config, config
                         )
                     return self._build_collection_handle(namespace, name, registered)
-                await self._create_native_collection(namespace, config)
+                await self._prepare_storage(namespace, config)
                 try:
                     incarnation = await self._collection_registry.register(
                         namespace, name, config
@@ -225,18 +226,21 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             return claim.any_records_found
 
     @abstractmethod
-    async def _create_native_collection(
+    async def _prepare_storage(
         self, namespace: str, config: VectorStoreCollectionConfig
     ) -> None:
         """
-        Ensure the native collection of a namespace and configuration exists.
+        Prepare the storage a namespace and configuration's collections share.
 
-        The native collection holds the records of every collection with
-        this namespace and configuration, and of no other, so two
-        configurations never share one. It is ensured before each
-        registration, by any number of processes at once, so this must be
-        idempotent and safe to race, and must complete a native collection
-        a failed call left part-built.
+        That is whatever such a collection needs besides its incarnation: a
+        native collection they all live in, a container of per-collection
+        units, or nothing. Storage of one collection's own cannot be made
+        here, since the collection's incarnation is minted when it registers;
+        its handle makes that when first needed. What is prepared for one
+        namespace and configuration serves no other. It runs before each
+        registration, by any number of processes at once, so it must be
+        idempotent and safe to race, and must complete what a failed call
+        left part-made.
 
         Args:
             namespace (str):
@@ -259,8 +263,9 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         """
         Build a handle bound to a registered collection's incarnation.
 
-        The collection's native collection was ensured before it was
-        registered.
+        The storage its namespace and configuration share was prepared
+        before it was registered. Storage of the collection's own, if the
+        backend keeps any, is the handle's to make when first needed.
 
         Args:
             namespace (str):
@@ -287,16 +292,16 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         Runs under a purge claim, after the tombstone's retention. Returning
         False removes the tombstone, so it must return False only when no
         record under the incarnation remains; a round may delete some of the
-        records and return True, to be run again. It must be safe to repeat,
-        and to run on two purgers at once. The native collection may be
-        gone, in which case no record remains.
+        records and return True, to be run again. It may delete storage that
+        holds only the incarnation's records. It must be safe to repeat, and
+        to run on two purgers at once. Storage that is gone holds no record.
 
         Args:
             namespace (str):
                 Namespace of the deleted collection.
             config (VectorStoreCollectionConfig):
                 Configuration of the deleted collection; with the namespace,
-                it names the native collection.
+                it locates the collection's records.
             incarnation (UUID):
                 The incarnation the deleted collection's records carry.
 

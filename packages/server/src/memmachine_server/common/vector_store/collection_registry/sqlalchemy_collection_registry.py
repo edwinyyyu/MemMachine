@@ -109,7 +109,7 @@ class PurgeQueueRow(BaseCollectionRegistry):
     name: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), nullable=False
     )
-    # The configuration names the native collection the records are in.
+    # With the namespace, the configuration locates the records in the store.
     config: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO, nullable=False
     )

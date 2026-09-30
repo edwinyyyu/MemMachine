@@ -307,10 +307,10 @@ class CollectionLifecycleContract:
     @pytest.mark.parametrize(
         "create", ["create_collection", "open_or_create_collection"]
     )
-    async def test_a_failed_native_creation_registers_nothing(
+    async def test_a_failed_storage_preparation_registers_nothing(
         self, store, monkeypatch, create
     ):
-        """The native collection comes first: a creation that fails there
+        """The storage comes first: a creation that fails there
         leaves no registered collection whose records have nowhere to go."""
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
@@ -319,7 +319,7 @@ class CollectionLifecycleContract:
         async def refused(namespace, config) -> None:
             raise RuntimeError("the backend refused")
 
-        monkeypatch.setattr(store, "_create_native_collection", refused)
+        monkeypatch.setattr(store, "_prepare_storage", refused)
         with pytest.raises(RuntimeError, match="refused"):
             await getattr(store, create)(
                 namespace=LIFECYCLE_NAMESPACE,
