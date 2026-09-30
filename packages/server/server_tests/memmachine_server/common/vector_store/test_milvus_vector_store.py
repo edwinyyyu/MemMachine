@@ -4,7 +4,7 @@
 
 import math
 from datetime import UTC, datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -28,6 +28,7 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
+from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -906,6 +907,39 @@ class TestDelete:
         await collection.delete(record_uuids=[r1.uuid])
 
         assert set(await _stored(collection, [r1.uuid, r2.uuid])) == {r2.uuid}
+
+    @pytest.mark.asyncio
+    async def test_deleting_records_it_does_not_hold_succeeds(self, collection):
+        """Milvus accepts the delete of a primary key it does not hold."""
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        await collection.delete(record_uuids=[record.uuid, uuid4(), uuid4()])
+
+        assert await _stored(collection, [record.uuid]) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_delete_milvus_does_not_accept_in_full_raises():
+    """pymilvus's async client returns for a delete Milvus rejected; the store
+    compares the primary keys Milvus accepted with those it sent."""
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.delete = AsyncMock(return_value={"delete_count": 0})
+    collection = MilvusVectorStoreCollection(
+        client=client,
+        native_collection_name="native",
+        namespace=NAMESPACE,
+        name=NAME,
+        incarnation=uuid4(),
+        config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        tracker=OperationTracker(None, prefix="test"),
+        is_live=AsyncMock(return_value=True),
+        request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+    )
+
+    with pytest.raises(pymilvus.MilvusException, match="accepted the delete of 0 of 2"):
+        await collection.delete(record_uuids=[uuid4(), uuid4()])
 
 
 class TestPartitionIsolation:

@@ -209,6 +209,20 @@ def _milvus_filter(
             raise TypeError(f"Unsupported filter expression type: {type(expr)}")
 
 
+def _require_every_key_accepted(result: Mapping[str, int], sent: int) -> None:
+    """Raise unless Milvus accepted the delete of every primary key sent.
+
+    Milvus counts the primary keys a delete accepts, present or not, so a
+    delete it rejected counts fewer; pymilvus's async client returns rather
+    than raises for one.
+    """
+    accepted = result["delete_count"]
+    if accepted != sent:
+        raise MilvusException(
+            message=f"Milvus accepted the delete of {accepted} of {sent} primary keys"
+        )
+
+
 def _incarnation_filter(incarnation: UUID) -> str:
     """A Milvus expression matching the entities of one collection incarnation."""
     return f"{_PARTITION_KEY_FIELD} == {_expr_string(str(incarnation))}"
@@ -412,11 +426,12 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
                 return
             await self._fence()
             primary_ids = [self._primary_id(uuid) for uuid in uuid_list]
-            await self._client.delete(
+            result = await self._client.delete(
                 collection_name=self._native_collection_name,
                 ids=primary_ids,
                 timeout=self._request_timeout_seconds,
             )
+            _require_every_key_accepted(result, len(primary_ids))
             await self._fence()
 
 
@@ -809,9 +824,10 @@ class MilvusVectorStore(VectorStore):
                 primary_ids = []
             claim.any_records_found = bool(primary_ids)
             if claim.any_records_found:
-                await self._client.delete(
+                result = await self._client.delete(
                     collection_name=native_collection_name,
                     ids=primary_ids,
                     timeout=self._request_timeout_seconds,
                 )
+                _require_every_key_accepted(result, len(primary_ids))
             return claim.any_records_found
