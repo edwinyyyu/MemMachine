@@ -129,7 +129,7 @@ class PurgeQueueRow(BaseCollectionRegistry):
 
 
 class _RegistryInsertRejectedError(Exception):
-    """A registry insert was rejected; retry with a fresh incarnation."""
+    """A registry insert was rejected for a reason other than the name being taken."""
 
 
 class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
@@ -244,15 +244,23 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     async def register(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> UUID:
-        # The primary key arbitrates the (namespace, name) across processes;
-        # the incarnation's unique constraint and the in-transaction queue
-        # check reject an incarnation that is live or still awaiting purge.
+        # The primary key arbitrates the (namespace, name) across processes.
+        # An insert rejected for another reason, such as a minted incarnation
+        # that is live or awaiting purge, is tried again with a fresh one.
         attempts = 0
         while True:
             incarnation = uuid4()
             try:
                 await self._insert(namespace, name, incarnation, config)
             except _RegistryInsertRejectedError as err:
+                logger.warning(
+                    "Registering collection (%r, %r) under incarnation %s was "
+                    "rejected: %s; minting another",
+                    namespace,
+                    name,
+                    incarnation,
+                    err,
+                )
                 attempts += 1
                 if attempts >= _MAX_MINT_ATTEMPTS:
                     raise VectorStoreAttemptsExhaustedError(
@@ -291,26 +299,13 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     )
                 ).scalar_one_or_none()
                 if queued is not None:
-                    logger.warning(
-                        "Incarnation %s minted for collection (%r, %r) "
-                        "collides with garbage awaiting purge; re-minting",
-                        incarnation,
-                        namespace,
-                        name,
-                    )
-                    raise _RegistryInsertRejectedError(str(incarnation))
+                    raise _RegistryInsertRejectedError("the incarnation awaits purge")
         except IntegrityError as err:
             if await self.get(namespace, name) is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name) from err
-            logger.warning(
-                "Registry insert for collection (%r, %r) with incarnation %s "
-                "failed and no row exists under the key; retrying with a fresh "
-                "incarnation",
-                namespace,
-                name,
-                incarnation,
-            )
-            raise _RegistryInsertRejectedError(str(incarnation)) from err
+            raise _RegistryInsertRejectedError(
+                "the insert failed and no row exists under the name"
+            ) from err
 
     @override
     async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
