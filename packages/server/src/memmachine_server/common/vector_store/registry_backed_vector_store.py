@@ -275,6 +275,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         super().__init__()
         self._collection_registry = params.collection_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
+        # Unregistrations after a failed preparation, referenced until done
+        # so none is collected while its creation, cancelled, no longer
+        # awaits it.
+        self._unregistrations: set[asyncio.Task[None]] = set()
 
     @override
     async def startup(self) -> None:
@@ -367,16 +371,22 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         config: VectorStoreCollectionConfig,
         incarnation: UUID,
     ) -> None:
-        """Prepare a pending collection's storage, unregistering it if that raises.
+        """Prepare a pending collection's storage, unregistering it if that raises or is cancelled.
 
         A collection the registry cannot unregister then stays pending until
         it is deleted.
         """
         try:
             await self._prepare_storage(namespace, config, incarnation)
-        except Exception:
+        except BaseException:
+            # Shielded, so a cancelled creation still frees the name.
+            unregistration = asyncio.create_task(
+                self._collection_registry.unregister_incarnation(incarnation)
+            )
+            self._unregistrations.add(unregistration)
+            unregistration.add_done_callback(self._unregistrations.discard)
             try:
-                await self._collection_registry.unregister_incarnation(incarnation)
+                await asyncio.shield(unregistration)
             except Exception:
                 logger.exception(
                     "Could not unregister collection (%r, %r) after its "

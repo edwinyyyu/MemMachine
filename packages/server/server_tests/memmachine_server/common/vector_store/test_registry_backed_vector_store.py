@@ -249,6 +249,67 @@ async def test_a_failed_preparation_frees_the_name_and_queues_its_incarnation(
 
 
 @pytest.mark.asyncio
+async def test_a_cancelled_preparation_frees_the_name_and_queues_its_incarnation(
+    store,
+):
+    started = asyncio.Event()
+    incarnations: list[UUID] = []
+
+    async def hangs(namespace, config, incarnation) -> None:
+        incarnations.append(incarnation)
+        started.set()
+        await asyncio.Event().wait()
+
+    store.prepare = hangs
+    creating = asyncio.create_task(
+        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    )
+    await started.wait()
+    creating.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    assert await _purged(store) == incarnations
+
+
+@pytest.mark.asyncio
+async def test_an_unregistration_after_a_cancelled_preparation_survives_another_cancellation(
+    store, monkeypatch
+):
+    started = asyncio.Event()
+    unregistering = asyncio.Event()
+    release = asyncio.Event()
+    registry = store._collection_registry
+    unregister_incarnation = registry.unregister_incarnation
+
+    async def hangs(namespace, config, incarnation) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def slow(incarnation) -> None:
+        unregistering.set()
+        await release.wait()
+        await unregister_incarnation(incarnation)
+
+    store.prepare = hangs
+    monkeypatch.setattr(registry, "unregister_incarnation", slow)
+    creating = asyncio.create_task(
+        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    )
+    await started.wait()
+    creating.cancel()
+    await asyncio.wait_for(unregistering.wait(), 5)
+    creating.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*store._unregistrations), 5)
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+
+
+@pytest.mark.asyncio
 async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until_deleted(
     store, monkeypatch
 ):

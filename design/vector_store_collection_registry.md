@@ -165,8 +165,10 @@ indexed and is loaded), and marks it live:
   been pending, a `create_collection` of the name raises
   `VectorStoreCollectionAlreadyExistsError`, and open-or-create waits for it.
   `None` from `open_collection` means only that no collection holds the name.
-- A preparation that raises unregisters the pending collection when the
-  registry can, which frees the name and queues the incarnation's tombstone.
+- A preparation that raises, or is cancelled, unregisters the pending
+  collection when the registry can, which frees the name and queues the
+  incarnation's tombstone. The unregistration is shielded, so a cancellation
+  of the creation does not cut it short.
   Otherwise, and after a crash, the collection stays pending until it is
   deleted like any other.
 - Whatever a failed or interrupted preparation leaves is recoverable. Shared
