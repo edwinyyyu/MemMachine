@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import json
 import random
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -163,7 +163,7 @@ async def _row_counts(
 
 
 @contextlib.contextmanager
-def _failing_next_commit(engine: AsyncEngine) -> Iterator[None]:
+def _failing_next_commit(engine: AsyncEngine) -> Generator[None, None, None]:
     """Make the engine's next transaction commit raise instead of committing."""
     failed: list[bool] = []
 
