@@ -113,7 +113,7 @@ class VectorStoreCollection(ABC):
             ValueError:
                 If a query vector does not have the collection's dimensions
                 or has a coordinate that is not finite, or the score
-                threshold is NaN.
+                threshold is not finite.
         """
         raise NotImplementedError
 

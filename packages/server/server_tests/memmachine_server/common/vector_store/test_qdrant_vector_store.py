@@ -1021,12 +1021,15 @@ class TestFilters:
             )
 
     @pytest.mark.asyncio
-    async def test_a_nan_score_threshold_is_refused(self, collection):
-        with pytest.raises(ValueError, match="threshold is NaN"):
+    @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
+    async def test_a_score_threshold_that_is_not_finite_is_refused(
+        self, collection, threshold
+    ):
+        with pytest.raises(ValueError, match="not finite"):
             await collection.query(
                 query_vectors=[_normalize([1.0, 0.0, 0.0])],
                 limit=1,
-                score_threshold=math.nan,
+                score_threshold=threshold,
             )
 
 

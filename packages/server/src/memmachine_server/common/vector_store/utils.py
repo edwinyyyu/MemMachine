@@ -65,9 +65,9 @@ def require_valid_query_vector(query_vector: Sequence[float], dimensions: int) -
 
 
 def require_valid_score_threshold(score_threshold: float | None) -> None:
-    """Raise ValueError if a score threshold is NaN."""
-    if score_threshold is not None and math.isnan(score_threshold):
-        raise ValueError("Score threshold is NaN")
+    """Raise ValueError if a score threshold is not finite; None means no threshold."""
+    if score_threshold is not None and not math.isfinite(score_threshold):
+        raise ValueError(f"Score threshold is not finite: {score_threshold}")
 
 
 def require_dimensions(vector: Sequence[float], dimensions: int) -> None:
