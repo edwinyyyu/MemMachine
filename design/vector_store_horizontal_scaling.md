@@ -48,10 +48,10 @@ behind its choices.
 
 ## Lifecycle of a collection
 
-1. **Create.** The store inserts a pending registry row under a freshly
-   minted incarnation, prepares the collection's storage (on Qdrant and
-   Milvus, the native collection its namespace and configuration share), and
-   marks the row live. A racing creator loses at the registry's primary key,
+1. **Create.** The store reserves the name, inserting a pending registry row
+   under a freshly minted incarnation, prepares the collection's storage (on
+   Qdrant and Milvus, the native collection its namespace and configuration
+   share), and confirms the reservation, which marks the row live. A racing creator loses at the registry's primary key,
    and a pending collection is not opened.
 2. **Open.** The registry resolves `(namespace, name)` to the live incarnation
    and its configuration; the handle is bound to that incarnation.

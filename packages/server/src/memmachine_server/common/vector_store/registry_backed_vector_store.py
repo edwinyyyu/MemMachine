@@ -2,12 +2,12 @@
 Base classes for a vector store whose collections a collection registry arbitrates.
 
 The registry mints each collection's incarnation and arbitrates creation,
-deletion and reclamation across processes. A collection is registered
-pending, its storage is prepared, and it is marked live; only a live
-collection is opened. The backend holds records, each carrying its
-collection's incarnation, and a subclass decides how: it prepares a new
-collection's storage, builds a handle for one collection, and purges a
-deleted incarnation's records.
+deletion and reclamation across processes. A collection's name is
+reserved, its storage is prepared, and the reservation is confirmed, which
+makes the collection live; only a live collection is opened. The backend
+holds records, each carrying its collection's incarnation, and a subclass
+decides how: it prepares a new collection's storage, builds a handle for
+one collection, and purges a deleted incarnation's records.
 """
 
 import asyncio
@@ -23,8 +23,8 @@ from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
 from .collection_registry import (
-    LiveRegistration,
-    PendingRegistration,
+    Registration,
+    Reservation,
     VectorStoreCollectionRegistry,
 )
 from .data_types import (
@@ -73,7 +73,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     """
 
     def __init__(
-        self, *, registration: LiveRegistration, tracker: OperationTracker
+        self, *, registration: Registration, tracker: OperationTracker
     ) -> None:
         """Initialize with the live registration the handle is bound to."""
         self._registration = registration
@@ -262,9 +262,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         super().__init__()
         self._collection_registry = params.collection_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
-        # Unregistrations after a failed preparation, held until done so the
-        # garbage collector cannot drop one whose creation was cancelled.
-        self._unregistrations: set[asyncio.Task[None]] = set()
+        # Reservations cancelled after a failed preparation, held until done
+        # so the garbage collector cannot drop one whose creation was
+        # cancelled.
+        self._cancellations: set[asyncio.Task[None]] = set()
 
     @override
     async def startup(self) -> None:
@@ -290,10 +291,12 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         async with self._tracker("create_collection"):
             # The registry decides a creation race. The collection stays
             # pending until its storage is prepared; if it is deleted
-            # meanwhile, mark_live raises.
-            pending = await self._collection_registry.register(namespace, name, config)
-            await self._prepare_storage_or_unregister(pending)
-            await pending.mark_live()
+            # meanwhile, confirming the reservation raises.
+            reservation = await self._collection_registry.reserve(
+                namespace, name, config
+            )
+            await self._prepare_storage_or_cancel(reservation)
+            await reservation.confirm()
 
     @override
     async def open_or_create_collection(
@@ -306,16 +309,18 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         require_identifiers(namespace, name)
         async with self._tracker("open_or_create_collection"):
             # Read-then-create, retried: a pending collection is another
-            # creator's (open it once it is live), losing the create means
-            # another creator took the name meanwhile, and losing the mark
-            # means a deleter removed this one while its storage was prepared
-            # (create again).
+            # creator's (open it once it is live), losing the reservation
+            # means another creator took the name meanwhile, and losing the
+            # confirmation means a deleter removed this one while its storage
+            # was prepared (create again).
             pending_error: VectorStoreCollectionPendingError | None = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
                 try:
-                    live = await self._collection_registry.resolve(namespace, name)
+                    registration = await self._collection_registry.resolve(
+                        namespace, name
+                    )
                 except VectorStoreCollectionPendingError as err:
                     if err.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
@@ -324,24 +329,24 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                     pending_error = err
                     continue
                 pending_error = None
-                if live is not None:
-                    if live.config != config:
+                if registration is not None:
+                    if registration.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, live.config, config
+                            namespace, name, registration.config, config
                         )
-                    return self._build_collection_handle(live)
+                    return self._build_collection_handle(registration)
                 try:
-                    pending = await self._collection_registry.register(
+                    reservation = await self._collection_registry.reserve(
                         namespace, name, config
                     )
                 except VectorStoreCollectionAlreadyExistsError:
                     continue
-                await self._prepare_storage_or_unregister(pending)
+                await self._prepare_storage_or_cancel(reservation)
                 try:
-                    live = await pending.mark_live()
+                    registration = await reservation.confirm()
                 except VectorStoreCollectionDeletedError:
                     continue
-                return self._build_collection_handle(live)
+                return self._build_collection_handle(registration)
             # The last lookup found the collection pending.
             if pending_error is not None:
                 raise pending_error
@@ -350,42 +355,40 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 f"no progress after {_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
             )
 
-    async def _prepare_storage_or_unregister(
-        self, pending: PendingRegistration
-    ) -> None:
-        """Prepare a pending collection's storage, unregistering it if that raises or is cancelled.
+    async def _prepare_storage_or_cancel(self, reservation: Reservation) -> None:
+        """Prepare a reserved collection's storage, cancelling the reservation if that raises or the creation is cancelled.
 
-        A collection the registry cannot unregister then stays pending until
-        it is deleted.
+        A collection whose reservation the registry cannot cancel then stays
+        pending until it is deleted.
         """
         try:
             await self._prepare_storage(
-                pending.namespace, pending.config, pending.incarnation
+                reservation.namespace, reservation.config, reservation.incarnation
             )
         except BaseException:
             # Shielded, so a cancelled creation still frees the name.
-            unregistration = asyncio.create_task(pending.unregister())
-            self._unregistrations.add(unregistration)
-            unregistration.add_done_callback(self._unregistrations.discard)
+            cancellation = asyncio.create_task(reservation.cancel())
+            self._cancellations.add(cancellation)
+            cancellation.add_done_callback(self._cancellations.discard)
             try:
-                await asyncio.shield(unregistration)
+                await asyncio.shield(cancellation)
             except Exception:
                 logger.exception(
-                    "Could not unregister collection (%r, %r) after its "
-                    "storage preparation failed; it stays pending until "
-                    "deleted",
-                    pending.namespace,
-                    pending.name,
+                    "Could not cancel the reservation of collection (%r, %r) "
+                    "after its storage preparation failed; it stays pending "
+                    "until deleted",
+                    reservation.namespace,
+                    reservation.name,
                 )
             raise
 
     @override
     async def open_collection(self, *, namespace: str, name: str) -> CollectionT | None:
         require_identifiers(namespace, name)
-        live = await self._collection_registry.resolve(namespace, name)
-        if live is None:
+        registration = await self._collection_registry.resolve(namespace, name)
+        if registration is None:
             return None
-        return self._build_collection_handle(live)
+        return self._build_collection_handle(registration)
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
@@ -417,10 +420,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         incarnation: UUID,
     ) -> None:
         """
-        Prepare the storage a newly registered collection needs.
+        Prepare the storage a newly reserved collection needs.
 
-        The collection is registered as pending under the incarnation, and is
-        marked live once this returns. Its storage may be its own or shared
+        The collection is reserved, pending, under the incarnation, and its
+        reservation is confirmed once this returns. Its storage may be its own or shared
         with the other collections of its namespace and configuration. Shared
         storage is prepared by any number of processes at once, so preparing
         it must be idempotent and safe to race; what serves one namespace and
@@ -439,21 +442,22 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
 
         Raises:
             Exception:
-                Whatever the backend raises. The collection is then
-                unregistered, or, if the registry cannot unregister it, stays
-                pending until it is deleted.
+                Whatever the backend raises. The reservation is then
+                cancelled, or, if the registry cannot cancel it, the
+                collection stays pending until it is deleted.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def _build_collection_handle(self, registration: LiveRegistration) -> CollectionT:
+    def _build_collection_handle(self, registration: Registration) -> CollectionT:
         """
         Build a handle bound to a live collection's registration.
 
-        The collection's storage was prepared before it was marked live.
+        The collection's storage was prepared before its reservation was
+        confirmed.
 
         Args:
-            registration (LiveRegistration):
+            registration (Registration):
                 The live collection's registration, which carries its
                 namespace, name, configuration and incarnation.
 
