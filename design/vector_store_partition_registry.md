@@ -38,10 +38,10 @@ through SQLAlchemy. The backend keeps only records, each carrying the
 
 - `VectorStorePartitionRegistry` (`common/vector_store/partition_registry/`)
   is the ABC. A registry belongs to one store and is addressed by partition
-  key. Its operations are `startup`, `register`, `resolve`, `unregister` and
+  key. Its operations are `startup`, `reserve`, `resolve`, `unregister` and
   `claim_purgeable_incarnation`.
-- `PendingRegistration` and `LiveRegistration` are handles on one life of a
-  partition (see [Registrations](#registrations)).
+- `Reservation` and `Registration` are handles on one life of a partition (see
+  [Reservations and registrations](#reservations-and-registrations)).
 - `SQLAlchemyVectorStorePartitionRegistry` is the one implementation. It
   supports PostgreSQL and SQLite 3.35 or newer (for `RETURNING`), as the
   segment store does, and its params refuse any other dialect or an older
@@ -60,7 +60,7 @@ through SQLAlchemy. The backend keeps only records, each carrying the
   backend with a unit per tenant, such as a Pinecone or turbopuffer
   namespace, a Chroma collection or a Weaviate tenant, would make the
   partition's unit when it prepares the partition's storage, which runs after
-  the registration that mints the incarnation naming it, and its purge round
+  the reservation that mints the incarnation naming it, and its purge round
   would drop it.
 - Every process serving a store must give it the same registry, and a
   registry serves one store. The registries of every store share two tables,
@@ -77,49 +77,59 @@ through SQLAlchemy. The backend keeps only records, each carrying the
   starts or stops it: a store that started a registry it was given would own
   a lifecycle it does not control.
 
-### Registrations
+### Reservations and registrations
 
 The registry is addressed by partition key. What acts on one life of a
-partition is a registration: a handle bound to that life's incarnation.
+partition is a handle bound to that life's incarnation: the creator's
+reservation, or a registration.
 
 | Object | Operations | Answered by |
 |---|---|---|
-| `VectorStorePartitionRegistry` | `register`, `resolve`, `unregister` (by key), `claim_purgeable_incarnation` | |
-| `PendingRegistration` | `mark_live`, `unregister` (this life only) | `register` |
-| `LiveRegistration` | `require_current` | `resolve`, `mark_live` |
+| `VectorStorePartitionRegistry` | `reserve`, `resolve`, `unregister` (by key), `claim_purgeable_incarnation` | |
+| `Reservation` | `confirm`, `cancel` | `reserve` |
+| `Registration` | `require_current` | `resolve`, `confirm` |
 
 - **Why handles.** Every operation on one life of a partition needs that
-  life's incarnation: marking it live, abandoning it, and checking that it
-  was not deleted. As methods of the registry, each would take the
-  incarnation as an argument. The registry would then have two addressing
-  schemes, keys and incarnations, and every caller would carry the UUID
-  `register` minted back into later calls, where any UUID fits: another
-  partition's, a deleted one's, or one compared by hand against a lookup.
-  On a handle, the incarnation is bound once, when the registry answers the
-  handle, and no call takes it again. The store reads it to write records,
-  and never passes it back.
-- **Why two types.** What may be done to a partition depends on its state.
-  Only its creator marks a pending partition live or abandons it; a live
-  partition is checked, and is deleted only by key. With one type, a live
-  registration would offer `mark_live`, which could only fail, and
-  `unregister`, which would delete a live partition outside the key-addressed
-  path every deletion goes through. Split by state, each type offers what its
-  state allows and nothing else, and the wrong call is a type error.
-- **Why no state fields.** A registration's fields (partition key, schema,
+  life's incarnation: confirming it, cancelling it, and checking that it was
+  not deleted. As methods of the registry, each would take the incarnation as
+  an argument. The registry would then have two addressing schemes, keys and
+  incarnations, and every caller would carry the UUID `reserve` minted back
+  into later calls, where any UUID fits: another partition's, a deleted
+  one's, or one compared by hand against a lookup. On a handle, the
+  incarnation is bound once, when the registry answers the handle, and no
+  call takes it again. The store reads it to write records, and never passes
+  it back.
+- **Why two types.** What may be done with a partition depends on who holds
+  it. Only its creator, holding the reservation, confirms or cancels it; a
+  registration is checked, and its partition is deleted only by key. With one
+  type, a registration would offer `confirm`, which could only fail, and
+  `cancel`, which would delete a live partition outside the key-addressed
+  path every deletion goes through. With two, each type offers its holder's
+  operations and nothing else, and the wrong call is a type error.
+- **Why role names, not state names.** A partition moves from pending to
+  live only through its reservation's own `confirm`, but any caller can
+  delete it at any time, through either handle's back. A name that states
+  the partition's state ("pending", "live") is only true as of when the
+  handle was answered; a name that states the holder's role stays true, and
+  a deletion shows as the handle's methods raising. The words follow two
+  known patterns: Try-Confirm/Cancel for the creator (reserve, then confirm
+  or cancel), and the stale handle for everyone else (`require_current`,
+  `VectorStorePartitionHandleStaleError`).
+- **Why no state fields.** A handle's fields (partition key, schema,
   incarnation) belong to its life and never change. Whether the partition is
   pending, live or deleted changes under every holder: a `live` field would
-  be a snapshot, made stale by the creator's own `mark_live`. The state is
-  conveyed instead by the outcome of each call. `register` answers a pending
-  registration, and `mark_live` a live one. `resolve` answers a live one or
-  `None`, or raises when the partition is pending, and `require_current`
+  be a snapshot, made stale by the creator's own `confirm`. The state is
+  conveyed instead by the outcome of each call. `reserve` answers a
+  reservation, and `confirm` a registration. `resolve` answers a registration
+  or `None`, or raises when the partition is pending, and `require_current`
   raises once it is deleted. Each is one read or one write, so an open takes
   one round trip and the fence one.
 - **What each part gains.** The registry's operations, beside `startup`, are
-  all addressed by key. A store's partition handle is built from one live
+  all addressed by key. A store's partition handle is built from one
   registration, and its fence is one call. The store's creation flow reads as
-  the lifecycle it implements: register, prepare storage under the
-  registration's incarnation, then mark it live, or unregister it if the
-  preparation fails.
+  the lifecycle it implements: reserve, prepare storage under the
+  reservation's incarnation, then confirm the reservation, or cancel it if
+  the preparation fails.
 
 ### Tables
 
@@ -161,7 +171,7 @@ all, can tell which partition it was, as the segment store's queue does.
 
 ### Operations
 
-**`register(partition_key, schema) -> PendingRegistration`.** Mints a random
+**`reserve(partition_key, schema) -> Reservation`.** Mints a random
 UUID (version 4) and inserts the partition's row, pending. In the same
 transaction, *after* the insert, a locking read checks that the incarnation is
 not waiting in the purge queue. After the insert, a concurrent deletion that
@@ -174,30 +184,29 @@ violation, or queued) is re-minted, up to 10 attempts, then
 `VectorStoreAttemptsExhaustedError`. The loop and its bound are the segment
 store's.
 
-**`PendingRegistration.mark_live()`** marks the row live with an `UPDATE`
-conditional on the registration's incarnation, which is unique, and on the row
-being pending, and answers the `LiveRegistration`; it raises
-`VectorStorePartitionDeletedError` when it matches nothing. A creation whose
-partition was deleted while its storage was prepared matches nothing, so it
-cannot mark live a partition registered under the key since.
+**`Reservation.confirm()`** marks the row live with an `UPDATE` conditional on
+the reservation's incarnation, which is unique, and on the row being pending,
+and answers the `Registration`; it raises `VectorStorePartitionDeletedError`
+when it matches nothing. A creation whose partition was deleted while its
+storage was prepared matches nothing, so it cannot confirm a partition
+reserved under the key since.
 
 **`resolve(partition_key)`** reads the partition's row once and answers by its
-state: a `LiveRegistration` when it is live,
-`VectorStorePartitionPendingError`, with when the partition was registered and
-its schema, when it is pending, and `None` when there is none. It is how a
+state: a `Registration` when it is live, `VectorStorePartitionPendingError`,
+with when the partition was reserved and its schema, when it is pending, and `None` when there is none. It is how a
 handle is opened: callers address partitions by key, and the key is resolved
 to a live incarnation once, at open.
 
-**`LiveRegistration.require_current()`** reads the row under the
+**`Registration.require_current()`** reads the row under the
 registration's key and raises `VectorStorePartitionHandleStaleError` unless it
 carries the registration's incarnation. It is how a handle is fenced (below).
 
 **`unregister(partition_key)`** is one transaction: `DELETE ... RETURNING` the
 partition's row, pending or live, then insert its tombstone with
 `enqueued_at = now()`. The partition is unreachable when it commits.
-**`PendingRegistration.unregister()`** does the same for the row carrying the
-registration's incarnation: a creation whose storage preparation raised takes
-back its own registration that way, never one registered under the key since.
+**`Reservation.cancel()`** does the same for the row carrying the
+reservation's incarnation: a creation whose storage preparation raised takes
+back its own reservation that way, never one made under the key since.
 Racing deleters serialize on the row's write lock and the loser deletes
 nothing, on PostgreSQL and SQLite alike, so a deletion is idempotent and
 queues one tombstone.
@@ -207,9 +216,10 @@ queues one tombstone.
 
 ### Creation
 
-Creation is *registered pending, prepared, then live*. The store registers the
-partition, pending, prepares the storage it needs of its own (on Qdrant and
-Milvus, none), and marks it live:
+Creation is *reserved, prepared, then confirmed*. The store reserves the
+partition's key, leaving it pending, prepares the storage the partition needs
+of its own (on Qdrant and Milvus, none), and confirms the reservation, which
+makes the partition live:
 
 - The registry's primary key is the one arbiter: a racing creator on any
   process loses at the insert, never in the backend.
@@ -218,10 +228,10 @@ Milvus, none), and marks it live:
   pending, a `create_partition` of the key raises
   `VectorStorePartitionAlreadyExistsError`, and open-or-create waits for it.
   `None` from `get_partition` means only that no partition holds the key.
-- A preparation that raises, or is cancelled, unregisters the pending
-  partition when the registry can, which frees the key and queues the
-  incarnation's tombstone. The unregistration is shielded, so a cancellation
-  of the creation does not cut it short. Otherwise, and after a crash, the
+- A preparation that raises, or is cancelled, cancels the reservation when
+  the registry can, which frees the key and queues the incarnation's
+  tombstone. The reservation's cancellation is shielded, so a cancellation of
+  the creation does not cut it short. Otherwise, and after a crash, the
   partition stays pending until it is deleted like any other.
 - Whatever a failed or interrupted preparation leaves is recoverable: the
   partition's own storage is reclaimed by its incarnation's purge rounds once
@@ -249,7 +259,7 @@ with it.
 
 The contract tests (`partition_lifecycle_contract.py`) pin both outcomes of a
 lost race on Qdrant and Milvus: the loser opens the winner's partition, or
-refuses it when its schema differs, and exactly one registration is lost.
+refuses it when its schema differs, and exactly one reservation is lost.
 
 ### Handles and fencing
 
@@ -266,7 +276,7 @@ the same key is a new life the old handle cannot reach.
   success. A delete checks once, after its remote call: it adds nothing a
   purge must reclaim, and a stale handle's delete reaches only its own
   incarnation.
-- A handle is given its live registration alone.
+- A handle is given its registration alone.
 - A read is not checked afterwards. A deleted partition's records stay until
   a purge round claims its tombstone, so a read in flight when the deletion
   commits returns a snapshot from before it, never a state halfway through a
@@ -307,7 +317,7 @@ the backend is remote:
   transaction. Keying it by incarnation alone would make every caller resolve
   the key first, in a separate transaction, and would still need the
   key-addressed path for a caller that holds no handle. A pending
-  registration's `unregister` serves the creation taking back its own.
+  reservation's `cancel` serves the creation taking back its own.
 - **`startup` creates the registry's tables when missing**, as every store's
   startup creates its own durable resources idempotently.
 
@@ -321,16 +331,19 @@ the backend is remote:
   store's partitions share, which a crash between the two leaves for the next
   creation to adopt, but storage named by a partition's incarnation cannot be
   made before the registry mints the incarnation. With the pending state, one
-  preparation step, after registration, serves both; the cost is a pending row
+  preparation step, after the reservation, serves both; the cost is a pending row
   a crash leaves, deleted like any other.
 - **One registry class for both levels**, with `mark_live(incarnation)`,
   `unregister_incarnation(incarnation)` and a lookup answering the state as
   fields. Callers carry incarnations back into the registry, any incarnation
   fits any call, and the state fields go stale; see
-  [Registrations](#registrations).
-- **One registration type for every state**, answered by `register` and the
-  lookup alike. It would offer `mark_live` and `unregister` on a live
-  partition, and need a state field or an extra read to tell the two apart.
+  [Reservations and registrations](#reservations-and-registrations).
+- **One handle type for every state**, answered by `reserve` and the lookup
+  alike. It would offer `confirm` and `cancel` on a live partition, and need a
+  state field or an extra read to tell the two apart.
+- **Handle types named by state** (`PendingRegistration`, `LiveRegistration`).
+  A state name stops being true once someone deletes the partition; a role
+  name does not.
 - **A liveness method on the registration** (`is_live`) beside the lookup.
   Opening would take two reads instead of one.
 - **A lock or coordination service** (etcd, ZooKeeper). It would arbitrate,
