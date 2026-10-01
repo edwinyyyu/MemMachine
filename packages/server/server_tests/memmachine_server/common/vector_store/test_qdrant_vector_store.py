@@ -3,12 +3,15 @@
 import asyncio
 import math
 from datetime import UTC, datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 import pytest_asyncio
 from qdrant_client import AsyncQdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -19,7 +22,14 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.metrics_factory import MetricsFactory
+from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
+from memmachine_server.common.vector_store.collection_registry import (
+    RegisteredCollection,
+)
+from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
+    SQLAlchemyVectorStoreCollectionRegistry,
+    SQLAlchemyVectorStoreCollectionRegistryParams,
+)
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStoreCollectionAlreadyExistsError,
@@ -27,15 +37,39 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfigMismatchError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
-    _PAYLOAD_PARTITION_KEY,
+    _PAYLOAD_INCARNATION,
+    _PAYLOAD_RECORD_UUID,
     QdrantVectorStore,
     QdrantVectorStoreCollection,
     QdrantVectorStoreParams,
+)
+from server_tests.memmachine_server.common.vector_store.collection_lifecycle_contract import (
+    CollectionLifecycleContract,
 )
 
 NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
+VECTOR_STORE_NAME = "qdrant_test"
+
+
+async def _stored_uuids(collection) -> set[UUID]:
+    """Record UUIDs Qdrant holds under the handle's incarnation, read past the store."""
+    points, _ = await collection._client.scroll(
+        collection_name=collection._native_collection_name,
+        scroll_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key=_PAYLOAD_INCARNATION,
+                    match=models.MatchValue(value=str(collection._incarnation)),
+                )
+            ]
+        ),
+        limit=10000,
+        with_payload=[_PAYLOAD_RECORD_UUID],
+        with_vectors=False,
+    )
+    return {UUID(str((point.payload or {})[_PAYLOAD_RECORD_UUID])) for point in points}
 
 
 @pytest.fixture
@@ -55,9 +89,35 @@ def any_qdrant_client(request):
 
 
 @pytest_asyncio.fixture
-async def store(any_qdrant_client):
-    params = QdrantVectorStoreParams(client=any_qdrant_client)
-    s = QdrantVectorStore(params)
+async def registry_engine(tmp_path):
+    """The relational database holding the collection registry, one per test."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}")
+    yield engine
+    await engine.dispose()
+
+
+async def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
+    """Parameters for one store: its own started registry over the shared registry database."""
+    collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=registry_engine,
+            vector_store_name=VECTOR_STORE_NAME,
+            # Tombstones come due at once, so a test can purge right after
+            # deleting.
+            tombstone_retention_seconds=0,
+        )
+    )
+    await collection_registry.startup()
+    return QdrantVectorStoreParams(
+        client=client,
+        collection_registry=collection_registry,
+        **overrides,
+    )
+
+
+@pytest_asyncio.fixture
+async def store(any_qdrant_client, registry_engine):
+    s = QdrantVectorStore(await _params(any_qdrant_client, registry_engine))
     await s.startup()
     yield s
 
@@ -101,25 +161,6 @@ def _make_record(
         vector=vector,
         properties=properties or {},
     )
-
-
-async def _stored_uuids(collection) -> set[UUID]:
-    """Record UUIDs Qdrant holds under the handle's partition, read past the store."""
-    points, _ = await collection._client.scroll(
-        collection_name=collection._collection_name,
-        scroll_filter=models.Filter(
-            must=[
-                models.FieldCondition(
-                    key=_PAYLOAD_PARTITION_KEY,
-                    match=models.MatchValue(value=collection._partition_key),
-                )
-            ]
-        ),
-        limit=10000,
-        with_payload=False,
-        with_vectors=False,
-    )
-    return {UUID(str(point.id)) for point in points}
 
 
 # ── Collection lifecycle ──
@@ -217,7 +258,7 @@ class TestCollectionLifecycle:
         coll_b = await store.open_collection(namespace=NAMESPACE, name="coll_b")
         assert coll_a is not None
         assert coll_b is not None
-        assert coll_a._collection_name == coll_b._collection_name
+        assert coll_a._native_collection_name == coll_b._native_collection_name
 
         await store.delete_collection(namespace=NAMESPACE, name="coll_a")
         await store.delete_collection(namespace=NAMESPACE, name="coll_b")
@@ -297,63 +338,77 @@ class TestUpsertAndQuery:
         all_results = list(await collection.query(query_vectors=[], limit=10))
         assert len(all_results) == 0
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("key", "value"),
-        [("age", "old"), ("age", 30.5), ("age", True), ("score", 3), ("score", "high")],
+
+def _collection_on(client: AsyncQdrantClient) -> QdrantVectorStoreCollection:
+    """A handle on a given client, bound to a live incarnation."""
+    incarnation = uuid4()
+    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+    return QdrantVectorStoreCollection(
+        client=client,
+        native_collection_name="native",
+        namespace=NAMESPACE,
+        name=NAME,
+        incarnation=incarnation,
+        config=config,
+        tracker=OperationTracker(None, prefix="test"),
+        get_registered_collection=AsyncMock(
+            return_value=RegisteredCollection(
+                incarnation=incarnation,
+                config=config,
+                live=True,
+                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        ),
     )
-    async def test_a_declared_property_of_another_type_is_refused(
-        self, collection, key, value
-    ):
-        with pytest.raises(ValueError, match=f"{key!r} is declared"):
-            await collection.upsert(
-                records=[
-                    _make_record(
-                        vector=_normalize([1.0, 0.0, 0.0]), properties={key: value}
-                    )
-                ]
-            )
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "dimensions", [VECTOR_DIM - 1, VECTOR_DIM + 1], ids=["too_short", "too_long"]
-    )
-    async def test_a_vector_of_another_width_is_refused(self, collection, dimensions):
-        vector = [1.0] * dimensions
-        with pytest.raises(ValueError, match="dimensions"):
-            await collection.upsert(records=[_make_record(vector=vector)])
-        with pytest.raises(ValueError, match="dimensions"):
-            await collection.query(query_vectors=[vector], limit=1)
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
-    async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
-        self, collection, coordinate
-    ):
-        with pytest.raises(ValueError, match="not finite"):
-            await collection.query(
-                query_vectors=[[coordinate] + [1.0] * (VECTOR_DIM - 1)], limit=1
-            )
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 413])
+async def test_a_batch_refused_as_sent_is_halved_until_it_fits(status_code: int):
+    """Qdrant's REST API refuses a request over its size limit with a 400, and
+    a proxy in front of it may with a 413."""
+    upserted: list[list[str]] = []
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
-    async def test_a_score_threshold_that_is_not_finite_is_refused(
-        self, collection, threshold
-    ):
-        with pytest.raises(ValueError, match="not finite"):
-            await collection.query(
-                query_vectors=[_normalize([1.0, 0.0, 0.0])],
-                limit=1,
-                score_threshold=threshold,
-            )
+    async def refuse_more_than_two(
+        *, collection_name: str, points: list[models.PointStruct], wait: bool
+    ) -> None:
+        if len(points) > 2:
+            raise UnexpectedResponse(status_code, "", b"", httpx.Headers())
+        upserted.append([str(point.id) for point in points])
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("limit", [0, -1])
-    async def test_a_limit_that_is_not_positive_is_refused(self, collection, limit):
-        with pytest.raises(ValueError, match="not positive"):
-            await collection.query(
-                query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=limit
-            )
+    client = MagicMock(spec=AsyncQdrantClient)
+    client.upsert = AsyncMock(side_effect=refuse_more_than_two)
+    collection = _collection_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(5)]
+
+    await collection.upsert(records=records)
+
+    assert sorted(len(batch) for batch in upserted) == [1, 2, 2]
+    assert {point_id for batch in upserted for point_id in batch} == {
+        str(collection._point_id(record.uuid)) for record in records
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResponseHandlingException(TimeoutError()),
+        UnexpectedResponse(500, "Internal Server Error", b"", httpx.Headers()),
+    ],
+    ids=["timeout", "server_error"],
+)
+async def test_an_upsert_that_fails_otherwise_is_not_sent_again(error: Exception):
+    """A timed-out request may still be applied, so it is not resent."""
+    client = MagicMock(spec=AsyncQdrantClient)
+    client.upsert = AsyncMock(side_effect=error)
+    collection = _collection_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(4)]
+
+    with pytest.raises(type(error)):
+        await collection.upsert(records=records)
+
+    client.upsert.assert_awaited_once()
 
 
 # ── Filters ──
@@ -928,6 +983,66 @@ class TestFilters:
         assert r2.uuid in uuids
         assert len(matches) == 2
 
+    # ── Delete ──
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("age", "old"), ("age", 30.5), ("age", True), ("score", 3), ("score", "high")],
+    )
+    async def test_a_declared_property_of_another_type_is_refused(
+        self, collection, key, value
+    ):
+        with pytest.raises(ValueError, match=f"{key!r} is declared"):
+            await collection.upsert(
+                records=[
+                    _make_record(
+                        vector=_normalize([1.0, 0.0, 0.0]), properties={key: value}
+                    )
+                ]
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "dimensions", [VECTOR_DIM - 1, VECTOR_DIM + 1], ids=["too_short", "too_long"]
+    )
+    async def test_a_vector_of_another_width_is_refused(self, collection, dimensions):
+        vector = [1.0] * dimensions
+        with pytest.raises(ValueError, match="dimensions"):
+            await collection.upsert(records=[_make_record(vector=vector)])
+        with pytest.raises(ValueError, match="dimensions"):
+            await collection.query(query_vectors=[vector], limit=1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
+    async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
+        self, collection, coordinate
+    ):
+        with pytest.raises(ValueError, match="not finite"):
+            await collection.query(
+                query_vectors=[[coordinate] + [1.0] * (VECTOR_DIM - 1)], limit=1
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
+    async def test_a_score_threshold_that_is_not_finite_is_refused(
+        self, collection, threshold
+    ):
+        with pytest.raises(ValueError, match="not finite"):
+            await collection.query(
+                query_vectors=[_normalize([1.0, 0.0, 0.0])],
+                limit=1,
+                score_threshold=threshold,
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, -1])
+    async def test_a_limit_that_is_not_positive_is_refused(self, collection, limit):
+        with pytest.raises(ValueError, match="not positive"):
+            await collection.query(
+                query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=limit
+            )
+
 
 class TestDelete:
     @pytest.mark.asyncio
@@ -984,6 +1099,75 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
+    async def test_a_query_returns_only_its_own_collections_records(self, store):
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_a",
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        )
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="tenant_b",
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        )
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
+        v1 = _normalize([1.0, 0.0, 0.0])
+        r1 = _make_record(vector=v1)
+        r2 = _make_record(vector=v1)
+
+        await coll_a.upsert(records=[r1])
+        await coll_b.upsert(records=[r2])
+
+        [result] = await coll_a.query(query_vectors=[v1], limit=10)
+        assert [match.record_uuid for match in result.matches] == [r1.uuid]
+
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+    @pytest.mark.asyncio
+    async def test_the_same_uuid_in_two_collections_is_two_records(self, store):
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(
+            namespace=NAMESPACE, name="tenant_a", config=config
+        )
+        await store.create_collection(
+            namespace=NAMESPACE, name="tenant_b", config=config
+        )
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
+        record_uuid = uuid4()
+        v1 = _normalize([1.0, 0.0, 0.0])
+        await coll_a.upsert(
+            records=[Record(uuid=record_uuid, vector=v1, properties={"name": "a"})]
+        )
+        await coll_b.upsert(
+            records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
+        )
+
+        assert await _stored_uuids(coll_a) == {record_uuid}
+        assert await _stored_uuids(coll_b) == {record_uuid}
+        [kept_a] = await coll_a.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="name", op="=", value="a"),
+        )
+        assert [match.record_uuid for match in kept_a.matches] == [record_uuid]
+
+        await coll_a.delete(record_uuids=[record_uuid])
+        assert await _stored_uuids(coll_a) == set()
+        assert await _stored_uuids(coll_b) == {record_uuid}
+
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+    @pytest.mark.asyncio
     async def test_delete_only_affects_own_partition(self, store):
         await store.create_collection(
             namespace=NAMESPACE,
@@ -1022,16 +1206,14 @@ class TestPartitionIsolation:
 @pytest.mark.integration
 class TestMetrics:
     @pytest.mark.asyncio
-    async def test_metrics_collection(self, qdrant_client):
+    async def test_metrics_collection(self, qdrant_client, registry_engine):
         mock_factory = MagicMock(spec=MetricsFactory)
         mock_histogram = MagicMock(spec=MetricsFactory.Histogram)
         mock_factory.get_histogram.return_value = mock_histogram
 
-        params = QdrantVectorStoreParams(
-            client=qdrant_client,
-            metrics_factory=mock_factory,
+        store = QdrantVectorStore(
+            await _params(qdrant_client, registry_engine, metrics_factory=mock_factory)
         )
-        store = QdrantVectorStore(params)
         await store.startup()
 
         await store.create_collection(
@@ -1065,11 +1247,9 @@ class TestMetrics:
 class TestCollectionLifecycleAcrossWorkers:
     """Collection creation has to survive more than one creator.
 
-    The store serialises creation with an asyncio.Lock keyed on the client
-    object, which serialises callers inside one process and nothing else. Run
-    the server with MEMMACHINE_WORKERS above 1 and each worker gets its own
-    client, its own lock, and no mutual exclusion - so two workers can decide to
-    create the same collection at the same moment.
+    Stores on separate clients can share one registry database, so two can
+    decide to create the same collection at the same moment, and one can find
+    the native collection already there without its indexes.
 
     These need a real server: payload indexes have no effect in local-mode
     Qdrant, so the thing under test is invisible there.
@@ -1085,21 +1265,12 @@ class TestCollectionLifecycleAcrossWorkers:
 
     @pytest.mark.asyncio
     async def test_indexes_are_created_when_the_collection_already_exists(
-        self, qdrant_client
+        self, qdrant_client, registry_engine
     ):
-        """A collection that exists without its indexes must still get them.
+        """A collection that exists without its indexes still gets them.
 
-        _create_native_collection creates the collection and its payload indexes
-        in one try block and swallows "already exists" for the whole block. So a
-        second creator - another worker, or a retry after one died between the
-        two calls - takes the exception path and never creates an index. Its
-        docstring claims it creates both idempotently; this pins that claim.
-
-        The partition key is declared is_tenant. Verified against Qdrant 1.19:
-        filtering stays correct without the index - a filtered query on an
-        unindexed collection returns only the matching tenant's points - so what
-        is lost is the multitenant storage layout and query speed, not
-        isolation.
+        A second creator, another worker or a retry after one died between the
+        two calls, finds the collection there and creates the indexes it lacks.
         """
         namespace, name = "raced_ns", "raced_name"
         config = self._config()
@@ -1113,7 +1284,7 @@ class TestCollectionLifecycleAcrossWorkers:
             ),
         )
 
-        store = QdrantVectorStore(QdrantVectorStoreParams(client=qdrant_client))
+        store = QdrantVectorStore(await _params(qdrant_client, registry_engine))
         await store.startup()
         try:
             await store.open_or_create_collection(
@@ -1121,8 +1292,8 @@ class TestCollectionLifecycleAcrossWorkers:
             )
             info = await qdrant_client.get_collection(native)
             indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_PARTITION_KEY in indexed, (
-                "the tenant partition index is missing: a collection that already "
+            assert _PAYLOAD_INCARNATION in indexed, (
+                "the tenant incarnation index is missing: a collection that already "
                 "existed never had its payload indexes created, so tenant "
                 f"filtering is unindexed. present: {sorted(indexed)}"
             )
@@ -1131,32 +1302,28 @@ class TestCollectionLifecycleAcrossWorkers:
             )
         finally:
             await store.delete_collection(namespace=namespace, name=name)
+            await qdrant_client.delete_collection(native)
 
     @pytest.mark.asyncio
-    async def test_two_workers_creating_at_once_both_succeed_and_index(
-        self, qdrant_container
+    async def test_two_workers_creating_at_once_agree_on_one_collection(
+        self, new_qdrant_client, registry_engine
     ):
-        """Two clients, no shared lock - the multi-worker shape, in one process.
+        """Two clients, one registry - the multi-worker shape, in one process.
 
-        The lock is keyed on the client object, so two stores holding separate
-        clients are exactly two workers as far as mutual exclusion goes. Both
-        calls must return a usable handle, and the collection they agree on must
-        end up indexed.
+        Both open-or-creates must return a usable handle bound to the one
+        incarnation, the collection they agree on must end up indexed, and
+        a strict create both issue at once is created once.
         """
-        client_a = qdrant_container.get_async_client()
-        client_b = qdrant_container.get_async_client()
+        client_a = new_qdrant_client()
+        client_b = new_qdrant_client()
         namespace, name = "race_two_ns", "race_two_name"
         config = self._config()
         native = QdrantVectorStore._build_native_collection_name(namespace, config)
 
-        store_a = QdrantVectorStore(QdrantVectorStoreParams(client=client_a))
-        store_b = QdrantVectorStore(QdrantVectorStoreParams(client=client_b))
+        store_a = QdrantVectorStore(await _params(client_a, registry_engine))
+        store_b = QdrantVectorStore(await _params(client_b, registry_engine))
         await store_a.startup()
         await store_b.startup()
-
-        assert store_a._client_name_locks is not store_b._client_name_locks, (
-            "separate clients must not share a lock, or this does not test anything"
-        )
 
         try:
             results = await asyncio.gather(
@@ -1168,17 +1335,53 @@ class TestCollectionLifecycleAcrossWorkers:
                 ),
                 return_exceptions=True,
             )
-            failures = [r for r in results if isinstance(r, BaseException)]
-            assert not failures, f"a concurrent creator raised: {failures!r}"
+            handles = [r for r in results if isinstance(r, QdrantVectorStoreCollection)]
+            assert len(handles) == 2, f"a concurrent creator raised: {results!r}"
+            assert handles[0]._incarnation == handles[1]._incarnation
 
             info = await client_a.get_collection(native)
             indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_PARTITION_KEY in indexed, (
-                "two workers raced and the tenant partition index was lost: the "
-                "loser skips index creation entirely. present: "
+            assert _PAYLOAD_INCARNATION in indexed, (
+                "two workers raced and the tenant incarnation index is missing. "
+                "present: "
                 f"{sorted(indexed)}"
             )
+
+            # The registry's primary key arbitrates a strict create: one
+            # creator wins, the other gets AlreadyExists.
+            await store_a.delete_collection(namespace=namespace, name=name)
+            results = await asyncio.gather(
+                store_a.create_collection(
+                    namespace=namespace, name=name, config=config
+                ),
+                store_b.create_collection(
+                    namespace=namespace, name=name, config=config
+                ),
+                return_exceptions=True,
+            )
+            assert sorted(type(r).__name__ for r in results) == [
+                "NoneType",
+                "VectorStoreCollectionAlreadyExistsError",
+            ], results
         finally:
             await store_a.delete_collection(namespace=namespace, name=name)
+            await client_a.delete_collection(native)
             await client_a.close()
             await client_b.close()
+
+
+class TestLifecycleContract(CollectionLifecycleContract):
+    """The collection lifecycle contract, against this store."""
+
+    @staticmethod
+    async def count_stored(store, namespace: str, config) -> int:
+        native = QdrantVectorStore._build_native_collection_name(namespace, config)
+        result = await store._client.count(collection_name=native, exact=True)
+        return result.count
+
+    stored_uuids = staticmethod(_stored_uuids)
+
+    @staticmethod
+    async def settle(collection) -> None:
+        # A Qdrant write returns once applied, so reads reflect it already.
+        pass
