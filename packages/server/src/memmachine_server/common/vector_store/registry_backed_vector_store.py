@@ -251,7 +251,7 @@ class RegistryBackedVectorStoreParams(BaseModel):
     Attributes:
         partition_registry (VectorStorePartitionRegistry):
             Registry of the store's partitions, shared by every process
-            serving this store, and by no other store. Provisioned by the
+            serving this store, and by no other store. Started by the
             caller.
         vector_store_name (str):
             The name of this store, which names its storage, so stores of
@@ -272,7 +272,7 @@ class RegistryBackedVectorStoreParams(BaseModel):
         ...,
         description=(
             "Registry of the store's partitions, shared by every process serving "
-            "this store, and by no other store. Provisioned by the caller"
+            "this store, and by no other store. Started by the caller"
         ),
     )
     vector_store_name: str = Field(
@@ -361,15 +361,12 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         return self._indexed_properties
 
     @override
-    async def provision(self) -> None:
-        async with self._tracker("provision"):
-            await self._prepare_storage()
-
-    @override
     async def startup(self) -> None:
         # The caller owns the registry's lifecycle and that of any client a
-        # subclass is given.
-        pass
+        # subclass is given; starting the store prepares the storage its
+        # partitions share.
+        async with self._tracker("startup"):
+            await self._prepare_storage()
 
     @override
     async def shutdown(self) -> None:
@@ -532,14 +529,14 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         own storage: a native collection they all live in, a container of
         per-partition units, or nothing. Storage of one partition's own is
         prepared when it registers, by `_prepare_partition_storage`. What is
-        prepared for one store serves no other. It runs when the store is provisioned, by any number of
-        processes at once, so it must be idempotent and safe to race, and must
+        prepared for one store serves no other. It runs when the store starts,
+        by any number of processes at once, so it must be idempotent and safe to race, and must
         complete what a failed call left part-made.
 
         Raises:
             Exception:
-                Whatever the backend raises. Provisioning then fails, and the
-                next provisioning completes what this call left.
+                Whatever the backend raises. Startup then fails, and the next
+                startup completes what this call left.
         """
         raise NotImplementedError
 
@@ -552,7 +549,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
 
         The partition is registered, pending, under the incarnation, and is
         marked live once this returns. The storage the store's partitions
-        share was prepared by provisioning; this prepares
+        share was prepared at startup; this prepares
         what the partition keeps of its own, such as a unit named by its
         incarnation, or nothing. Whatever a failed or interrupted call leaves
         must be recoverable: reclaimed by the purge rounds of the incarnation
@@ -577,7 +574,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         """
         Build a handle bound to a live partition's incarnation.
 
-        The storage the store's partitions share was prepared by provisioning,
+        The storage the store's partitions share was prepared at startup,
         and the partition's own before it was marked live.
 
         Args:

@@ -193,21 +193,15 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def provision(self) -> None:
-        """
-        Create the collection's durable resources, idempotently.
-
-        The native collection and its payload indexes, the registry
-        tables, or the tables and indexes beside the data; whatever must
-        exist before a partition can be created. Run once per deployment
-        change by whoever owns the schema, before `startup`; never by a
-        request.
-        """
-        raise NotImplementedError
-
     @abstractmethod
     async def startup(self) -> None:
-        """Startup."""
+        """
+        Start the store, creating its durable resources idempotently.
+
+        The native collection and its payload indexes, the registry
+        tables, or the tables and indexes beside the data: whatever must
+        exist before a partition can be created.
+        """
         raise NotImplementedError
 
     @abstractmethod

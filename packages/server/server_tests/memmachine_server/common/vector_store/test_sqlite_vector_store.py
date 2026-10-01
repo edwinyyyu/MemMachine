@@ -84,7 +84,6 @@ async def store(tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     vector_store = SQLiteVectorStore(_params(engine))
-    await vector_store.provision()
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
@@ -115,7 +114,6 @@ async def _store_with(store, vector_store_name: str, **overrides) -> SQLiteVecto
             store._sqlalchemy_engine, vector_store_name=vector_store_name, **overrides
         )
     )
-    await other.provision()
     await other.startup()
     return other
 
@@ -1003,7 +1001,6 @@ async def _fresh_store(db_path, tmp_path, *, save_threshold=1000):
         save_threshold=save_threshold,
     )
     store = SQLiteVectorStore(params)
-    await store.provision()
     await store.startup()
     return store, engine
 
