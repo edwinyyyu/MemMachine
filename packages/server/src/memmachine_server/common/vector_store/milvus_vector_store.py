@@ -182,9 +182,8 @@ def _milvus_filter(
     """Compile a filter, or with `negate` its complement, into a Milvus expression.
 
     A negated comparison or membership test holds where the property has no
-    value. Milvus evaluates a
-    condition on a null the SQL way, so negation is pushed down to the
-    conditions.
+    value. Milvus evaluates a condition on a null the SQL way, so negation is
+    pushed down to the conditions.
     """
     match expr:
         case FilterNot(operand):
