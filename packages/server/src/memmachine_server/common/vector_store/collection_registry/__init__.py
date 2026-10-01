@@ -1,17 +1,15 @@
 """Collection registry interface and implementations."""
 
 from .collection_registry import (
-    LiveRegistration,
-    PendingRegistration,
     PurgeClaim,
     Registration,
+    Reservation,
     VectorStoreCollectionRegistry,
 )
 
 __all__ = [
-    "LiveRegistration",
-    "PendingRegistration",
     "PurgeClaim",
     "Registration",
+    "Reservation",
     "VectorStoreCollectionRegistry",
 ]

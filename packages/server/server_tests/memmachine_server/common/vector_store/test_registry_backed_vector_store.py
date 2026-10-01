@@ -21,7 +21,7 @@ from memmachine_server.common.vector_store import (
     registry_backed_vector_store,
 )
 from memmachine_server.common.vector_store.collection_registry import (
-    LiveRegistration,
+    Registration,
     sqlalchemy_collection_registry,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
@@ -80,7 +80,7 @@ class _Store(RegistryBackedVectorStore[_Collection]):
         await self.prepare(namespace, config, incarnation)
 
     @override
-    def _build_collection_handle(self, registration: LiveRegistration) -> _Collection:
+    def _build_collection_handle(self, registration: Registration) -> _Collection:
         return _Collection(registration=registration, tracker=self._tracker)
 
     @override
@@ -165,22 +165,22 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
     await started.wait()
     store.prepare = _prepared
     registry = store._collection_registry
-    register_collection = registry.register
-    registrations = 0
+    reserve = registry.reserve
+    reservations = 0
 
     async def counted(namespace, name, config):
-        nonlocal registrations
-        registrations += 1
-        return await register_collection(namespace, name, config)
+        nonlocal reservations
+        reservations += 1
+        return await reserve(namespace, name, config)
 
-    monkeypatch.setattr(registry, "register", counted)
+    monkeypatch.setattr(registry, "reserve", counted)
     opening = asyncio.create_task(
         store.open_or_create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await asyncio.sleep(0.1)
     assert not opening.done()
-    # It waits on the pending collection instead of trying to register.
-    assert registrations == 0
+    # It waits on the pending collection instead of trying to reserve it.
+    assert reservations == 0
 
     release.set()
     await creating
@@ -267,38 +267,38 @@ async def test_a_cancelled_preparation_frees_the_name_and_queues_its_incarnation
 
 
 @pytest.mark.asyncio
-async def test_an_unregistration_after_a_cancelled_preparation_survives_another_cancellation(
+async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives_another_cancellation(
     store, monkeypatch
 ):
     started = asyncio.Event()
-    unregistering = asyncio.Event()
+    cancelling = asyncio.Event()
     release = asyncio.Event()
-    pending_registration = sqlalchemy_collection_registry._SQLAlchemyPendingRegistration
-    unregister = pending_registration.unregister
+    reservation_type = sqlalchemy_collection_registry._SQLAlchemyReservation
+    cancel = reservation_type.cancel
 
     async def hangs(namespace, config, incarnation) -> None:
         started.set()
         await asyncio.Event().wait()
 
-    async def slow(pending) -> None:
-        unregistering.set()
+    async def slow(reservation) -> None:
+        cancelling.set()
         await release.wait()
-        await unregister(pending)
+        await cancel(reservation)
 
     store.prepare = hangs
-    monkeypatch.setattr(pending_registration, "unregister", slow)
+    monkeypatch.setattr(reservation_type, "cancel", slow)
     creating = asyncio.create_task(
         store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await started.wait()
     creating.cancel()
-    await asyncio.wait_for(unregistering.wait(), 5)
+    await asyncio.wait_for(cancelling.wait(), 5)
     creating.cancel()
     with pytest.raises(asyncio.CancelledError):
         await creating
 
     release.set()
-    await asyncio.wait_for(asyncio.gather(*store._unregistrations), 5)
+    await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
     assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
 
 
@@ -313,14 +313,14 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     async def refused(namespace, config, incarnation) -> None:
         raise RuntimeError("the backend refused")
 
-    async def unreachable(pending) -> None:
+    async def unreachable(reservation) -> None:
         raise ConnectionError("the registry is unreachable")
 
     store.prepare = refused
-    with monkeypatch.context() as unregistration:
-        unregistration.setattr(
-            sqlalchemy_collection_registry._SQLAlchemyPendingRegistration,
-            "unregister",
+    with monkeypatch.context() as cancellation:
+        cancellation.setattr(
+            sqlalchemy_collection_registry._SQLAlchemyReservation,
+            "cancel",
             unreachable,
         )
         with pytest.raises(RuntimeError, match="refused"):
@@ -342,7 +342,7 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
 
 
 @pytest.mark.asyncio
-async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_marked_live(
+async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_confirmed(
     store,
 ):
     """The creation raises, and the collection stays deleted."""

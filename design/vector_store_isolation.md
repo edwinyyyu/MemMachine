@@ -19,8 +19,8 @@ has to be able to keep the promise.
 
 ## Collection lives
 
-- An incarnation is a random UUID (version 4) minted by the registry at
-  registration, one per collection life (see [collection
+- An incarnation is a random UUID (version 4) minted by the registry when a
+  collection's name is reserved, one per collection life (see [collection
   registry](vector_store_collection_registry.md)). Every read, write and
   delete of a handle is scoped to it.
 - An incarnation is never re-minted while it is registered, pending or live,

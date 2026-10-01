@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from memmachine_server.common.vector_store.collection_registry import (
-    PendingRegistration,
+    Reservation,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     _MAX_FAILED_PURGE_ROUNDS,
@@ -187,13 +187,13 @@ async def _round(
 
 
 @pytest.mark.asyncio
-async def test_create_registers_a_fresh_incarnation_with_the_config(
+async def test_a_reservation_mints_a_fresh_incarnation_with_the_config(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
 
-    pending = await registry.register(NAMESPACE, "c", CONFIG)
-    live = await pending.mark_live()
+    pending = await registry.reserve(NAMESPACE, "c", CONFIG)
+    live = await pending.confirm()
 
     resolved = await registry.resolve(NAMESPACE, "c")
     assert resolved is not None
@@ -204,63 +204,63 @@ async def test_create_registers_a_fresh_incarnation_with_the_config(
 
 
 @pytest.mark.asyncio
-async def test_a_collection_is_pending_until_marked_live(
+async def test_a_collection_is_pending_until_its_reservation_is_confirmed(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
 
-    pending = await registry.register(NAMESPACE, "c", CONFIG)
+    pending = await registry.reserve(NAMESPACE, "c", CONFIG)
 
     with pytest.raises(VectorStoreCollectionPendingError) as resolved:
         await registry.resolve(NAMESPACE, "c")
     assert resolved.value.config == CONFIG
     assert resolved.value.registered_at.tzinfo is not None
-    await pending.mark_live()
+    await pending.confirm()
     live = await registry.resolve(NAMESPACE, "c")
     assert live is not None
     assert live.incarnation == pending.incarnation
     with pytest.raises(VectorStoreCollectionDeletedError):
-        await pending.mark_live()
+        await pending.confirm()
 
 
 @pytest.mark.asyncio
-async def test_only_the_registered_incarnation_is_marked_live(
+async def test_only_the_reserved_incarnation_is_confirmed(
     sqlalchemy_engine, vector_store_name
 ):
     """A creation whose collection was deleted while its storage was
-    prepared cannot mark live a collection registered under the name since."""
+    prepared cannot confirm a collection reserved under the name since."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    deleted = await registry.register(NAMESPACE, "c", CONFIG)
+    deleted = await registry.reserve(NAMESPACE, "c", CONFIG)
     await registry.unregister(NAMESPACE, "c")
     with pytest.raises(VectorStoreCollectionDeletedError):
-        await deleted.mark_live()
+        await deleted.confirm()
 
-    registered_since = await registry.register(NAMESPACE, "c", CONFIG)
+    reserved_since = await registry.reserve(NAMESPACE, "c", CONFIG)
 
     with pytest.raises(VectorStoreCollectionDeletedError):
-        await deleted.mark_live()
+        await deleted.confirm()
     with pytest.raises(VectorStoreCollectionPendingError):
         await registry.resolve(NAMESPACE, "c")
-    live = await registered_since.mark_live()
-    assert live.incarnation == registered_since.incarnation
+    live = await reserved_since.confirm()
+    assert live.incarnation == reserved_since.incarnation
 
 
 @pytest.mark.asyncio
-async def test_unregistering_a_pending_registration_spares_the_name_registered_since(
+async def test_cancelling_a_reservation_spares_the_name_reserved_since(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    old = await registry.register(NAMESPACE, "c", CONFIG)
+    old = await registry.reserve(NAMESPACE, "c", CONFIG)
     await registry.unregister(NAMESPACE, "c")
-    since = await registry.register(NAMESPACE, "c", CONFIG)
+    since = await registry.reserve(NAMESPACE, "c", CONFIG)
 
-    await old.unregister()
+    await old.cancel()
     with pytest.raises(VectorStoreCollectionPendingError):
         await registry.resolve(NAMESPACE, "c")
     assert await _queued(registry) == [old.incarnation]
 
-    await since.unregister()
-    await since.unregister()
+    await since.cancel()
+    await since.cancel()
     assert await registry.resolve(NAMESPACE, "c") is None
     assert sorted(await _queued(registry)) == sorted(
         [old.incarnation, since.incarnation]
@@ -268,18 +268,18 @@ async def test_unregistering_a_pending_registration_spares_the_name_registered_s
 
 
 @pytest.mark.asyncio
-async def test_a_live_registration_is_current_until_its_collection_is_deleted(
+async def test_a_registration_is_current_until_its_collection_is_deleted(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    live = await (await registry.register(NAMESPACE, "c", CONFIG)).mark_live()
+    live = await (await registry.reserve(NAMESPACE, "c", CONFIG)).confirm()
     await live.require_current()
 
     await registry.unregister(NAMESPACE, "c")
     with pytest.raises(VectorStoreCollectionHandleStaleError):
         await live.require_current()
 
-    await (await registry.register(NAMESPACE, "c", CONFIG)).mark_live()
+    await (await registry.reserve(NAMESPACE, "c", CONFIG)).confirm()
     with pytest.raises(VectorStoreCollectionHandleStaleError):
         await live.require_current()
 
@@ -290,15 +290,15 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
 ):
     """Taken by a pending collection, then by a live one."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    registration = await registry.register(NAMESPACE, "c", CONFIG)
+    reservation = await registry.reserve(NAMESPACE, "c", CONFIG)
 
     for pending in (True, False):
         with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-            await registry.register(NAMESPACE, "c", CONFIG)
+            await registry.reserve(NAMESPACE, "c", CONFIG)
         with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-            await registry.register(NAMESPACE, "c", OTHER_CONFIG)
+            await registry.reserve(NAMESPACE, "c", OTHER_CONFIG)
         if pending:
-            await registration.mark_live()
+            await reservation.confirm()
 
 
 @pytest.mark.asyncio
@@ -307,8 +307,8 @@ async def test_any_string_of_at_most_255_characters_names_a_registry(
 ):
     name = f"Store-{vector_store_name} ".ljust(255, "x")
     registry = await _registry(sqlalchemy_engine, name)
-    pending = await registry.register(NAMESPACE, "c", CONFIG)
-    await pending.mark_live()
+    pending = await registry.reserve(NAMESPACE, "c", CONFIG)
+    await pending.confirm()
 
     resolved = await registry.resolve(NAMESPACE, "c")
     assert resolved is not None
@@ -348,9 +348,9 @@ async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else
     first = await _registry(sqlalchemy_engine, f"{vector_store_name}_a")
     second = await _registry(sqlalchemy_engine, f"{vector_store_name}_b")
 
-    one = (await (await first.register(NAMESPACE, "c", CONFIG)).mark_live()).incarnation
+    one = (await (await first.reserve(NAMESPACE, "c", CONFIG)).confirm()).incarnation
     two = (
-        await (await second.register(NAMESPACE, "c", OTHER_CONFIG)).mark_live()
+        await (await second.reserve(NAMESPACE, "c", OTHER_CONFIG)).confirm()
     ).incarnation
     assert one != two
     in_first = await first.resolve(NAMESPACE, "c")
@@ -376,20 +376,17 @@ async def test_concurrent_creators_get_one_winner(sqlalchemy_engine, vector_stor
     second = await _registry(sqlalchemy_engine, vector_store_name)
 
     results = await asyncio.gather(
-        *(
-            registry.register(NAMESPACE, "c", CONFIG)
-            for registry in (first, second) * 3
-        ),
+        *(registry.reserve(NAMESPACE, "c", CONFIG) for registry in (first, second) * 3),
         return_exceptions=True,
     )
 
-    winners = [r for r in results if isinstance(r, PendingRegistration)]
+    winners = [r for r in results if isinstance(r, Reservation)]
     losers = [
         r for r in results if isinstance(r, VectorStoreCollectionAlreadyExistsError)
     ]
     assert len(winners) == 1
     assert len(losers) == 5
-    live = await winners[0].mark_live()
+    live = await winners[0].confirm()
     resolved = await first.resolve(NAMESPACE, "c")
     assert resolved is not None
     assert resolved.incarnation == live.incarnation
@@ -400,7 +397,7 @@ async def test_delete_queues_the_incarnation_and_is_idempotent(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "c", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "c", CONFIG)).incarnation
 
     await registry.unregister(NAMESPACE, "c")
 
@@ -416,12 +413,10 @@ async def test_a_recreated_name_gets_a_new_incarnation(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    old = (await registry.register(NAMESPACE, "c", CONFIG)).incarnation
+    old = (await registry.reserve(NAMESPACE, "c", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "c")
 
-    new = (
-        await (await registry.register(NAMESPACE, "c", CONFIG)).mark_live()
-    ).incarnation
+    new = (await (await registry.reserve(NAMESPACE, "c", CONFIG)).confirm()).incarnation
 
     assert new != old
     resolved = await registry.resolve(NAMESPACE, "c")
@@ -435,7 +430,7 @@ async def test_a_claim_names_where_the_records_are(
 ):
     """The claim carries what a purge round needs to find the records: incarnation, namespace, configuration."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "c", OTHER_CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "c", OTHER_CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "c")
     await _age_deletion(registry, incarnation)
 
@@ -452,7 +447,7 @@ async def test_a_tombstone_is_not_due_before_the_retention(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
 
     assert await _round(registry, any_records_found=False) is None
@@ -469,8 +464,8 @@ async def test_due_tombstones_go_oldest_deletion_first_until_a_round_finds_nothi
         "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
         lambda: next(minted),
     )
-    first = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
-    second = (await registry.register(NAMESPACE, "b", CONFIG)).incarnation
+    first = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+    second = (await registry.reserve(NAMESPACE, "b", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await registry.unregister(NAMESPACE, "b")
     # The later deletion, with the larger incarnation, is made the older, so
@@ -497,7 +492,7 @@ async def test_a_tombstone_queued_by_a_real_deletion_comes_due_by_the_database_c
     registry = await _registry(
         sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
 
     assert await _round(registry, any_records_found=False) == incarnation
@@ -512,9 +507,7 @@ async def test_a_changed_retention_applies_to_tombstones_already_queued(
     """Only the deletion's time is stored; the retention in force when a
     claim is decided applies, including to tombstones queued under another."""
     queued_under_a_day = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (
-        await queued_under_a_day.register(NAMESPACE, "a", CONFIG)
-    ).incarnation
+    incarnation = (await queued_under_a_day.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await queued_under_a_day.unregister(NAMESPACE, "a")
     assert await _round(queued_under_a_day, any_records_found=False) is None
 
@@ -530,7 +523,7 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_fail
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
@@ -557,10 +550,10 @@ async def test_a_failed_tombstone_backs_off_while_the_ones_behind_it_are_claimed
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    failing = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    failing = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, failing, extra=timedelta(hours=1))
-    later = (await registry.register(NAMESPACE, "b", CONFIG)).incarnation
+    later = (await registry.reserve(NAMESPACE, "b", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "b")
     await _age_deletion(registry, later)
 
@@ -573,7 +566,7 @@ async def test_the_backoff_doubles_with_each_failure_and_runs_from_the_last_one(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     # Due for days: the backoff still runs from the last failure, not from
     # when the tombstone came due.
@@ -603,7 +596,7 @@ async def test_the_backoff_stops_doubling_at_its_maximum(
         )
     )
     await registry.startup()
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
@@ -622,10 +615,10 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
     sqlalchemy_engine, vector_store_name, caplog
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    failing = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    failing = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, failing, extra=timedelta(hours=1))
-    later = (await registry.register(NAMESPACE, "b", CONFIG)).incarnation
+    later = (await registry.reserve(NAMESPACE, "b", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "b")
     await _age_deletion(registry, later)
 
@@ -651,7 +644,7 @@ async def test_a_round_that_finds_points_clears_the_failed_rounds(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
@@ -667,7 +660,7 @@ async def test_a_stored_configuration_that_no_longer_validates_counts_as_a_faile
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
     async with registry._engine.begin() as connection:
@@ -688,7 +681,7 @@ async def test_a_cancelled_round_is_not_a_failed_round(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
@@ -707,7 +700,7 @@ async def test_a_round_that_reports_nothing_is_an_error(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
@@ -723,7 +716,7 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
 ):
     """A minted incarnation colliding with a queued tombstone is rejected and re-minted."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    dead = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    dead = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     minted = iter([dead, uuid4()])
     monkeypatch.setattr(
@@ -731,7 +724,7 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
         lambda: next(minted),
     )
 
-    fresh = (await registry.register(NAMESPACE, "b", CONFIG)).incarnation
+    fresh = (await registry.reserve(NAMESPACE, "b", CONFIG)).incarnation
 
     assert fresh != dead
     assert await _queued(registry) == [dead]
@@ -742,7 +735,7 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     sqlalchemy_engine, vector_store_name, monkeypatch
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    dead = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+    dead = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
@@ -750,7 +743,7 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     )
 
     with pytest.raises(VectorStoreAttemptsExhaustedError):
-        await registry.register(NAMESPACE, "b", CONFIG)
+        await registry.reserve(NAMESPACE, "b", CONFIG)
     assert await registry.resolve(NAMESPACE, "b") is None
 
 
@@ -784,7 +777,7 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
     )
     try:
         registry = await _registry(skewed_engine, vector_store_name)
-        incarnation = (await registry.register(NAMESPACE, "a", CONFIG)).incarnation
+        incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
         await registry.unregister(NAMESPACE, "a")
 
         async with skewed_engine.connect() as connection:
@@ -812,8 +805,8 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite holds no row locks to skip")
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    held = (await registry.register(NAMESPACE, "held", CONFIG)).incarnation
-    free = (await registry.register(NAMESPACE, "free", CONFIG)).incarnation
+    held = (await registry.reserve(NAMESPACE, "held", CONFIG)).incarnation
+    free = (await registry.reserve(NAMESPACE, "free", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "held")
     await registry.unregister(NAMESPACE, "free")
     await _age_deletion(registry, held, extra=timedelta(minutes=1))
@@ -848,13 +841,13 @@ async def test_racing_deletions_of_a_collection_queue_one_tombstone(
         await _registry(sqlalchemy_engine, vector_store_name) for _ in range(4)
     ]
     for cycle in range(10):
-        await registries[0].register(NAMESPACE, "c", CONFIG)
+        await registries[0].reserve(NAMESPACE, "c", CONFIG)
         await asyncio.wait_for(
             asyncio.gather(*(r.unregister(NAMESPACE, "c") for r in registries)), 30
         )
         assert await registries[0].resolve(NAMESPACE, "c") is None
         assert len(await _queued(registries[0])) == cycle + 1
-    await registries[0].register(NAMESPACE, "c", CONFIG)
+    await registries[0].reserve(NAMESPACE, "c", CONFIG)
 
 
 @pytest.mark.asyncio
@@ -866,7 +859,7 @@ async def test_a_deletion_racing_another_waits_and_queues_nothing_more(
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite serializes whole write transactions")
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register(NAMESPACE, "c", CONFIG)).incarnation
+    incarnation = (await registry.reserve(NAMESPACE, "c", CONFIG)).incarnation
 
     local = None
     try:
@@ -903,7 +896,7 @@ async def test_an_incarnation_colliding_with_a_live_collection_is_reminted(
     free, is a collision to mint again, not a taken name."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     live = (
-        await (await registry.register(NAMESPACE, "live", CONFIG)).mark_live()
+        await (await registry.reserve(NAMESPACE, "live", CONFIG)).confirm()
     ).incarnation
     minted = iter([live, uuid4()])
     monkeypatch.setattr(
@@ -911,7 +904,7 @@ async def test_an_incarnation_colliding_with_a_live_collection_is_reminted(
         lambda: next(minted),
     )
 
-    fresh = (await registry.register(NAMESPACE, "fresh", CONFIG)).incarnation
+    fresh = (await registry.reserve(NAMESPACE, "fresh", CONFIG)).incarnation
 
     assert fresh != live
     resolved = await registry.resolve(NAMESPACE, "live")
@@ -932,7 +925,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
     collection under an incarnation awaiting purge.
     """
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    victim = (await registry.register(NAMESPACE, "victim", CONFIG)).incarnation
+    victim = (await registry.reserve(NAMESPACE, "victim", CONFIG)).incarnation
     minted = iter([victim, uuid4()])
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.uuid4",
@@ -961,7 +954,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
                     enqueued_at=func.now(),
                 )
             )
-            creator = asyncio.create_task(registry.register(NAMESPACE, "fresh", CONFIG))
+            creator = asyncio.create_task(registry.reserve(NAMESPACE, "fresh", CONFIG))
             await asyncio.wait_for(insert_issued.wait(), 30)
         fresh = (await asyncio.wait_for(creator, 30)).incarnation
     finally:
@@ -982,7 +975,7 @@ async def test_a_round_claims_one_tombstone(sqlalchemy_engine, vector_store_name
         sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
     for name in ("a", "b", "c"):
-        await registry.register(NAMESPACE, name, CONFIG)
+        await registry.reserve(NAMESPACE, name, CONFIG)
         await registry.unregister(NAMESPACE, name)
 
     assert await _round(registry, any_records_found=False) is not None
@@ -1004,7 +997,7 @@ async def test_a_persistent_database_error_surfaces_with_its_cause(
     )
 
     with pytest.raises(VectorStoreAttemptsExhaustedError) as raised:
-        await asyncio.wait_for(registry.register(NAMESPACE, "a", CONFIG), 30)
+        await asyncio.wait_for(registry.reserve(NAMESPACE, "a", CONFIG), 30)
 
     cause: BaseException | None = raised.value
     while cause is not None and not isinstance(cause, IntegrityError):

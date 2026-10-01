@@ -5,7 +5,7 @@ A table of registered collections keyed by vector store, namespace and name,
 each with its incarnation and whether it is live (its storage prepared), and
 a queue of deleted incarnations claimed in the order they come due. The
 primary key arbitrates registration across processes, a conditional update
-marks a registration live, unregistration is one transaction, and on
+confirms a reservation, unregistration is one transaction, and on
 PostgreSQL a purge claim is a row lock.
 """
 
@@ -57,9 +57,9 @@ from memmachine_server.common.vector_store.utils import (
 )
 
 from .collection_registry import (
-    LiveRegistration,
-    PendingRegistration,
     PurgeClaim,
+    Registration,
+    Reservation,
     VectorStoreCollectionRegistry,
 )
 
@@ -253,9 +253,9 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             await connection.run_sync(BaseCollectionRegistry.metadata.create_all)
 
     @override
-    async def register(
+    async def reserve(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> PendingRegistration:
+    ) -> Reservation:
         # The primary key arbitrates the (namespace, name) across processes.
         # An insert rejected for another reason, such as a minted incarnation
         # that is registered or awaiting purge, is tried again with a fresh one.
@@ -266,7 +266,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 await self._insert(namespace, name, incarnation, config)
             except _RegistryInsertRejectedError as err:
                 logger.warning(
-                    "Registering collection (%r, %r) under incarnation %s was "
+                    "Reserving collection (%r, %r) under incarnation %s was "
                     "rejected: %s; minting another",
                     namespace,
                     name,
@@ -280,7 +280,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         f"progress after {_MAX_MINT_ATTEMPTS} attempts"
                     ) from err
                 continue
-            return _SQLAlchemyPendingRegistration(
+            return _SQLAlchemyReservation(
                 namespace=namespace,
                 name=name,
                 config=config,
@@ -339,7 +339,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             ) from err
 
     @override
-    async def resolve(self, namespace: str, name: str) -> LiveRegistration | None:
+    async def resolve(self, namespace: str, name: str) -> Registration | None:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -362,7 +362,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             raise VectorStoreCollectionPendingError(
                 namespace, name, ensure_tz_aware(row.registered_at), config
             )
-        return _SQLAlchemyLiveRegistration(
+        return _SQLAlchemyRegistration(
             namespace=namespace,
             name=name,
             config=config,
@@ -522,16 +522,16 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
 
 @dataclass(frozen=True)
-class _SQLAlchemyPendingRegistration(PendingRegistration):
-    """A pending registration whose methods write the registry's tables directly."""
+class _SQLAlchemyReservation(Reservation):
+    """A reservation whose methods write the registry's tables directly."""
 
     engine: AsyncEngine = field(repr=False, compare=False)
     vector_store_name: str = field(repr=False)
 
     @override
-    async def mark_live(self) -> LiveRegistration:
+    async def confirm(self) -> Registration:
         # Conditional on the incarnation and on the row being pending, so a
-        # creation marks only the collection it registered.
+        # creation marks live only the collection it reserved.
         async with self.engine.begin() as connection:
             result = await connection.execute(
                 update(CollectionRow)
@@ -546,7 +546,7 @@ class _SQLAlchemyPendingRegistration(PendingRegistration):
             )
         if result.rowcount != 1:
             raise VectorStoreCollectionDeletedError(self.namespace, self.name)
-        return _SQLAlchemyLiveRegistration(
+        return _SQLAlchemyRegistration(
             namespace=self.namespace,
             name=self.name,
             config=self.config,
@@ -556,7 +556,7 @@ class _SQLAlchemyPendingRegistration(PendingRegistration):
         )
 
     @override
-    async def unregister(self) -> None:
+    async def cancel(self) -> None:
         await _unregister_where(
             self.engine,
             self.vector_store_name,
@@ -565,8 +565,8 @@ class _SQLAlchemyPendingRegistration(PendingRegistration):
 
 
 @dataclass(frozen=True)
-class _SQLAlchemyLiveRegistration(LiveRegistration):
-    """A live registration whose method reads the registry's tables directly."""
+class _SQLAlchemyRegistration(Registration):
+    """A registration whose method reads the registry's tables directly."""
 
     engine: AsyncEngine = field(repr=False, compare=False)
     vector_store_name: str = field(repr=False)
