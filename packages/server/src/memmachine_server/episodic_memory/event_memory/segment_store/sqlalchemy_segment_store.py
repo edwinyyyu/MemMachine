@@ -125,14 +125,11 @@ _MAX_CONTEXT_DISTANCE = 1_000
 
 
 class _RegistryInsertRejectedError(Exception):
-    """A registry insert was rejected; retry with a fresh incarnation.
+    """A registry insert was rejected although its key is free.
 
     Raised when the insert fails with an integrity error but no row
     exists under the key, or when the minted incarnation still has
-    garbage awaiting purge. Either way the fix is a fresh incarnation,
-    retried up to `_MAX_MINT_ATTEMPTS`; a persistent failure raises
-    `SegmentStoreAttemptsExhaustedError` with the database error
-    chained.
+    garbage awaiting purge.
     """
 
 
@@ -1055,13 +1052,19 @@ class SQLAlchemySegmentStore(SegmentStore):
                 try:
                     await self._insert_partition_row(partition_key, uuid4(), config)
                 except _RegistryInsertRejectedError as err:
+                    logger.warning(
+                        "Creating partition %r was rejected: %s; minting another "
+                        "incarnation",
+                        partition_key,
+                        err,
+                    )
                     attempts += 1
                     if attempts >= _MAX_MINT_ATTEMPTS:
                         raise SegmentStoreAttemptsExhaustedError(
                             f"Creating partition {partition_key!r} made no "
                             f"progress after {_MAX_MINT_ATTEMPTS} attempts"
                         ) from err
-                    continue  # Mint a fresh incarnation.
+                    continue
                 return
 
     async def _insert_partition_row(
@@ -1090,7 +1093,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 partition instead.
             _RegistryInsertRejectedError:
                 The insert cannot be kept, for a reason other than the
-                key being taken. Retry with a fresh incarnation.
+                key being taken.
         """
         try:
             async with self._create_session() as session, session.begin():
@@ -1111,30 +1114,21 @@ class SQLAlchemySegmentStore(SegmentStore):
                     )
                 ).scalar_one_or_none()
                 if garbage_row is not None:
-                    logger.warning(
-                        "Incarnation %s minted for partition %r collides "
-                        "with garbage awaiting purge; re-minting",
-                        incarnation,
-                        partition_key,
+                    raise _RegistryInsertRejectedError(
+                        f"incarnation {incarnation} awaits purge"
                     )
-                    raise _RegistryInsertRejectedError(str(incarnation))
         except IntegrityError as err:
             # If a committed row exists under this key, the key is taken.
-            # Otherwise retry with a fresh incarnation.
             async with self._create_session() as session:
                 partition_row = await SQLAlchemySegmentStore._get_partition_row(
                     session, partition_key
                 )
             if partition_row is not None:
                 raise SegmentStorePartitionAlreadyExistsError(partition_key) from err
-            logger.warning(
-                "Registry insert for partition %r with incarnation %s failed "
-                "and no row exists under the key; retrying with a fresh "
-                "incarnation",
-                partition_key,
-                incarnation,
-            )
-            raise _RegistryInsertRejectedError(str(incarnation)) from err
+            raise _RegistryInsertRejectedError(
+                f"the insert of incarnation {incarnation} failed and no row "
+                "exists under the key"
+            ) from err
 
     @override
     async def open_partition(
@@ -1196,6 +1190,13 @@ class SQLAlchemySegmentStore(SegmentStore):
                 SegmentStorePartitionAlreadyExistsError,
                 _RegistryInsertRejectedError,
             ) as err:
+                if isinstance(err, _RegistryInsertRejectedError):
+                    logger.warning(
+                        "Creating partition %r was rejected: %s; minting "
+                        "another incarnation",
+                        partition_key,
+                        err,
+                    )
                 attempts += 1
                 if attempts >= _MAX_MINT_ATTEMPTS:
                     raise SegmentStoreAttemptsExhaustedError(
