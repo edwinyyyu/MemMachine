@@ -1,122 +1,63 @@
 """
-Abstract base classes for a collection registry, its reservations and registrations.
+Abstract base class for a partition registry.
 
 The catalog of a vector store whose backend cannot arbitrate one: which
-logical collections exist, under which incarnation and configuration, and
-which deleted incarnations await purge. Its calls are arbitrated across
-every process sharing it: a reservation mints an incarnation no registered
-or queued collection carries, unregistration makes the collection
-unreachable when it returns, and a purge round runs on a due tombstone,
-possibly on two purgers at once.
-
-The registry is addressed by (namespace, name). Reserving a name answers a
-`Reservation`, which the collection's creator confirms once the collection's
-storage is prepared, or cancels. Confirming it, or resolving a name, answers
-a `Registration`, through which a handle checks that the collection has not
-been deleted. Each acts on one life of the collection alone, and a deletion
-by name voids either.
+partitions exist, under which incarnation and schema, and which deleted
+incarnations await purge. A registry belongs to one vector store. Its calls
+are arbitrated across every process sharing it: registration mints an
+incarnation no registered or queued partition carries, unregistration makes
+the partition unreachable when it returns, and a purge claim hands out a due
+tombstone, possibly to two purgers at once.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
-from memmachine_server.common.vector_store.data_types import (
-    VectorStoreCollectionConfig,
-)
+from memmachine_server.common.vector_store.data_types import PartitionSchema
 
 
 @dataclass(frozen=True)
-class _RegistryEntry:
+class RegisteredPartition:
     """
-    A registry's entry for one life of a collection, from its reservation to its deletion.
+    A registered partition.
 
-    Its fields belong to this life and never change: `incarnation` is the
-    value its records carry, and `config` the configuration it was created
-    with.
+    Its `incarnation` is the value its records carry, `schema` what it was
+    created under, `live` whether its storage is prepared (a partition is
+    pending until it is marked live), and `registered_at` when it was
+    registered, on the registry's clock.
     """
 
-    namespace: str
-    name: str
-    config: VectorStoreCollectionConfig
     incarnation: UUID
+    schema: PartitionSchema
+    live: bool
+    registered_at: datetime
 
 
-@dataclass(frozen=True)
-class Reservation(_RegistryEntry, ABC):
+@dataclass
+class PurgeClaim:
     """
-    A collection's hold on its (namespace, name), kept by its creator while it prepares the collection's storage.
+    One purge round's claim on a tombstone.
 
-    The collection is pending until the reservation is confirmed. A registry
-    implementation supplies the methods, each of which writes the registry.
-    """
-
-    @abstractmethod
-    async def confirm(self) -> "Registration":
-        """
-        Confirm this reservation, marking the pending collection live.
-
-        Called once, when the collection's storage is prepared. A concurrent
-        deletion of the collection either follows the confirmation or makes
-        it raise.
-
-        Returns:
-            Registration: The same life of the collection, live.
-
-        Raises:
-            VectorStorePartitionDeletedError:
-                If the collection is no longer pending: it was deleted.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def cancel(self) -> None:
-        """
-        Cancel this reservation, unregistering this life of the collection while it is pending and queuing its incarnation for purge.
-
-        The pending collection is unreachable when this returns, and purge
-        rounds reclaim its records later. Once the reservation is confirmed,
-        cancelling it does nothing: only a deletion by (namespace, name) ends
-        a live collection. A collection reserved since under the same
-        (namespace, name) is another life and stays. Idempotent.
-        """
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class Registration(_RegistryEntry, ABC):
-    """
-    A live collection's registration.
-
-    A registry implementation supplies the method, which reads the registry.
+    The registry fills in `incarnation`, the value the deleted partition's
+    records carry in the store. The round sets `any_records_found` before the
+    claim ends: whether it found records under the incarnation.
     """
 
-    @abstractmethod
-    async def require_current(self) -> None:
-        """
-        Raise unless this life is still the collection registered under its (namespace, name).
-
-        One read of the registry: a deletion committed before the read makes
-        it raise, and one committed after does not.
-
-        Raises:
-            VectorStorePartitionHandleStaleError:
-                If the collection was deleted, whether or not another was
-                registered under the (namespace, name) since.
-        """
-        raise NotImplementedError
-
-
-type PurgeRound = Callable[[str, VectorStoreCollectionConfig, UUID], Awaitable[bool]]
-"""A purge round: deletes the records under an incarnation, which the namespace and configuration locate, and returns whether it found any."""
+    incarnation: UUID
+    any_records_found: bool | None = None
 
 
 class VectorStorePartitionRegistry(ABC):
     """
-    The collection registry of one vector store.
+    The partition registry of one vector store, identified by the store's name.
 
-    A deleted collection's incarnation waits on a queue as a tombstone. A
+    A store name identifies one store among all the stores whose registries
+    are kept together, so stores that must stay apart have distinct names.
+
+    A deleted partition's incarnation waits on a queue as a tombstone. A
     write checked as live before the deletion can land in the backend after
     it, so a tombstone's purge starts once a retention, longer than any
     write can be in flight, has passed since the deletion. The tombstone is
@@ -125,104 +66,116 @@ class VectorStorePartitionRegistry(ABC):
     """
 
     @abstractmethod
-    async def startup(self) -> None:
-        """Make the registry ready for use; its owner calls it before the first use."""
+    async def provision(self) -> None:
+        """Create the registry's durable resources, idempotently."""
         raise NotImplementedError
 
     @abstractmethod
-    async def reserve(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> Reservation:
+    async def register(self, partition_key: str, schema: PartitionSchema) -> UUID:
         """
-        Reserve a (namespace, name) for a new pending collection under a freshly minted incarnation.
+        Register a new partition, pending, under a freshly minted incarnation.
 
-        The (namespace, name) is arbitrated across processes, and the
-        incarnation is one no registered or queued collection carries, so the
-        new collection starts empty and no purge reclaims its records. The
-        collection is pending until its reservation is confirmed, and holds
-        its (namespace, name) meanwhile.
+        The partition key is arbitrated across processes, and the
+        incarnation is one no registered or queued partition carries, so the
+        new partition starts empty and no purge reclaims its records. The
+        partition is pending until `mark_live` marks it, and holds its key
+        meanwhile.
 
         Args:
-            namespace (str): Namespace of the collection.
-            name (str): Name of the collection within the namespace.
-            config (VectorStoreCollectionConfig):
-                The configuration the collection is created with.
+            partition_key (str): The key of the partition.
+            schema (PartitionSchema):
+                What the partition is created under: its store's
+                dimensions, metric and declared schema.
 
         Returns:
-            Reservation: The new collection's reservation.
+            UUID: The incarnation the partition's records carry.
 
         Raises:
             VectorStorePartitionAlreadyExistsError:
-                The (namespace, name) is taken, by a live or a pending
-                collection.
+                The partition key is taken, by a live or a pending partition.
             VectorStoreAttemptsExhaustedError:
-                The registry gave up after repeated attempts to reserve
-                the free (namespace, name) failed.
+                The registry gave up after repeated attempts to register
+                the free partition key failed.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def resolve(self, namespace: str, name: str) -> Registration | None:
+    async def mark_live(self, incarnation: UUID) -> bool:
         """
-        Resolve a (namespace, name) to the live collection registered under it.
+        Mark the partition registered, pending, under an incarnation live.
 
-        One read of the registry decides the outcome.
+        Called once the partition's storage is prepared.
 
         Args:
-            namespace (str): Namespace of the collection.
-            name (str): Name of the collection within the namespace.
-
-        Returns:
-            Registration | None:
-                The live collection's registration, or None when no
-                collection holds the (namespace, name).
-
-        Raises:
-            VectorStorePartitionPendingError:
-                If the collection registered under the (namespace, name) is
-                pending.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def unregister(self, namespace: str, name: str) -> None:
-        """
-        Unregister the collection under a (namespace, name) and queue its incarnation for purge.
-
-        The collection, pending or live, is unreachable when this returns,
-        which voids its reservation or registration, and purge rounds reclaim
-        its records later. Idempotent.
-
-        Args:
-            namespace (str): Namespace of the collection.
-            name (str): Name of the collection within the namespace.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    async def run_purge_round(self, purge_round: PurgeRound) -> bool:
-        """
-        Run one purge round on the tombstone that came due first, and return whether one was due.
-
-        A tombstone is due once the retention has passed since its deletion.
-        The registry claims it, calls `purge_round` with its namespace,
-        configuration and incarnation, and records the outcome under the claim:
-        a round that returns False found no records, which removes the tombstone
-        and frees its incarnation; one that returns True keeps the tombstone due.
-        A round that raises is a failed round and its error propagates: the
-        tombstone stays for a later call, and a registry may delay a failed
-        tombstone's next round, or stop running one whose rounds keep failing,
-        leaving its records in place. A round must be safe to repeat, since a
-        registry may run one tombstone's round on two purgers at once.
-
-        Args:
-            purge_round (PurgeRound):
-                Deletes the records under the incarnation it is given, which the
-                namespace and configuration locate, and returns whether it found
-                any.
+            incarnation (UUID): The incarnation `register` returned.
 
         Returns:
             bool:
-                Whether a tombstone was due.
+                Whether a partition was registered, pending, under the
+                incarnation, and is now live.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, partition_key: str) -> RegisteredPartition | None:
+        """
+        Look up the partition registered under a key.
+
+        Args:
+            partition_key (str): The key of the partition.
+
+        Returns:
+            RegisteredPartition | None:
+                The partition, pending or live, or None when there is none.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def unregister(self, partition_key: str) -> None:
+        """
+        Unregister the partition under a key and queue its incarnation for purge.
+
+        The partition, pending or live, is unreachable when this returns, and
+        purge rounds reclaim its records later. Idempotent.
+
+        Args:
+            partition_key (str): The key of the partition.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def unregister_incarnation(self, incarnation: UUID) -> None:
+        """
+        Unregister the partition registered under an incarnation and queue the incarnation for purge.
+
+        As `unregister`, for a caller holding the incarnation: a partition
+        registered since under the same key carries another incarnation and
+        stays. Idempotent.
+
+        Args:
+            incarnation (UUID): The incarnation the partition is registered under.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def claim_purgeable_incarnation(
+        self,
+    ) -> AbstractAsyncContextManager[PurgeClaim | None]:
+        """
+        Claim a due tombstone for one purge round, run in the body of the context.
+
+        A tombstone is due once the retention has passed since its
+        deletion. In the body, the caller deletes records under
+        `claim.incarnation` in the store and sets `claim.any_records_found`.
+        A round that found no records removes the tombstone and frees its
+        incarnation. A body that raises is a failed round, and the tombstone
+        stays for a later claim; a registry may delay a failed tombstone's
+        next claim, or stop claiming one whose rounds keep failing, leaving
+        its records in place. A round must be safe to repeat, since a
+        registry may hand one tombstone to two purgers.
+
+        Returns:
+            AbstractAsyncContextManager[PurgeClaim | None]:
+                The claim, or None when no tombstone is due.
         """
         raise NotImplementedError
