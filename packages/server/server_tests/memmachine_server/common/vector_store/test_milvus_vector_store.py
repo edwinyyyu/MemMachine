@@ -21,7 +21,7 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 AsyncMilvusClient = pymilvus.AsyncMilvusClient
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -90,7 +90,6 @@ async def _params(client, registry_engine, **overrides) -> MilvusVectorStorePara
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
         "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
         "indexed_properties": INDEXED_PROPERTIES,
         "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
         "max_varchar_length": MAX_VARCHAR_LENGTH,
@@ -394,18 +393,6 @@ class TestPartitionLifecycle:
 
         await store.delete_partition("schema")
 
-    @pytest.mark.asyncio
-    async def test_unsupported_metric_raises(self, store):
-        with pytest.raises(ValueError, match="Milvus only supports"):
-            MilvusVectorStore(
-                await _params(
-                    store._client,
-                    store._partition_registry._engine,
-                    vector_store_name="bad_metric",
-                    similarity_metric=SimilarityMetric.MANHATTAN,
-                )
-            )
-
 
 class TestUpsertAndQuery:
     @pytest.mark.asyncio
@@ -469,9 +456,13 @@ class TestUpsertAndQuery:
         assert matches[0].record_uuid == r1.uuid
         assert matches[1].record_uuid == r3.uuid
         assert matches[2].record_uuid == r2.uuid
-        assert matches[0].score >= matches[1].score >= matches[2].score
-        assert matches[0].score == pytest.approx(1.0)
-        assert matches[2].score == pytest.approx(0.0)
+        assert (
+            matches[0].cosine_similarity
+            >= matches[1].cosine_similarity
+            >= matches[2].cosine_similarity
+        )
+        assert matches[0].cosine_similarity == pytest.approx(1.0)
+        assert matches[2].cosine_similarity == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_query_with_similarity_threshold(self, collection):
@@ -484,7 +475,7 @@ class TestUpsertAndQuery:
         await _settle(collection)
 
         query_results = await collection.query(
-            query_vectors=[v1], limit=10, score_threshold=0.9
+            query_vectors=[v1], limit=10, min_cosine_similarity=0.9
         )
         matches = query_results[0].matches
         assert len(matches) == 1
@@ -863,14 +854,14 @@ class TestFilters:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
-    async def test_a_score_threshold_that_is_not_finite_is_refused(
+    async def test_a_min_cosine_similarity_that_is_not_finite_is_refused(
         self, collection, threshold
     ):
         with pytest.raises(ValueError, match="not finite"):
             await collection.query(
                 query_vectors=[_normalize([1.0, 0.0, 0.0])],
                 limit=1,
-                score_threshold=threshold,
+                min_cosine_similarity=threshold,
             )
 
     @pytest.mark.asyncio
@@ -884,38 +875,13 @@ class TestFilters:
 
 class TestScores:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("metric", "expected"),
-        [
-            (SimilarityMetric.COSINE, 0.6),
-            (SimilarityMetric.DOT, 1.2),
-            (SimilarityMetric.EUCLIDEAN, math.sqrt(2.0 * 2.0 + 1.0 - 2.0 * 1.2)),
-        ],
-    )
-    async def test_scores_are_the_metric_values(self, store, metric, expected):
-        """Scores come from the server: cosine similarity, inner product, and
-        Euclidean distance (Milvus returns it squared)."""
-        # A store's metric is its collection's, so each metric is its own store.
-        scored = MilvusVectorStore(
-            await _params(
-                store._client,
-                store._partition_registry._engine,
-                vector_store_name=f"scores_{metric.value}",
-                similarity_metric=metric,
-            )
-        )
-        await scored.startup()
-        await scored.delete_partition("scores")
-        await scored.create_partition("scores")
-        partition = await scored.get_partition("scores")
-        assert partition is not None
-        record = _make_record(vector=[1.2, 1.6, 0.0])
-        await partition.upsert(records=[record])
-        await _settle(partition)
+    async def test_scores_are_cosine_similarities(self, collection):
+        """Scores come from the server, whatever the vectors' norms."""
+        await collection.upsert(records=[_make_record(vector=[1.2, 1.6, 0.0])])
+        await _settle(collection)
 
-        [result] = await partition.query(query_vectors=[[1.0, 0.0, 0.0]], limit=1)
-        assert result.matches[0].score == pytest.approx(expected, abs=1e-3)
-        await scored.delete_partition("scores")
+        [result] = await collection.query(query_vectors=[[1.0, 0.0, 0.0]], limit=1)
+        assert result.matches[0].cosine_similarity == pytest.approx(0.6, abs=1e-3)
 
 
 class TestDelete:
@@ -966,13 +932,11 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
             partition_key=NAME,
             schema=PartitionSchema(
                 vector_dimensions=VECTOR_DIM,
-                similarity_metric=SimilarityMetric.COSINE,
                 indexed_properties={},
             ),
             incarnation=uuid4(),
         ),
         vector_dimensions=VECTOR_DIM,
-        similarity_metric=SimilarityMetric.COSINE,
         indexed_properties={},
         tracker=OperationTracker(None, prefix="test"),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,

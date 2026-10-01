@@ -15,7 +15,7 @@ from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -110,7 +110,6 @@ async def _params(client, registry_engine, **overrides) -> QdrantVectorStorePara
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
         "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
         "indexed_properties": INDEXED_PROPERTIES,
     }
     params.update(overrides)
@@ -261,7 +260,11 @@ class TestUpsertAndQuery:
         assert matches[0].record_uuid == r1.uuid
         assert matches[1].record_uuid == r3.uuid
         assert matches[2].record_uuid == r2.uuid
-        assert matches[0].score >= matches[1].score >= matches[2].score
+        assert (
+            matches[0].cosine_similarity
+            >= matches[1].cosine_similarity
+            >= matches[2].cosine_similarity
+        )
 
     @pytest.mark.asyncio
     async def test_query_with_similarity_threshold(self, collection):
@@ -274,7 +277,9 @@ class TestUpsertAndQuery:
         await collection.upsert(records=[r1, r2])
 
         query_results = list(
-            await collection.query(query_vectors=[v1], limit=10, score_threshold=0.9)
+            await collection.query(
+                query_vectors=[v1], limit=10, min_cosine_similarity=0.9
+            )
         )
         matches = query_results[0].matches
 
@@ -331,13 +336,11 @@ def _partition_on(client: AsyncQdrantClient) -> QdrantVectorStorePartition:
             partition_key=NAME,
             schema=PartitionSchema(
                 vector_dimensions=VECTOR_DIM,
-                similarity_metric=SimilarityMetric.COSINE,
                 indexed_properties={},
             ),
             incarnation=uuid4(),
         ),
         vector_dimensions=VECTOR_DIM,
-        similarity_metric=SimilarityMetric.COSINE,
         indexed_properties={},
         tracker=OperationTracker(None, prefix="test"),
     )
@@ -1006,14 +1009,14 @@ class TestFilters:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
-    async def test_a_score_threshold_that_is_not_finite_is_refused(
+    async def test_a_min_cosine_similarity_that_is_not_finite_is_refused(
         self, collection, threshold
     ):
         with pytest.raises(ValueError, match="not finite"):
             await collection.query(
                 query_vectors=[_normalize([1.0, 0.0, 0.0])],
                 limit=1,
-                score_threshold=threshold,
+                min_cosine_similarity=threshold,
             )
 
     @pytest.mark.asyncio

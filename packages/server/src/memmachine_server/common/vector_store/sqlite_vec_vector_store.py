@@ -33,10 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
-from memmachine_server.common.data_types import (
-    PropertyType,
-    SimilarityMetric,
-)
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
@@ -60,8 +57,8 @@ from .utils import (
     require_dimensions,
     require_partition_key,
     require_valid_limit,
+    require_valid_min_cosine_similarity,
     require_valid_query_vector,
-    require_valid_score_threshold,
     validate_filter,
 )
 from .vector_store import VectorStore, VectorStorePartition
@@ -80,19 +77,14 @@ class _PartitionRow(BaseSQLiteVecVectorStore):
         String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
-    # The dimensions, metric and declared schema the partition was created
-    # under, so a store built with others fails loudly instead of reading
-    # columns and vectors that are not there.
+    # The dimensions and declared schema the partition was created under, so
+    # a store built with others fails loudly instead of reading columns and
+    # vectors that are not there.
     schema: MappedColumn[dict[str, JsonValue]] = mapped_column(JSON, nullable=False)
 
 
 class SQLiteVecVectorStorePartition(VectorStorePartition):
     """A partition backed by SQLite + sqlite-vec."""
-
-    _DISTANCE_FUNCTIONS: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "vec_distance_cosine",
-        SimilarityMetric.EUCLIDEAN: "vec_distance_L2",
-    }
 
     def __init__(
         self,
@@ -100,7 +92,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         create_session: async_sessionmaker[AsyncSession],
         partition_key: str,
         vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         records_table: Table,
         vector_table_name: str,
@@ -109,7 +100,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         self._create_session = create_session
         self._partition_key = partition_key
         self._vector_dimensions = vector_dimensions
-        self._similarity_metric = similarity_metric
         self._indexed_properties = dict(indexed_properties)
         self._records_table = records_table
         self._vector_table_name = vector_table_name
@@ -121,11 +111,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
 
     @property
     @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
-
-    @property
-    @override
     def indexed_properties(self) -> Mapping[str, PropertyType]:
         return self._indexed_properties
 
@@ -134,28 +119,9 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         return sqlite_vec.serialize_float32(list(vector))
 
     @staticmethod
-    def _distance_to_score(
-        distance: float, similarity_metric: SimilarityMetric
-    ) -> float:
-        match similarity_metric:
-            case SimilarityMetric.COSINE:
-                return 1.0 - distance
-            case SimilarityMetric.EUCLIDEAN:
-                return distance
-            case _:
-                raise NotImplementedError(similarity_metric)
-
-    @staticmethod
-    def _threshold_to_max_distance(
-        threshold: float, similarity_metric: SimilarityMetric
-    ) -> float:
-        match similarity_metric:
-            case SimilarityMetric.COSINE:
-                return 1.0 - threshold
-            case SimilarityMetric.EUCLIDEAN:
-                return threshold
-            case _:
-                raise NotImplementedError(similarity_metric)
+    def _distance_to_cosine_similarity(distance: float) -> float:
+        """Convert a sqlite-vec cosine distance to a cosine similarity."""
+        return 1.0 - distance
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
@@ -223,7 +189,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
         require_valid_limit(limit)
@@ -232,7 +198,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
             return []
         for query_vector in query_vectors:
             require_valid_query_vector(query_vector, self._vector_dimensions)
-        require_valid_score_threshold(score_threshold)
+        require_valid_min_cosine_similarity(min_cosine_similarity)
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")
@@ -261,7 +227,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
                 matches = await self._build_matches(
                     session=session,
                     rowid_to_distance=rowid_to_distance,
-                    score_threshold=score_threshold,
+                    min_cosine_similarity=min_cosine_similarity,
                     property_filter=property_filter,
                 )
                 results.append(QueryResult(matches=matches))
@@ -272,7 +238,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         self,
         session: AsyncSession,
         rowid_to_distance: Mapping[int, float],
-        score_threshold: float | None,
+        min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryMatch]:
         fetch_records = select(
@@ -299,20 +265,18 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
             if distance is None:
                 continue
 
-            score = self._distance_to_score(distance, self._similarity_metric)
-            if score_threshold is not None and (
-                score < score_threshold
-                if self._similarity_metric.higher_is_better
-                else score > score_threshold
+            cosine_similarity = self._distance_to_cosine_similarity(distance)
+            if (
+                min_cosine_similarity is not None
+                and cosine_similarity < min_cosine_similarity
             ):
                 continue
 
-            matches.append(QueryMatch(score=score, record_uuid=row.uuid))
+            matches.append(
+                QueryMatch(cosine_similarity=cosine_similarity, record_uuid=row.uuid)
+            )
 
-        matches.sort(
-            key=lambda match: match.score,
-            reverse=self._similarity_metric.higher_is_better,
-        )
+        matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
         return matches
 
     @override
@@ -376,9 +340,6 @@ class SQLiteVecVectorStoreParams(BaseModel):
             different names may share the engine.
         vector_dimensions (int):
             Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by; cosine or
-            euclidean (default: cosine).
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key is indexed for filtering, and its values are typed.
@@ -391,10 +352,6 @@ class SQLiteVecVectorStoreParams(BaseModel):
     vector_store_name: str = Field(..., description="The name of this store")
     vector_dimensions: int = Field(
         ..., gt=0, description="Dimensionality of every vector in the store"
-    )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
     )
     indexed_properties: IndexedProperties = Field(
         ...,
@@ -433,18 +390,13 @@ class SQLiteVecVectorStore(VectorStore):
     partition is deleted acts on a partition created again under its key.
     """
 
-    _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "cosine",
-        SimilarityMetric.EUCLIDEAN: "L2",
-    }
+    _SQLITE_VEC_DISTANCE_METRIC: ClassVar[str] = "cosine"
 
     def __init__(self, params: SQLiteVecVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        SQLiteVecVectorStore._validate_metric(params.similarity_metric)
         self._engine = params.engine
         self._vector_store_name = params.vector_store_name
         self._vector_dimensions = params.vector_dimensions
-        self._similarity_metric = params.similarity_metric
         self._indexed_properties = params.indexed_properties
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._sa_metadata = MetaData()
@@ -463,11 +415,6 @@ class SQLiteVecVectorStore(VectorStore):
     @override
     def vector_dimensions(self) -> int:
         return self._vector_dimensions
-
-    @property
-    @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
 
     @property
     @override
@@ -545,7 +492,6 @@ class SQLiteVecVectorStore(VectorStore):
             create_session=self._create_session,
             partition_key=partition_key,
             vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
             indexed_properties=self._indexed_properties,
             records_table=records_table,
             vector_table_name=vector_table_name,
@@ -602,25 +548,9 @@ class SQLiteVecVectorStore(VectorStore):
     def _vector_table_name(self, partition_key: str) -> str:
         return f"{self._partition_prefix(partition_key)}_vc"
 
-    @staticmethod
-    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
-        if (
-            similarity_metric
-            not in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
-        ):
-            supported = ", ".join(
-                similarity_metric.value
-                for similarity_metric in SQLiteVecVectorStore._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE
-            )
-            raise ValueError(
-                f"sqlite-vec only supports {supported} similarity metrics, "
-                f"got {similarity_metric.value!r}"
-            )
-
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
             vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 
@@ -663,9 +593,6 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> tuple[Table, str]:
         records_table = self._records_table(partition_key)
         vector_table_name = self._vector_table_name(partition_key)
-        distance_metric_value = self._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE[
-            self._similarity_metric
-        ]
 
         connection = await session.connection()
         await connection.run_sync(
@@ -676,7 +603,8 @@ class SQLiteVecVectorStore(VectorStore):
         await session.execute(
             text(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS [{vector_table_name}] USING vec0("
-                f"vector float[{self._vector_dimensions}] distance_metric={distance_metric_value}"
+                f"vector float[{self._vector_dimensions}] "
+                f"distance_metric={SQLiteVecVectorStore._SQLITE_VEC_DISTANCE_METRIC}"
                 f")"
             )
         )

@@ -20,7 +20,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf, field_validator
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
@@ -47,8 +47,8 @@ from .utils import (
     require_dimensions,
     require_partition_key,
     require_valid_limit,
+    require_valid_min_cosine_similarity,
     require_valid_query_vector,
-    require_valid_score_threshold,
     validate_filter,
 )
 from .vector_store import VectorStore, VectorStorePartition
@@ -84,7 +84,6 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         vector_store_name: str,
         registration: Registration,
         vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
     ) -> None:
@@ -94,7 +93,6 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         self._partition_key = registration.partition_key
         self._incarnation = registration.incarnation
         self._vector_dimensions = vector_dimensions
-        self._similarity_metric = similarity_metric
         self._indexed_properties = dict(indexed_properties)
         self._tracker = tracker
 
@@ -102,11 +100,6 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
     @override
     def partition_key(self) -> str:
         return self._partition_key
-
-    @property
-    @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
 
     @property
     @override
@@ -132,14 +125,14 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             for query_vector in query_vectors:
                 require_valid_query_vector(query_vector, self._vector_dimensions)
-            require_valid_score_threshold(score_threshold)
+            require_valid_min_cosine_similarity(min_cosine_similarity)
             require_valid_limit(limit)
             if property_filter is not None and not validate_filter(property_filter):
                 raise ValueError("Filter contains an invalid property key")
@@ -149,7 +142,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
             return await self._query(
                 query_vectors,
                 limit=limit,
-                score_threshold=score_threshold,
+                min_cosine_similarity=min_cosine_similarity,
                 property_filter=property_filter,
             )
 
@@ -187,20 +180,20 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         query_vectors: list[list[float]],
         *,
         limit: int,
-        score_threshold: float | None,
+        min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
         """
         Search the handle's incarnation's records for each query vector.
 
         Called after a liveness check, with at least one query vector and a
-        positive limit, the vectors, threshold and filter already checked.
+        positive limit, the vectors, minimum and filter already checked.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.
             limit (int): The most matches to return per query vector.
-            score_threshold (float | None):
-                The score a match must reach, or None for any.
+            min_cosine_similarity (float | None):
+                The cosine similarity a match must reach, or None for any.
             property_filter (FilterExpr | None):
                 The condition a match's properties must meet, or None.
 
@@ -247,8 +240,6 @@ class RegistryBackedVectorStoreParams(BaseModel):
             different names may share a client.
         vector_dimensions (int):
             Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by (default: cosine).
         indexed_properties (IndexedProperties):
             The declared schema every partition of this store carries: each
             key is indexed by its declared type, which a search filters on.
@@ -273,10 +264,6 @@ class RegistryBackedVectorStoreParams(BaseModel):
     )
     vector_dimensions: int = Field(
         ..., gt=0, description="Dimensionality of every vector in the store"
-    )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
     )
     indexed_properties: IndexedProperties = Field(
         ...,
@@ -321,7 +308,6 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         super().__init__()
         self._vector_store_name = params.vector_store_name
         self._vector_dimensions = params.vector_dimensions
-        self._similarity_metric = params.similarity_metric
         self._indexed_properties = params.indexed_properties
         self._partition_registry = params.partition_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
@@ -339,11 +325,6 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     @override
     def vector_dimensions(self) -> int:
         return self._vector_dimensions
-
-    @property
-    @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
 
     @property
     @override
@@ -513,7 +494,6 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
             vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
             indexed_properties=indexed_property_names(self._indexed_properties),
         )
 

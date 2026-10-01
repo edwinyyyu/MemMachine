@@ -19,7 +19,6 @@ from memmachine_server.common.data_types import (
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyType,
     PropertyValue,
-    SimilarityMetric,
 )
 
 from .utils import validate_identifier
@@ -85,15 +84,14 @@ def validate_vector_store_name(name: str) -> None:
 
 class PartitionSchema(BaseModel):
     """
-    What a partition was created under: its store's dimensions, metric and schema.
+    What a partition was created under: its store's dimensions and schema.
 
-    Recorded beside the partition so a store built with other dimensions,
-    another metric or another declared schema fails loudly instead of
-    reading columns or vectors that are not there.
+    Recorded beside the partition so a store built with other dimensions or
+    another declared schema fails loudly instead of reading columns or
+    vectors that are not there.
     """
 
     vector_dimensions: int
-    similarity_metric: SimilarityMetric
     indexed_properties: dict[str, str]
     """The declared schema, each type by its name."""
 
@@ -167,10 +165,10 @@ class VectorStorePartitionSchemaMismatchError(Exception):
     """
     Raised when a partition's recorded schema differs from its store's.
 
-    A store built with one dimensionality, one metric and one
-    `indexed_properties` schema holds columns and indexes for exactly those;
-    a partition created under others cannot be served without a migration,
-    which nothing here performs.
+    A store built with one dimensionality and one `indexed_properties`
+    schema holds columns and indexes for exactly those; a partition created
+    under others cannot be served without a migration, which nothing here
+    performs.
     """
 
     def __init__(
@@ -233,20 +231,14 @@ class QueryMatch(BaseModel):
     A single vector store query match.
 
     Attributes:
-        score (float):
-            The meaning depends on the store's `SimilarityMetric`:
-            - *cosine*: cosine similarity in [-1, 1].
-            - *dot*: raw dot product [0, inf).
-            - *euclidean*: Euclidean distance [0, inf).
-            - *manhattan*: Manhattan distance [0, inf).
-
-            Use `SimilarityMetric.higher_is_better` to determine which
-            direction indicates a better match.
+        cosine_similarity (float):
+            Cosine similarity between the query vector and the matched
+            record's vector, in [-1, 1]. Higher is a better match.
         record_uuid (UUID):
             UUID of the matched record.
     """
 
-    score: float
+    cosine_similarity: float
     record_uuid: UUID
 
 

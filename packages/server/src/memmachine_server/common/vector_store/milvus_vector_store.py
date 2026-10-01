@@ -1,7 +1,6 @@
 """Milvus-based vector store implementation."""
 
 import json
-import math
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
@@ -14,7 +13,6 @@ from pymilvus.exceptions import MilvusException
 from memmachine_server.common.data_types import (
     PropertyType,
     PropertyValue,
-    SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
@@ -241,18 +239,6 @@ def _incarnation_filter(incarnation: UUID) -> str:
 class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
     """A partition backed by Milvus: one partition-key value inside the store's collection."""
 
-    @staticmethod
-    def _passes_threshold(
-        score: float,
-        threshold: float | None,
-        similarity_metric: SimilarityMetric,
-    ) -> bool:
-        if threshold is None:
-            return True
-        if similarity_metric.higher_is_better:
-            return score >= threshold
-        return score <= threshold
-
     def __init__(
         self,
         *,
@@ -261,7 +247,6 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         vector_store_name: str,
         registration: Registration,
         vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
         request_timeout_seconds: int,
@@ -271,7 +256,6 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
             vector_store_name=vector_store_name,
             registration=registration,
             vector_dimensions=vector_dimensions,
-            similarity_metric=similarity_metric,
             indexed_properties=indexed_properties,
             tracker=tracker,
         )
@@ -317,16 +301,6 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
 
-    def _score(self, distance: float) -> float:
-        """The store's score for a distance Milvus returned.
-
-        Milvus returns cosine similarity and inner product as they are, and
-        the squared Euclidean distance.
-        """
-        if self.similarity_metric is SimilarityMetric.EUCLIDEAN:
-            return math.sqrt(max(distance, 0.0))
-        return distance
-
     @override
     async def _upsert(self, records: list[Record]) -> None:
         await self._client.upsert(
@@ -341,7 +315,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         query_vectors: list[list[float]],
         *,
         limit: int,
-        score_threshold: float | None,
+        min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
         filter_expr = _incarnation_filter(self._incarnation)
@@ -365,23 +339,22 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
             matches: list[QueryMatch] = []
             for raw_match in raw_matches:
                 entity = cast(Mapping[str, Any], raw_match["entity"])
-                score = self._score(raw_match["distance"])
-                if not self._passes_threshold(
-                    score, score_threshold, self.similarity_metric
+                # Milvus returns the cosine similarity as a COSINE index's distance.
+                cosine_similarity = raw_match["distance"]
+                if (
+                    min_cosine_similarity is not None
+                    and cosine_similarity < min_cosine_similarity
                 ):
                     continue
 
                 matches.append(
                     QueryMatch(
-                        score=score,
+                        cosine_similarity=cosine_similarity,
                         record_uuid=UUID(str(entity[_RECORD_UUID_FIELD])),
                     )
                 )
 
-            matches.sort(
-                key=lambda match: match.score,
-                reverse=self.similarity_metric.higher_is_better,
-            )
+            matches.sort(key=lambda match: match.cosine_similarity, reverse=True)
             results.append(QueryResult(matches=matches))
 
         return results
@@ -402,9 +375,8 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
     Parameters for MilvusVectorStore.
 
     The native Milvus collection is named `sys_` followed by
-    `vector_store_name`. Milvus scores by cosine, dot or euclidean only. Each
-    declared property is a nullable typed field, `_p_<key>`, with a scalar
-    index.
+    `vector_store_name`. Each declared property is a nullable typed field,
+    `_p_<key>`, with a scalar index.
 
     Attributes:
         client (AsyncMilvusClient):
@@ -458,11 +430,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
     `common.gracefulTime` before it began.
     """
 
-    _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
-        SimilarityMetric.COSINE: "COSINE",
-        SimilarityMetric.DOT: "IP",
-        SimilarityMetric.EUCLIDEAN: "L2",
-    }
+    _MILVUS_METRIC_TYPE: ClassVar[str] = "COSINE"
 
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
@@ -470,24 +438,8 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
         message = str(error).lower()
         return "already exist" in message or "already exists" in message
 
-    @staticmethod
-    def _validate_metric(similarity_metric: SimilarityMetric) -> None:
-        if (
-            similarity_metric
-            not in MilvusVectorStore._SIMILARITY_METRIC_TO_MILVUS_METRIC
-        ):
-            supported = ", ".join(
-                metric.value
-                for metric in MilvusVectorStore._SIMILARITY_METRIC_TO_MILVUS_METRIC
-            )
-            raise ValueError(
-                f"Milvus only supports {supported} similarity metrics, "
-                f"got {similarity_metric.value!r}"
-            )
-
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        MilvusVectorStore._validate_metric(params.similarity_metric)
         super().__init__(params, metrics_prefix="vector_store_milvus")
         self._client = params.client
         self._collection_name = f"{_COLLECTION_NAME_PREFIX}{params.vector_store_name}"
@@ -504,9 +456,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             field_name=_VECTOR_FIELD,
             index_name=_VECTOR_FIELD,
             index_type=_VECTOR_INDEX_TYPE,
-            metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                self.similarity_metric
-            ],
+            metric_type=MilvusVectorStore._MILVUS_METRIC_TYPE,
             params=_VECTOR_INDEX_PARAMS,
         )
         for key in self.indexed_properties:
@@ -631,7 +581,6 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             vector_store_name=self.vector_store_name,
             registration=registration,
             vector_dimensions=self.vector_dimensions,
-            similarity_metric=self.similarity_metric,
             indexed_properties=self.indexed_properties,
             tracker=self._tracker,
             request_timeout_seconds=self._request_timeout_seconds,

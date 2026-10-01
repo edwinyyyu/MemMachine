@@ -144,7 +144,7 @@ column, rather than a table pair per vector store, keeps the schema static.
 |---|---|---|
 | `vector_store_name`, `partition_key` | string, primary key | The partition's identity. The primary key arbitrates creation. |
 | `incarnation` | UUID, unique | The partition's current life. Its records carry it. |
-| `schema` | JSON (JSONB on PostgreSQL) | The dimensions, metric and declared schema the partition was created under. A store built with others refuses the partition. |
+| `schema` | JSON (JSONB on PostgreSQL) | The dimensions and declared schema the partition was created under. A store built with others refuses the partition. |
 | `live` | boolean | Whether the partition's storage is prepared. A pending partition holds its key; only a live one is opened. |
 | `registered_at` | timestamp | When the partition was registered, on the database clock. An operator finds a partition stuck pending by it, and opening a pending partition reports it. |
 
@@ -313,8 +313,8 @@ the backend is remote:
 ## Decisions
 
 - **A store is one collection.** The composition root builds one store per
-  collection it needs, with its dimensions, metric and declared schema fixed
-  at construction, and partitions it by tenant. A partition key is all a
+  collection it needs, with its dimensions and declared schema fixed at
+  construction, and partitions it by tenant. A partition key is all a
   caller names; the store, not each call, carries what the records share.
 - **`unregister` is keyed by partition key.** Callers delete partitions by
   key, and the key is resolved to its incarnation inside the deleting
