@@ -1,6 +1,7 @@
 """Data types for vector store."""
 
 from collections.abc import Mapping
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import (
@@ -91,6 +92,21 @@ class VectorStoreCollectionAlreadyExistsError(Exception):
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
 
 
+class VectorStoreCollectionPendingError(Exception):
+    """Raised when opening a collection whose creation has not completed."""
+
+    def __init__(self, namespace: str, name: str, registered_at: datetime) -> None:
+        """Initialize with the namespace, name, and registration time of the pending collection."""
+        self.namespace = namespace
+        self.name = name
+        self.registered_at = registered_at
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) has been pending since "
+            f"{registered_at.isoformat()}; if its creation was abandoned, "
+            "delete it to create it again."
+        )
+
+
 class VectorStoreCollectionConfigMismatchError(Exception):
     """Raised when opening a collection with a different configuration than it was created with."""
 
@@ -111,6 +127,23 @@ class VectorStoreCollectionConfigMismatchError(Exception):
             f"Existing config: {existing_config.model_dump_json()}, "
             f"requested config: {requested_config.model_dump_json()}."
         )
+
+
+class VectorStoreCollectionHandleStaleError(Exception):
+    """Raised when a handle is used after its collection was deleted."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Record the namespace and name the stale handle belonged to."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(
+            f"Stale handle for collection ({namespace!r}, {name!r}): the collection "
+            "was deleted (or re-created) after this handle was bound"
+        )
+
+
+class VectorStoreAttemptsExhaustedError(Exception):
+    """Raised when an operation gave up after repeated attempts that made no progress."""
 
 
 class Record(BaseModel):

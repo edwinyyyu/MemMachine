@@ -359,7 +359,13 @@ class MilvusVectorStoreParams(BaseModel):
 
 
 class MilvusVectorStore(VectorStore):
-    """Asynchronous Milvus-based implementation of VectorStore."""
+    """
+    Asynchronous Milvus-based implementation of VectorStore.
+
+    One process at a time may manage a given collection. A handle used
+    after its collection is deleted acts on a collection created again
+    under its (namespace, name).
+    """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
         SimilarityMetric.COSINE: "COSINE",
@@ -771,3 +777,8 @@ class MilvusVectorStore(VectorStore):
                 collection_name=registry_name,
                 ids=[name],
             )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection deletes the entities itself.
+        return False
