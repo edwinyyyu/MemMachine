@@ -105,20 +105,23 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def mark_live(self, incarnation: UUID) -> bool:
+    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> None:
         """
         Mark the pending collection with the given incarnation as live.
 
-        Called once the collection's storage is prepared. If no collection
-        carries the incarnation, or the collection that does is already
-        live, nothing changes.
+        Called once per incarnation, once the collection's storage is
+        prepared. A concurrent `unregister` of the collection either follows
+        the mark or makes it raise.
 
         Args:
+            namespace (str): Namespace of the collection.
+            name (str): Name of the collection within the namespace.
             incarnation (UUID): The incarnation `register` returned.
 
-        Returns:
-            bool:
-                Whether this call marked a collection live.
+        Raises:
+            VectorStoreCollectionDeletedError:
+                If no pending collection under the (namespace, name) carries
+                the incarnation.
         """
         raise NotImplementedError
 

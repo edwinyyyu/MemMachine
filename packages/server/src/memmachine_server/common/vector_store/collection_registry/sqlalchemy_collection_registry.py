@@ -47,6 +47,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStoreCollectionDeletedError,
 )
 from memmachine_server.common.vector_store.utils import (
     _IDENTIFIER_MAX_BYTES,
@@ -317,7 +318,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             ) from err
 
     @override
-    async def mark_live(self, incarnation: UUID) -> bool:
+    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> None:
         # Conditional on the incarnation and on the row being pending, so a
         # creation marks only the collection it registered.
         async with self._engine.begin() as connection:
@@ -325,12 +326,15 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 update(CollectionRow)
                 .where(
                     CollectionRow.vector_store_name == self._vector_store_name,
+                    CollectionRow.namespace == namespace,
+                    CollectionRow.name == name,
                     CollectionRow.incarnation == incarnation,
                     CollectionRow.live.is_(False),
                 )
                 .values(live=True)
             )
-        return result.rowcount == 1
+        if result.rowcount != 1:
+            raise VectorStoreCollectionDeletedError(namespace, name)
 
     @override
     async def get(self, namespace: str, name: str) -> RegisteredCollection | None:

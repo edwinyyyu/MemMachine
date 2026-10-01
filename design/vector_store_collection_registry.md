@@ -125,11 +125,12 @@ violation, or queued) is re-minted, up to 10 attempts, then
 `VectorStoreAttemptsExhaustedError`. The loop and its bound are the segment
 store's.
 
-**`mark_live(incarnation)`** marks the row live with an `UPDATE` conditional
-on the incarnation, which is unique, and on the row being pending, and
-answers whether it matched. A creation whose collection was deleted while its
-storage was prepared matches nothing, so it cannot mark live a collection
-registered under the name since.
+**`mark_live(namespace, name, incarnation)`** marks the row live with an
+`UPDATE` conditional on the incarnation, which is unique, and on the row being
+pending, and raises `VectorStoreCollectionDeletedError` when it matches
+nothing. A creation whose collection was deleted while its storage was
+prepared matches nothing, so it cannot mark live a collection registered under
+the name since.
 
 **`get(namespace, name)`** returns the collection's incarnation,
 configuration and whether it is live, or `None`. It is how a handle is opened:
@@ -176,8 +177,8 @@ native collection its namespace and configuration share), and marks it live:
   collection's own is reclaimed by its incarnation's purge rounds once the
   pending collection is deleted.
 - A collection deleted while its storage is prepared is not marked live, since
-  the mark is conditional on its incarnation: the creation returns, as a
-  creation the deletion followed.
+  the mark is conditional on its incarnation: the creation raises
+  `VectorStoreCollectionDeletedError`.
 
 **`open_or_create_collection`** is read-then-create, retried a second apart: a
 live row is opened, or refused with `VectorStoreCollectionConfigMismatchError`

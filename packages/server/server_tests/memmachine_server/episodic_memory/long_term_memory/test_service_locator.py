@@ -16,6 +16,7 @@ from memmachine_server.common.vector_store import (
     VectorStore,
     VectorStoreCollection,
     VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionPendingError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
@@ -125,6 +126,7 @@ _PENDING = VectorStoreCollectionPendingError(
     _EVENT_BACKEND_NAMESPACE, "raced", datetime(2026, 1, 1, tzinfo=UTC)
 )
 _TAKEN = VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
+_DELETED = VectorStoreCollectionDeletedError(_EVENT_BACKEND_NAMESPACE, "raced")
 
 
 def _resource_manager(vector_store: NonCallableMagicMock) -> CommonResourceManager:
@@ -182,6 +184,27 @@ async def test_event_params_creates_the_collection_when_the_winners_creation_is_
     vector_store = create_autospec(VectorStore, instance=True)
     vector_store.open_collection.side_effect = [None, None, collection]
     vector_store.create_collection.side_effect = [_TAKEN, None]
+
+    params = await _event_params(config, _resource_manager(vector_store))
+
+    assert params.vector_store_collection is collection
+    assert vector_store.create_collection.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_event_params_creates_again_when_a_deletion_undid_its_creation(
+    monkeypatch,
+):
+    """A worker whose collection was deleted before its creation completed
+    creates the collection again."""
+    monkeypatch.setattr(service_locator, "_OPEN_RETRY_DELAY_SECONDS", 0)
+    config = EventLongTermMemoryConf(
+        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
+    )
+    collection = create_autospec(VectorStoreCollection, instance=True)
+    vector_store = create_autospec(VectorStore, instance=True)
+    vector_store.open_collection.side_effect = [None, None, collection]
+    vector_store.create_collection.side_effect = [_DELETED, None]
 
     params = await _event_params(config, _resource_manager(vector_store))
 

@@ -7,6 +7,7 @@ from .data_types import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionHandleStaleError,
     VectorStoreCollectionPendingError,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "VectorStoreCollectionAlreadyExistsError",
     "VectorStoreCollectionConfig",
     "VectorStoreCollectionConfigMismatchError",
+    "VectorStoreCollectionDeletedError",
     "VectorStoreCollectionHandleStaleError",
     "VectorStoreCollectionPendingError",
 ]
