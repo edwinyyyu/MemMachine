@@ -65,7 +65,7 @@ class Reservation(_RegistryEntry, ABC):
             Registration: The same life of the collection, live.
 
         Raises:
-            VectorStoreCollectionDeletedError:
+            VectorStorePartitionDeletedError:
                 If the collection is no longer pending: it was deleted.
         """
         raise NotImplementedError
@@ -101,7 +101,7 @@ class Registration(_RegistryEntry, ABC):
         it raise, and one committed after does not.
 
         Raises:
-            VectorStoreCollectionHandleStaleError:
+            VectorStorePartitionHandleStaleError:
                 If the collection was deleted, whether or not another was
                 registered under the (namespace, name) since.
         """
@@ -112,7 +112,7 @@ type PurgeRound = Callable[[str, VectorStoreCollectionConfig, UUID], Awaitable[b
 """A purge round: deletes the records under an incarnation, which the namespace and configuration locate, and returns whether it found any."""
 
 
-class VectorStoreCollectionRegistry(ABC):
+class VectorStorePartitionRegistry(ABC):
     """
     The collection registry of one vector store.
 
@@ -152,7 +152,7 @@ class VectorStoreCollectionRegistry(ABC):
             Reservation: The new collection's reservation.
 
         Raises:
-            VectorStoreCollectionAlreadyExistsError:
+            VectorStorePartitionAlreadyExistsError:
                 The (namespace, name) is taken, by a live or a pending
                 collection.
             VectorStoreAttemptsExhaustedError:
@@ -178,7 +178,7 @@ class VectorStoreCollectionRegistry(ABC):
                 collection holds the (namespace, name).
 
         Raises:
-            VectorStoreCollectionPendingError:
+            VectorStorePartitionPendingError:
                 If the collection registered under the (namespace, name) is
                 pending.
         """

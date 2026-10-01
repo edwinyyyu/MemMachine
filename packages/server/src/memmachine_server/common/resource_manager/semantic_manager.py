@@ -147,7 +147,7 @@ class SemanticResourceManager:
         if vector_dimensions is None:
             vector_dimensions = (await self._get_default_embedder()).dimensions
 
-        collection = await vector_store.open_or_create_collection(
+        collection = await vector_store.open_or_create_partition(
             namespace=_VECTOR_STORE_NAMESPACE,
             name=_VECTOR_STORE_COLLECTION_NAME,
             config=VectorStoreCollectionConfig(

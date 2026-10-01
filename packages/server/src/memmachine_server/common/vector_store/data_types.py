@@ -82,7 +82,7 @@ class VectorStoreCollectionConfig(BaseModel):
         }
 
 
-class VectorStoreCollectionAlreadyExistsError(Exception):
+class VectorStorePartitionAlreadyExistsError(Exception):
     """Raised when creating a collection that already exists."""
 
     def __init__(self, namespace: str, name: str) -> None:
@@ -92,7 +92,7 @@ class VectorStoreCollectionAlreadyExistsError(Exception):
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
 
 
-class VectorStoreCollectionPendingError(Exception):
+class VectorStorePartitionPendingError(Exception):
     """Raised when opening a collection whose creation has not completed."""
 
     def __init__(
@@ -114,7 +114,7 @@ class VectorStoreCollectionPendingError(Exception):
         )
 
 
-class VectorStoreCollectionDeletedError(Exception):
+class VectorStorePartitionDeletedError(Exception):
     """Raised when a collection is deleted before its creation completes."""
 
     def __init__(self, namespace: str, name: str) -> None:
@@ -149,7 +149,7 @@ class VectorStoreCollectionConfigMismatchError(Exception):
         )
 
 
-class VectorStoreCollectionHandleStaleError(Exception):
+class VectorStorePartitionHandleStaleError(Exception):
     """Raised when a handle is used after its collection was deleted."""
 
     def __init__(self, namespace: str, name: str) -> None:
