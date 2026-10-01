@@ -107,6 +107,19 @@ class VectorStoreCollectionPendingError(Exception):
         )
 
 
+class VectorStoreCollectionDeletedError(Exception):
+    """Raised when a collection is deleted before its creation completes."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Initialize with the namespace and name of the deleted collection."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) was deleted before its "
+            "creation completed"
+        )
+
+
 class VectorStoreCollectionConfigMismatchError(Exception):
     """Raised when opening a collection with a different configuration than it was created with."""
 
