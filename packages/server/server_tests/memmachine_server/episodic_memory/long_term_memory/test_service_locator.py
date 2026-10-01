@@ -16,6 +16,7 @@ from memmachine_server.common.vector_store import (
     VectorStore,
     VectorStoreCollection,
     VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionConfig,
     VectorStoreCollectionDeletedError,
     VectorStoreCollectionPendingError,
 )
@@ -123,7 +124,10 @@ def test_resolve_user_properties_schema_rejects_unknown_type_name():
 
 
 _PENDING = VectorStoreCollectionPendingError(
-    _EVENT_BACKEND_NAMESPACE, "raced", datetime(2026, 1, 1, tzinfo=UTC)
+    _EVENT_BACKEND_NAMESPACE,
+    "raced",
+    datetime(2026, 1, 1, tzinfo=UTC),
+    VectorStoreCollectionConfig(vector_dimensions=3),
 )
 _TAKEN = VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
 _DELETED = VectorStoreCollectionDeletedError(_EVENT_BACKEND_NAMESPACE, "raced")

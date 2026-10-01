@@ -36,8 +36,10 @@ wrote it.
 ### Roles
 
 - `VectorStoreCollectionRegistry` (`common/vector_store/collection_registry/`)
-  is the ABC. Its operations are `startup`, `register`, `mark_live`, `get`,
-  `unregister`, `unregister_incarnation` and `claim_purgeable_incarnation`.
+  is the ABC, addressed by (namespace, name). Its operations are `startup`,
+  `register`, `resolve`, `unregister` and `claim_purgeable_incarnation`.
+- `PendingRegistration` and `LiveRegistration` are handles on one life of a
+  collection (see [Registrations](#registrations)).
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
   supports PostgreSQL and SQLite 3.35 or newer (for `RETURNING`), as the
   segment store does, and its params refuse any other dialect or an older
@@ -67,6 +69,50 @@ wrote it.
   client, and hands the started registry to the store in its params. The store
   never starts or stops it: a store that started a registry it was given
   would own a lifecycle it does not control.
+
+### Registrations
+
+The registry is addressed by (namespace, name). What acts on one life of a
+collection is a registration: a handle bound to that life's incarnation.
+
+| Object | Operations | Answered by |
+|---|---|---|
+| `VectorStoreCollectionRegistry` | `register`, `resolve`, `unregister` (by name), `claim_purgeable_incarnation` | |
+| `PendingRegistration` | `mark_live`, `unregister` (this life only) | `register` |
+| `LiveRegistration` | `require_current` | `resolve`, `mark_live` |
+
+- **Why handles.** Every operation on one life of a collection needs that
+  life's incarnation: marking it live, abandoning it, and checking that it
+  was not deleted. As methods of the registry, each would take the
+  incarnation as an argument. The registry would then have two addressing
+  schemes, names and incarnations, and every caller would carry the UUID
+  `register` minted back into later calls, where any UUID fits: another
+  collection's, a deleted one's, or one compared by hand against a lookup.
+  On a handle, the incarnation is bound once, when the registry answers the
+  handle, and no call takes it again. The store reads it to write records,
+  and never passes it back.
+- **Why two types.** What may be done to a collection depends on its state.
+  Only its creator marks a pending collection live or abandons it; a live
+  collection is checked, and is deleted only by name. With one type, a live
+  registration would offer `mark_live`, which could only fail, and
+  `unregister`, which would delete a live collection outside the name-keyed
+  path every deletion goes through. Split by state, each type offers what
+  its state allows and nothing else, and the wrong call is a type error.
+- **Why no state fields.** A registration's fields (namespace, name,
+  configuration, incarnation) belong to its life and never change. Whether
+  the collection is pending, live or deleted changes under every holder: a
+  `live` field would be a snapshot, made stale by the creator's own
+  `mark_live`. The state is conveyed instead by the outcome of each call.
+  `register` answers a pending registration, and `mark_live` a live one.
+  `resolve` answers a live one or `None`, or raises when the collection is
+  pending, and `require_current` raises once it is deleted. Each is one read
+  or one write, so an open takes one round trip and the fence one.
+- **What each part gains.** The registry's operations, beside `startup`, are
+  all addressed by name. A store's collection handle is built from one live
+  registration, which carries everything the handle needs, and its fence is
+  one call. The store's creation flow reads as the lifecycle it implements:
+  register, prepare storage under the registration's incarnation, then mark
+  it live, or unregister it if the preparation fails.
 
 ### Tables
 
@@ -112,7 +158,7 @@ collection it was, as the segment store's queue carries its partition key.
 
 ### Operations
 
-**`register(namespace, name, config) -> incarnation`.** Mints a random UUID
+**`register(namespace, name, config) -> PendingRegistration`.** Mints a random UUID
 (version 4) and inserts the collection's row, pending. In the same
 transaction, *after* the insert, a locking read checks that the incarnation is
 not waiting in the purge queue. After the insert, a concurrent deletion that
@@ -125,24 +171,32 @@ violation, or queued) is re-minted, up to 10 attempts, then
 `VectorStoreAttemptsExhaustedError`. The loop and its bound are the segment
 store's.
 
-**`mark_live(namespace, name, incarnation)`** marks the row live with an
-`UPDATE` conditional on the incarnation, which is unique, and on the row being
-pending, and raises `VectorStoreCollectionDeletedError` when it matches
-nothing. A creation whose collection was deleted while its storage was
-prepared matches nothing, so it cannot mark live a collection registered under
-the name since.
+**`PendingRegistration.mark_live()`** marks the row live with an `UPDATE`
+conditional on the registration's incarnation, which is unique, and on the row
+being pending, and answers the `LiveRegistration`; it raises
+`VectorStoreCollectionDeletedError` when it matches nothing. A creation whose
+collection was deleted while its storage was prepared matches nothing, so it
+cannot mark live a collection registered under the name since.
 
-**`get(namespace, name)`** returns the collection's incarnation,
-configuration and whether it is live, or `None`. It is how a handle is opened:
-callers address collections by name, and the name is resolved to an
-incarnation once, at open. It is also how a handle is fenced (below).
+**`resolve(namespace, name)`** reads the collection's row once and answers by
+its state: a `LiveRegistration` when it is live,
+`VectorStoreCollectionPendingError`, with when the collection was registered
+and its configuration, when it is pending, and `None` when there is none. It
+is how a handle is opened: callers address collections by name, and the name
+is resolved to a live incarnation once, at open.
+
+**`LiveRegistration.require_current()`** reads the row under the
+registration's (namespace, name) and raises
+`VectorStoreCollectionHandleStaleError` unless it carries the registration's
+incarnation. It is how a handle is fenced (below).
 
 **`unregister(namespace, name)`** is one transaction: `DELETE ... RETURNING`
 the collection's row, pending or live, then insert its tombstone with
 `enqueued_at = now()`. The collection is unreachable when it commits.
-**`unregister_incarnation(incarnation)`** does the same for the row carrying an
-incarnation: a creation whose storage preparation raised takes back its own
-registration that way, never one registered under the name since. Racing
+**`PendingRegistration.unregister()`** does the same for the row carrying the
+registration's incarnation: a creation whose storage preparation raised takes
+back its own registration that way, never one registered under the name
+since. Racing
 deleters serialize on the row's write lock and the loser deletes nothing, on
 PostgreSQL and SQLite alike, so a deletion is idempotent and queues one
 tombstone.
@@ -206,16 +260,15 @@ deleted, every operation on the handle raises
 `VectorStoreCollectionHandleStaleError`, and a collection created again under
 the same name is a new life the old handle cannot reach.
 
-- An upsert or query looks up the collection under the handle's name (`get`)
-  once its inputs are checked and before its remote call, and raises unless
-  the row carries the handle's incarnation; one with nothing to send (no
+- An upsert or query calls its registration's `require_current` once its
+  inputs are checked and before its remote call; one with nothing to send (no
   records, no query vectors, a limit of 0) checks too.
-- An upsert looks it up again after the remote call, so an upsert that
-  completed under an incarnation that died meanwhile raises instead of
-  reporting success. A delete looks it up once, after its remote call: it
-  adds nothing a purge must reclaim, and a stale handle's delete reaches only
-  its own incarnation.
-- A handle is given the registry's `get` alone.
+- An upsert checks again after the remote call, so an upsert that completed
+  under an incarnation that died meanwhile raises instead of reporting
+  success. A delete checks once, after its remote call: it adds nothing a
+  purge must reclaim, and a stale handle's delete reaches only its own
+  incarnation.
+- A handle is given its live registration alone.
 - A read is not checked afterwards. A deleted collection's records stay until a
   purge round claims its tombstone, so a read in flight when the deletion
   commits returns a snapshot from before it, never a state halfway through a
@@ -251,8 +304,8 @@ where the backend is remote:
   the name is resolved to its incarnation inside the deleting transaction.
   Keying it by incarnation alone would make every caller resolve the name
   first, in a separate transaction, and would still need the name-keyed path
-  for a caller that holds no handle. `unregister_incarnation` serves the
-  caller that holds the incarnation: a creation taking back its own.
+  for a caller that holds no handle. A pending registration's `unregister`
+  serves the creation taking back its own.
 - **The registry keeps the namespace** in the queue, because a dead
   incarnation's records are located by its namespace and configuration (on
   Qdrant and Milvus, the native collection they name).
@@ -272,9 +325,16 @@ where the backend is remote:
   before the registry mints the incarnation. With the pending state, one
   preparation step, after registration, serves both; the cost is a pending
   row a crash leaves, deleted like any other.
-- **A liveness lookup by incarnation (`is_live`)** beside `get`. A handle knows
-  its name, and `get` answers the same question in the same round trip, so the
-  registry keeps one lookup.
+- **One registry class for both levels**, with `mark_live(incarnation)`,
+  `unregister_incarnation(incarnation)` and a lookup answering the state as
+  fields. Callers carry incarnations back into the registry, any incarnation
+  fits any call, and the state fields go stale; see
+  [Registrations](#registrations).
+- **One registration type for every state**, answered by `register` and the
+  lookup alike. It would offer `mark_live` and `unregister` on a live
+  collection, and need a state field or an extra read to tell the two apart.
+- **A liveness method on the registration** (`is_live`) beside the lookup.
+  Opening would take two reads instead of one.
 - **A lock or coordination service** (etcd, ZooKeeper). It would arbitrate,
   but it would add a stateful dependency for a problem the deployment's
   relational database, which every SQL-backed component already requires,
