@@ -29,7 +29,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionPendingError,
 )
 from memmachine_server.common.vector_store.partition_registry import (
-    PendingRegistration,
+    Reservation,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     _MAX_FAILED_PURGE_ROUNDS,
@@ -193,13 +193,13 @@ async def _round(
 
 
 @pytest.mark.asyncio
-async def test_create_registers_a_fresh_incarnation_with_the_schema(
+async def test_a_reservation_mints_a_fresh_incarnation_with_the_schema(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
 
-    pending = await registry.register("c", SCHEMA)
-    live = await pending.mark_live()
+    pending = await registry.reserve("c", SCHEMA)
+    live = await pending.confirm()
 
     resolved = await registry.resolve("c")
     assert resolved is not None
@@ -209,63 +209,63 @@ async def test_create_registers_a_fresh_incarnation_with_the_schema(
 
 
 @pytest.mark.asyncio
-async def test_a_partition_is_pending_until_marked_live(
+async def test_a_partition_is_pending_until_its_reservation_is_confirmed(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
 
-    pending = await registry.register("c", SCHEMA)
+    pending = await registry.reserve("c", SCHEMA)
 
     with pytest.raises(VectorStorePartitionPendingError) as resolved:
         await registry.resolve("c")
     assert resolved.value.schema == SCHEMA
     assert resolved.value.registered_at.tzinfo is not None
-    await pending.mark_live()
+    await pending.confirm()
     live = await registry.resolve("c")
     assert live is not None
     assert live.incarnation == pending.incarnation
     with pytest.raises(VectorStorePartitionDeletedError):
-        await pending.mark_live()
+        await pending.confirm()
 
 
 @pytest.mark.asyncio
-async def test_only_the_registered_incarnation_is_marked_live(
+async def test_only_the_reserved_incarnation_is_confirmed(
     sqlalchemy_engine, vector_store_name
 ):
     """A creation whose partition was deleted while its storage was
-    prepared cannot mark live a partition registered under the key since."""
+    prepared cannot confirm a partition reserved under the key since."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    deleted = await registry.register("c", SCHEMA)
+    deleted = await registry.reserve("c", SCHEMA)
     await registry.unregister("c")
     with pytest.raises(VectorStorePartitionDeletedError):
-        await deleted.mark_live()
+        await deleted.confirm()
 
-    registered_since = await registry.register("c", SCHEMA)
+    reserved_since = await registry.reserve("c", SCHEMA)
 
     with pytest.raises(VectorStorePartitionDeletedError):
-        await deleted.mark_live()
+        await deleted.confirm()
     with pytest.raises(VectorStorePartitionPendingError):
         await registry.resolve("c")
-    live = await registered_since.mark_live()
-    assert live.incarnation == registered_since.incarnation
+    live = await reserved_since.confirm()
+    assert live.incarnation == reserved_since.incarnation
 
 
 @pytest.mark.asyncio
-async def test_unregistering_a_pending_registration_spares_the_key_registered_since(
+async def test_cancelling_a_reservation_spares_the_key_reserved_since(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    old = await registry.register("c", SCHEMA)
+    old = await registry.reserve("c", SCHEMA)
     await registry.unregister("c")
-    since = await registry.register("c", SCHEMA)
+    since = await registry.reserve("c", SCHEMA)
 
-    await old.unregister()
+    await old.cancel()
     with pytest.raises(VectorStorePartitionPendingError):
         await registry.resolve("c")
     assert await _queued(registry) == [old.incarnation]
 
-    await since.unregister()
-    await since.unregister()
+    await since.cancel()
+    await since.cancel()
     assert await registry.resolve("c") is None
     assert sorted(await _queued(registry)) == sorted(
         [old.incarnation, since.incarnation]
@@ -273,18 +273,18 @@ async def test_unregistering_a_pending_registration_spares_the_key_registered_si
 
 
 @pytest.mark.asyncio
-async def test_a_live_registration_is_current_until_its_partition_is_deleted(
+async def test_a_registration_is_current_until_its_partition_is_deleted(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    live = await (await registry.register("c", SCHEMA)).mark_live()
+    live = await (await registry.reserve("c", SCHEMA)).confirm()
     await live.require_current()
 
     await registry.unregister("c")
     with pytest.raises(VectorStorePartitionHandleStaleError):
         await live.require_current()
 
-    await (await registry.register("c", SCHEMA)).mark_live()
+    await (await registry.reserve("c", SCHEMA)).confirm()
     with pytest.raises(VectorStorePartitionHandleStaleError):
         await live.require_current()
 
@@ -295,15 +295,15 @@ async def test_a_taken_key_is_already_exists_whatever_the_schema(
 ):
     """Taken by a pending partition, then by a live one."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    registration = await registry.register("c", SCHEMA)
+    registration = await registry.reserve("c", SCHEMA)
 
     for pending in (True, False):
         with pytest.raises(VectorStorePartitionAlreadyExistsError):
-            await registry.register("c", SCHEMA)
+            await registry.reserve("c", SCHEMA)
         with pytest.raises(VectorStorePartitionAlreadyExistsError):
-            await registry.register("c", OTHER_SCHEMA)
+            await registry.reserve("c", OTHER_SCHEMA)
         if pending:
-            await registration.mark_live()
+            await registration.confirm()
 
 
 @pytest.mark.parametrize(
@@ -351,8 +351,8 @@ async def test_registries_of_two_vector_stores_share_a_database_and_nothing_else
     first = await _registry(sqlalchemy_engine, f"{vector_store_name}_a")
     second = await _registry(sqlalchemy_engine, f"{vector_store_name}_b")
 
-    one = (await (await first.register("c", SCHEMA)).mark_live()).incarnation
-    two = (await (await second.register("c", OTHER_SCHEMA)).mark_live()).incarnation
+    one = (await (await first.reserve("c", SCHEMA)).confirm()).incarnation
+    two = (await (await second.reserve("c", OTHER_SCHEMA)).confirm()).incarnation
     assert one != two
     in_first = await first.resolve("c")
     in_second = await second.resolve("c")
@@ -377,17 +377,17 @@ async def test_concurrent_creators_get_one_winner(sqlalchemy_engine, vector_stor
     second = await _registry(sqlalchemy_engine, vector_store_name)
 
     results = await asyncio.gather(
-        *(registry.register("c", SCHEMA) for registry in (first, second) * 3),
+        *(registry.reserve("c", SCHEMA) for registry in (first, second) * 3),
         return_exceptions=True,
     )
 
-    winners = [r for r in results if isinstance(r, PendingRegistration)]
+    winners = [r for r in results if isinstance(r, Reservation)]
     losers = [
         r for r in results if isinstance(r, VectorStorePartitionAlreadyExistsError)
     ]
     assert len(winners) == 1
     assert len(losers) == 5
-    live = await winners[0].mark_live()
+    live = await winners[0].confirm()
     resolved = await first.resolve("c")
     assert resolved is not None
     assert resolved.incarnation == live.incarnation
@@ -398,7 +398,7 @@ async def test_delete_queues_the_incarnation_and_is_idempotent(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("c", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("c", SCHEMA)).incarnation
 
     await registry.unregister("c")
 
@@ -414,10 +414,10 @@ async def test_a_recreated_key_gets_a_new_incarnation(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    old = (await registry.register("c", SCHEMA)).incarnation
+    old = (await registry.reserve("c", SCHEMA)).incarnation
     await registry.unregister("c")
 
-    new = (await (await registry.register("c", SCHEMA)).mark_live()).incarnation
+    new = (await (await registry.reserve("c", SCHEMA)).confirm()).incarnation
 
     assert new != old
     resolved = await registry.resolve("c")
@@ -431,7 +431,7 @@ async def test_a_claim_names_where_the_records_are(
 ):
     """The tombstone names the incarnation to purge and the key it was under."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("c", OTHER_SCHEMA)).incarnation
+    incarnation = (await registry.reserve("c", OTHER_SCHEMA)).incarnation
     await registry.unregister("c")
     await _age_deletion(registry, incarnation)
 
@@ -446,7 +446,7 @@ async def test_a_tombstone_is_not_due_before_the_retention(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
 
     assert await _round(registry, any_records_found=False) is None
@@ -463,8 +463,8 @@ async def test_due_tombstones_go_oldest_deletion_first_until_a_round_finds_nothi
         "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: next(minted),
     )
-    first = (await registry.register("a", SCHEMA)).incarnation
-    second = (await registry.register("b", SCHEMA)).incarnation
+    first = (await registry.reserve("a", SCHEMA)).incarnation
+    second = (await registry.reserve("b", SCHEMA)).incarnation
     await registry.unregister("a")
     await registry.unregister("b")
     # The later deletion, with the larger incarnation, is made the older, so
@@ -491,7 +491,7 @@ async def test_a_tombstone_queued_by_a_real_deletion_comes_due_by_the_database_c
     registry = await _registry(
         sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
 
     assert await _round(registry, any_records_found=False) == incarnation
@@ -506,7 +506,7 @@ async def test_a_changed_retention_applies_to_tombstones_already_queued(
     """Only the deletion's time is stored; the retention in force when a
     claim is decided applies, including to tombstones queued under another."""
     queued_under_a_day = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await queued_under_a_day.register("a", SCHEMA)).incarnation
+    incarnation = (await queued_under_a_day.reserve("a", SCHEMA)).incarnation
     await queued_under_a_day.unregister("a")
     assert await _round(queued_under_a_day, any_records_found=False) is None
 
@@ -522,7 +522,7 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_fail
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, incarnation)
 
@@ -549,10 +549,10 @@ async def test_a_failed_tombstone_backs_off_while_the_ones_behind_it_are_claimed
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    failing = (await registry.register("a", SCHEMA)).incarnation
+    failing = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, failing, extra=timedelta(hours=1))
-    later = (await registry.register("b", SCHEMA)).incarnation
+    later = (await registry.reserve("b", SCHEMA)).incarnation
     await registry.unregister("b")
     await _age_deletion(registry, later)
 
@@ -565,7 +565,7 @@ async def test_the_backoff_doubles_with_each_failure_and_runs_from_the_last_one(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     # Due for days: the backoff still runs from the last failure, not from
     # when the tombstone came due.
@@ -595,7 +595,7 @@ async def test_the_backoff_stops_doubling_at_its_maximum(
         )
     )
     await registry.startup()
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, incarnation)
 
@@ -614,10 +614,10 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
     sqlalchemy_engine, vector_store_name, caplog
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    failing = (await registry.register("a", SCHEMA)).incarnation
+    failing = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, failing, extra=timedelta(hours=1))
-    later = (await registry.register("b", SCHEMA)).incarnation
+    later = (await registry.reserve("b", SCHEMA)).incarnation
     await registry.unregister("b")
     await _age_deletion(registry, later)
 
@@ -643,7 +643,7 @@ async def test_a_round_that_finds_points_clears_the_failed_rounds(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, incarnation)
 
@@ -659,7 +659,7 @@ async def test_a_cancelled_round_is_not_a_failed_round(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, incarnation)
 
@@ -678,7 +678,7 @@ async def test_a_round_that_reports_nothing_is_an_error(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("a", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     await _age_deletion(registry, incarnation)
 
@@ -694,7 +694,7 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
 ):
     """A minted incarnation colliding with a queued tombstone is rejected and re-minted."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    dead = (await registry.register("a", SCHEMA)).incarnation
+    dead = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     minted = iter([dead, uuid4()])
     monkeypatch.setattr(
@@ -702,7 +702,7 @@ async def test_an_incarnation_awaiting_purge_is_never_reminted(
         lambda: next(minted),
     )
 
-    fresh = (await registry.register("b", SCHEMA)).incarnation
+    fresh = (await registry.reserve("b", SCHEMA)).incarnation
 
     assert fresh != dead
     assert await _queued(registry) == [dead]
@@ -713,7 +713,7 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     sqlalchemy_engine, vector_store_name, monkeypatch
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    dead = (await registry.register("a", SCHEMA)).incarnation
+    dead = (await registry.reserve("a", SCHEMA)).incarnation
     await registry.unregister("a")
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
@@ -721,7 +721,7 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     )
 
     with pytest.raises(VectorStoreAttemptsExhaustedError):
-        await registry.register("b", SCHEMA)
+        await registry.reserve("b", SCHEMA)
     assert await registry.resolve("b") is None
 
 
@@ -755,7 +755,7 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
     )
     try:
         registry = await _registry(skewed_engine, vector_store_name)
-        incarnation = (await registry.register("a", SCHEMA)).incarnation
+        incarnation = (await registry.reserve("a", SCHEMA)).incarnation
         await registry.unregister("a")
 
         async with skewed_engine.connect() as connection:
@@ -783,8 +783,8 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite holds no row locks to skip")
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    held = (await registry.register("held", SCHEMA)).incarnation
-    free = (await registry.register("free", SCHEMA)).incarnation
+    held = (await registry.reserve("held", SCHEMA)).incarnation
+    free = (await registry.reserve("free", SCHEMA)).incarnation
     await registry.unregister("held")
     await registry.unregister("free")
     await _age_deletion(registry, held, extra=timedelta(minutes=1))
@@ -819,13 +819,13 @@ async def test_racing_deletions_of_a_partition_queue_one_tombstone(
         await _registry(sqlalchemy_engine, vector_store_name) for _ in range(4)
     ]
     for cycle in range(10):
-        await registries[0].register("c", SCHEMA)
+        await registries[0].reserve("c", SCHEMA)
         await asyncio.wait_for(
             asyncio.gather(*(r.unregister("c") for r in registries)), 30
         )
         assert await registries[0].resolve("c") is None
         assert len(await _queued(registries[0])) == cycle + 1
-    await registries[0].register("c", SCHEMA)
+    await registries[0].reserve("c", SCHEMA)
 
 
 @pytest.mark.asyncio
@@ -837,7 +837,7 @@ async def test_a_deletion_racing_another_waits_and_queues_nothing_more(
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite serializes whole write transactions")
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.register("c", SCHEMA)).incarnation
+    incarnation = (await registry.reserve("c", SCHEMA)).incarnation
 
     local = None
     try:
@@ -871,14 +871,14 @@ async def test_an_incarnation_colliding_with_a_live_partition_is_reminted(
     """A mint rejected by the incarnation's unique constraint, with the key
     free, is a collision to mint again, not a taken key."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    live = (await (await registry.register("live", SCHEMA)).mark_live()).incarnation
+    live = (await (await registry.reserve("live", SCHEMA)).confirm()).incarnation
     minted = iter([live, uuid4()])
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
         lambda: next(minted),
     )
 
-    fresh = (await registry.register("fresh", SCHEMA)).incarnation
+    fresh = (await registry.reserve("fresh", SCHEMA)).incarnation
 
     assert fresh != live
     resolved = await registry.resolve("live")
@@ -899,7 +899,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
     partition under an incarnation awaiting purge.
     """
     registry = await _registry(sqlalchemy_engine, vector_store_name)
-    victim = (await registry.register("victim", SCHEMA)).incarnation
+    victim = (await registry.reserve("victim", SCHEMA)).incarnation
     minted = iter([victim, uuid4()])
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry.uuid4",
@@ -926,7 +926,7 @@ async def test_a_mint_checks_the_queue_after_its_insert(
                     enqueued_at=func.now(),
                 )
             )
-            creator = asyncio.create_task(registry.register("fresh", SCHEMA))
+            creator = asyncio.create_task(registry.reserve("fresh", SCHEMA))
             await asyncio.wait_for(insert_issued.wait(), 30)
         fresh = (await asyncio.wait_for(creator, 30)).incarnation
     finally:
@@ -947,7 +947,7 @@ async def test_a_round_claims_one_tombstone(sqlalchemy_engine, vector_store_name
         sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
     )
     for name in ("a", "b", "c"):
-        await registry.register(name, SCHEMA)
+        await registry.reserve(name, SCHEMA)
         await registry.unregister(name)
 
     assert await _round(registry, any_records_found=False) is not None
@@ -969,7 +969,7 @@ async def test_a_persistent_database_error_surfaces_with_its_cause(
     )
 
     with pytest.raises(VectorStoreAttemptsExhaustedError) as raised:
-        await asyncio.wait_for(registry.register("a", SCHEMA), 30)
+        await asyncio.wait_for(registry.reserve("a", SCHEMA), 30)
 
     cause: BaseException | None = raised.value
     while cause is not None and not isinstance(cause, IntegrityError):

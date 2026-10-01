@@ -1,17 +1,15 @@
 """Partition registry interface and implementations."""
 
 from .partition_registry import (
-    LiveRegistration,
-    PendingRegistration,
     PurgeClaim,
     Registration,
+    Reservation,
     VectorStorePartitionRegistry,
 )
 
 __all__ = [
-    "LiveRegistration",
-    "PendingRegistration",
     "PurgeClaim",
     "Registration",
+    "Reservation",
     "VectorStorePartitionRegistry",
 ]

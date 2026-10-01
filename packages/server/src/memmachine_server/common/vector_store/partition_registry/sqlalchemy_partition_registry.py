@@ -5,7 +5,7 @@ A table of registered partitions keyed by vector store and partition key,
 each with its incarnation and whether it is live (its storage prepared), and
 a queue of deleted incarnations claimed in the order they come due. The
 primary key arbitrates registration across processes, a conditional update
-marks a registration live, unregistration is one transaction, and on
+confirms a reservation, unregistration is one transaction, and on
 PostgreSQL a purge claim is a row lock.
 """
 
@@ -59,9 +59,9 @@ from memmachine_server.common.vector_store.utils import (
 )
 
 from .partition_registry import (
-    LiveRegistration,
-    PendingRegistration,
     PurgeClaim,
+    Registration,
+    Reservation,
     VectorStorePartitionRegistry,
 )
 
@@ -261,9 +261,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
             await connection.run_sync(BasePartitionRegistry.metadata.create_all)
 
     @override
-    async def register(
-        self, partition_key: str, schema: PartitionSchema
-    ) -> PendingRegistration:
+    async def reserve(self, partition_key: str, schema: PartitionSchema) -> Reservation:
         # The primary key arbitrates the partition key across processes.
         # An insert rejected for another reason, such as a minted incarnation
         # that is registered or awaiting purge, is tried again with a fresh one.
@@ -274,7 +272,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                 await self._insert(partition_key, incarnation, schema)
             except _RegistryInsertRejectedError as err:
                 logger.warning(
-                    "Registering partition %r under incarnation %s was rejected: "
+                    "Reserving partition %r under incarnation %s was rejected: "
                     "%s; minting another",
                     partition_key,
                     incarnation,
@@ -287,7 +285,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                         f"after {_MAX_MINT_ATTEMPTS} attempts"
                     ) from err
                 continue
-            return _SQLAlchemyPendingRegistration(
+            return _SQLAlchemyReservation(
                 partition_key=partition_key,
                 schema=schema,
                 incarnation=incarnation,
@@ -341,7 +339,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
             ) from err
 
     @override
-    async def resolve(self, partition_key: str) -> LiveRegistration | None:
+    async def resolve(self, partition_key: str) -> Registration | None:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -366,7 +364,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                 ensure_tz_aware(row.registered_at),
                 schema,
             )
-        return _SQLAlchemyLiveRegistration(
+        return _SQLAlchemyRegistration(
             partition_key=partition_key,
             schema=schema,
             incarnation=row.incarnation,
@@ -522,16 +520,16 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
 
 
 @dataclass(frozen=True)
-class _SQLAlchemyPendingRegistration(PendingRegistration):
-    """A pending registration whose methods write the registry's tables directly."""
+class _SQLAlchemyReservation(Reservation):
+    """A reservation whose methods write the registry's tables directly."""
 
     engine: AsyncEngine = field(repr=False, compare=False)
     vector_store_name: str = field(repr=False)
 
     @override
-    async def mark_live(self) -> LiveRegistration:
+    async def confirm(self) -> Registration:
         # Conditional on the incarnation and on the row being pending, so a
-        # creation marks only the partition it registered.
+        # creation marks live only the partition it reserved.
         async with self.engine.begin() as connection:
             result = await connection.execute(
                 update(PartitionRow)
@@ -547,7 +545,7 @@ class _SQLAlchemyPendingRegistration(PendingRegistration):
             raise VectorStorePartitionDeletedError(
                 self.vector_store_name, self.partition_key
             )
-        return _SQLAlchemyLiveRegistration(
+        return _SQLAlchemyRegistration(
             partition_key=self.partition_key,
             schema=self.schema,
             incarnation=self.incarnation,
@@ -556,7 +554,7 @@ class _SQLAlchemyPendingRegistration(PendingRegistration):
         )
 
     @override
-    async def unregister(self) -> None:
+    async def cancel(self) -> None:
         await _unregister_where(
             self.engine,
             self.vector_store_name,
@@ -565,8 +563,8 @@ class _SQLAlchemyPendingRegistration(PendingRegistration):
 
 
 @dataclass(frozen=True)
-class _SQLAlchemyLiveRegistration(LiveRegistration):
-    """A live registration whose method reads the registry's tables directly."""
+class _SQLAlchemyRegistration(Registration):
+    """A registration whose method reads the registry's tables directly."""
 
     engine: AsyncEngine = field(repr=False, compare=False)
     vector_store_name: str = field(repr=False)
