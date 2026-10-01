@@ -55,21 +55,20 @@ from .registry_backed_vector_store import (
 )
 
 # Point payload keys (stored on every Qdrant point).
-# System keys use _SYSTEM_KEY_PREFIX, which contains a hyphen. Hyphens are valid in
-# Qdrant but forbidden by _IDENTIFIER_RE, so system keys can never collide with user keys.
+# System keys start with _SYSTEM_KEY_PREFIX, whose hyphen no property key may
+# contain (Record requires identifiers), so the two never collide.
 _SYSTEM_KEY_PREFIX = "sys-"
 _PAYLOAD_INCARNATION = f"{_SYSTEM_KEY_PREFIX}incarnation"
 """The payload key holding the incarnation of the collection a point belongs to.
 
 A collection created again under a deleted one's name gets a fresh
-incarnation, so the deleted collection's points are not part of it.
+incarnation, so it holds only the points written under that incarnation.
 """
 _PAYLOAD_RECORD_UUID = f"{_SYSTEM_KEY_PREFIX}record_uuid"
 """The payload key holding a point's record UUID.
 
 A point's id is derived from its incarnation and record UUID (`_point_id`),
-so this is where a query reads the record UUID back, and where someone
-inspecting a collection finds a record by hand.
+so a query reads the record UUID from here.
 """
 
 
@@ -268,8 +267,8 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
     def _point_id(self, record_uuid: UUID) -> UUID:
         """The point id of a record: a UUIDv5 of the record UUID under the incarnation.
 
-        Collections sharing a native collection never share a point id, and
-        neither do a deleted collection and one created again under its name.
+        Point ids are distinct across the collections sharing a native
+        collection and across a name's incarnations.
         """
         return uuid5(self._incarnation, str(record_uuid))
 

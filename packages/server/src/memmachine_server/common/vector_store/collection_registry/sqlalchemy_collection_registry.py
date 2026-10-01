@@ -1,15 +1,12 @@
 """
 A collection registry in a relational database, through SQLAlchemy.
 
-Qdrant and Milvus have no transactions or unique constraints, so a catalog
-kept in them cannot arbitrate two processes creating, deleting or
-reclaiming the same logical collection. This registry keeps it in a
-relational database: a table of registered collections keyed by vector
-store, namespace and name, each with its incarnation and whether it is live
-(its storage prepared), and a queue of deleted incarnations claimed in the
-order they come due. The primary key arbitrates registration, a conditional
-update marks a collection live, unregistration is one transaction, and a
-purge claim is a row lock.
+A table of registered collections keyed by vector store, namespace and name,
+each with its incarnation and whether it is live (its storage prepared), and
+a queue of deleted incarnations claimed in the order they come due. The
+primary key arbitrates registration across processes, a conditional update
+marks a collection live, unregistration is one transaction, and on
+PostgreSQL a purge claim is a row lock.
 """
 
 import logging
@@ -227,8 +224,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     Registries of different vector stores share the tables, keyed by vector
     store name. After `_MAX_FAILED_PURGE_ROUNDS` consecutive failed rounds, a
-    tombstone is dead-lettered: kept, its incarnation not minted again, no
-    longer claimed, and reported by an error log. Setting its
+    tombstone is dead-lettered: kept, its incarnation reserved, skipped by
+    claims, and reported in an error log. Setting its
     `failed_rounds` back to 0 returns it to the purge.
     """
 
@@ -324,8 +321,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     @override
     async def mark_live(self, incarnation: UUID) -> bool:
         # Conditional on the incarnation and on the row being pending, so a
-        # creation marks the collection it registered, never one registered
-        # under the name after its own was deleted.
+        # creation marks only the collection it registered.
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 update(CollectionRow)
@@ -377,10 +373,9 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     async def _unregister_where(self, *conditions: ColumnElement[bool]) -> None:
         """Delete this registry's collection row the conditions select, and queue its tombstone.
 
-        One transaction: the collection is unreachable once it commits, and
-        the queue row is its incarnation's tombstone. The DELETE goes first
-        and takes the row's write lock, so racing deleters serialize on it
-        and the loser deletes nothing.
+        One transaction, so the collection is unreachable once it commits.
+        The DELETE goes first and takes the row's write lock, so racing
+        deleters serialize on it and the loser finds no row and returns.
         """
         async with self._engine.begin() as connection:
             row = (
@@ -417,10 +412,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         self,
     ) -> AsyncGenerator[PurgeClaim | None, None]:
         # The retention is applied when a claim is decided, on the database
-        # clock, so a changed retention applies to every tombstone. The
-        # claim is a row lock held for the body: on PostgreSQL a concurrent
-        # purger skips the locked row; on SQLite two purgers may run the
-        # same round. A round that raises rolls back, then counts against
+        # clock, so a changed retention applies to every tombstone. On
+        # PostgreSQL the claim is a row lock held for the body, which a
+        # concurrent purger skips; on SQLite two purgers may run the same
+        # round. A round that raises rolls back, then counts against
         # the tombstone in a transaction of its own.
         claimed: UUID | None = None
         try:

@@ -60,7 +60,7 @@ _PARTITION_KEY_FIELD = "partition_key"
 """The native partition-key field, holding the incarnation of the collection an entity belongs to.
 
 A collection created again under a deleted one's name gets a fresh
-incarnation, so the deleted collection's entities are not part of it.
+incarnation, so it holds only the entities written under that incarnation.
 """
 _VECTOR_FIELD = "vector"
 _PROPERTIES_FIELD = "properties"
@@ -85,11 +85,10 @@ _DECLARED_DATA_TYPES: dict[type[PropertyValue], DataType] = {
     datetime: DataType.TIMESTAMPTZ,
 }
 
-# The index AUTOINDEX builds on CPU from Milvus 2.6.10, named so every server
-# builds it, whatever its version or AUTOINDEX configuration; partition-key
-# isolation needs the HNSW family. The parameters are AUTOINDEX's: HNSW_SQ
-# named alone takes knowhere's own defaults, a different index with no
-# refinement for refine_k to act on.
+# HNSW_SQ with explicit parameters, so every server builds the same index
+# whatever its version or AUTOINDEX configuration; partition-key isolation
+# needs the HNSW family. refine gives refine_k FP16 vectors to rescore
+# against.
 _VECTOR_INDEX_TYPE = "HNSW_SQ"
 _VECTOR_INDEX_PARAMS: dict[str, Any] = {
     "M": 18,
@@ -182,7 +181,8 @@ def _milvus_filter(
 ) -> str:
     """Compile a filter, or with `negate` its complement, into a Milvus expression.
 
-    A negation holds where the property has no value. Milvus evaluates a
+    A negated comparison or membership test holds where the property has no
+    value. Milvus evaluates a
     condition on a null the SQL way, so negation is pushed down to the
     conditions.
     """
@@ -214,8 +214,8 @@ def _require_every_key_accepted(result: Mapping[str, int], sent: int) -> None:
     """Raise unless Milvus accepted the delete of every primary key sent.
 
     Milvus counts the primary keys a delete accepts, present or not, so a
-    delete it rejected counts fewer; pymilvus's async client returns rather
-    than raises for one.
+    delete it rejected counts fewer, and pymilvus's async client returns
+    that count.
     """
     accepted = result["delete_count"]
     if accepted != sent:
@@ -275,8 +275,8 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
     def _primary_id(self, record_uuid: UUID) -> str:
         """The primary key of a record: the incarnation and the record UUID.
 
-        Collections sharing a native collection never share a primary key, and
-        neither do a deleted collection and one created again under its name.
+        Primary keys are distinct across the collections sharing a native
+        collection and across a name's incarnations.
         """
         return f"{self._incarnation}:{record_uuid}"
 
@@ -641,9 +641,9 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
     async def _purge_round(
         self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
     ) -> bool:
-        # Lists up to a batch of the incarnation's entities and deletes them by
-        # primary key. A batch keeps each delete small; one filter-delete of a
-        # large incarnation stalls every tenant while Milvus applies it.
+        # Deletes the incarnation's entities by primary key, one listed batch
+        # per round, keeping each delete short for every tenant of the native
+        # collection.
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )
