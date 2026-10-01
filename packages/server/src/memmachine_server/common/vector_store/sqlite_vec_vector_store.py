@@ -360,6 +360,9 @@ class SQLiteVecVectorStore(VectorStore):
     Vector store backed by SQLite + sqlite-vec.
 
     Each logical collection gets its own records table and vec0 virtual table.
+    The database is a local file, so the processes sharing a collection
+    must run on one host. A handle used after its collection is deleted acts
+    on a collection created again under its (namespace, name).
     """
 
     _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {
@@ -515,6 +518,11 @@ class SQLiteVecVectorStore(VectorStore):
             )
 
             self._sa_metadata.remove(records_table)
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection drops the tables itself.
+        return False
 
     # Helpers.
 

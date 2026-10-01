@@ -435,7 +435,13 @@ class QdrantVectorStoreParams(BaseModel):
 
 
 class QdrantVectorStore(VectorStore):
-    """Asynchronous Qdrant-based implementation of VectorStore."""
+    """
+    Asynchronous Qdrant-based implementation of VectorStore.
+
+    One process at a time may manage a given collection. A handle used
+    after its collection is deleted acts on a collection created again
+    under its (namespace, name).
+    """
 
     _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
         dict[SimilarityMetric, models.Distance]
@@ -826,3 +832,8 @@ class QdrantVectorStore(VectorStore):
                 ),
                 wait=True,
             )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection deletes the points itself.
+        return False
