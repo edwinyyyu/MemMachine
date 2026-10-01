@@ -14,25 +14,25 @@ from memmachine_server.common.vector_store import (
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionDeletedError,
-    VectorStoreCollectionPendingError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
+    VectorStorePartitionPendingError,
     registry_backed_vector_store,
 )
-from memmachine_server.common.vector_store.collection_registry import (
+from memmachine_server.common.vector_store.partition_registry import (
     Registration,
-    sqlalchemy_collection_registry,
+    sqlalchemy_partition_registry,
 )
-from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyVectorStoreCollectionRegistry,
-    SQLAlchemyVectorStoreCollectionRegistryParams,
+from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
+    SQLAlchemyVectorStorePartitionRegistry,
+    SQLAlchemyVectorStorePartitionRegistryParams,
 )
 from memmachine_server.common.vector_store.registry_backed_vector_store import (
     RegistryBackedVectorStore,
-    RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
+    RegistryBackedVectorStorePartition,
 )
 
 NAMESPACE = "ns"
@@ -42,7 +42,7 @@ CONFIG = VectorStoreCollectionConfig(vector_dimensions=3)
 type Preparation = Callable[[str, VectorStoreCollectionConfig, UUID], Awaitable[None]]
 
 
-class _Collection(RegistryBackedVectorStoreCollection):
+class _Partition(RegistryBackedVectorStorePartition):
     @override
     async def _upsert(self, records: list[Record]) -> None:
         raise NotImplementedError
@@ -63,12 +63,12 @@ class _Collection(RegistryBackedVectorStoreCollection):
         raise NotImplementedError
 
 
-class _Store(RegistryBackedVectorStore[_Collection]):
+class _Store(RegistryBackedVectorStore[_Partition]):
     """A store whose storage preparation is the test's `prepare`."""
 
-    def __init__(self, registry: SQLAlchemyVectorStoreCollectionRegistry) -> None:
+    def __init__(self, registry: SQLAlchemyVectorStorePartitionRegistry) -> None:
         super().__init__(
-            RegistryBackedVectorStoreParams(collection_registry=registry),
+            RegistryBackedVectorStoreParams(partition_registry=registry),
             metrics_prefix="test",
         )
         self.prepare: Preparation = _prepared
@@ -81,8 +81,8 @@ class _Store(RegistryBackedVectorStore[_Collection]):
         await self.prepare(namespace, config, incarnation)
 
     @override
-    def _build_collection_handle(self, registration: Registration) -> _Collection:
-        return _Collection(registration=registration, tracker=self._tracker)
+    def _build_partition_handle(self, registration: Registration) -> _Partition:
+        return _Partition(registration=registration, tracker=self._tracker)
 
     @override
     async def _purge_round(
@@ -101,8 +101,8 @@ async def _prepared(
 @pytest_asyncio.fixture
 async def store(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}")
-    registry = SQLAlchemyVectorStoreCollectionRegistry(
-        SQLAlchemyVectorStoreCollectionRegistryParams(
+    registry = SQLAlchemyVectorStorePartitionRegistry(
+        SQLAlchemyVectorStorePartitionRegistryParams(
             engine=engine, vector_store_name="store", tombstone_retention_seconds=0
         )
     )
@@ -113,7 +113,7 @@ async def store(tmp_path):
 
 async def _purged(store: _Store) -> list[UUID]:
     """Incarnations the purge rounds claim, calling the purge until it returns False."""
-    while await store.purge_deleted_collections():
+    while await store.purge_deleted_partitions():
         pass
     return store.purged
 
@@ -129,22 +129,22 @@ async def test_a_collection_is_pending_while_its_storage_is_prepared(store):
 
     store.prepare = slow
     creating = asyncio.create_task(
-        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await started.wait()
 
-    with pytest.raises(VectorStoreCollectionPendingError) as pending:
-        await store.open_collection(namespace=NAMESPACE, name=NAME)
-    with pytest.raises(VectorStoreCollectionPendingError) as registered:
-        await store._collection_registry.resolve(NAMESPACE, NAME)
+    with pytest.raises(VectorStorePartitionPendingError) as pending:
+        await store.get_partition(namespace=NAMESPACE, name=NAME)
+    with pytest.raises(VectorStorePartitionPendingError) as registered:
+        await store._partition_registry.resolve(NAMESPACE, NAME)
     assert pending.value.registered_at == registered.value.registered_at
     assert pending.value.config == CONFIG
-    with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    with pytest.raises(VectorStorePartitionAlreadyExistsError):
+        await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
     release.set()
     await creating
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is not None
 
 
 @pytest.mark.asyncio
@@ -161,11 +161,11 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
 
     store.prepare = slow
     creating = asyncio.create_task(
-        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await started.wait()
     store.prepare = _prepared
-    registry = store._collection_registry
+    registry = store._partition_registry
     reserve = registry.reserve
     reservations = 0
 
@@ -176,7 +176,7 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
 
     monkeypatch.setattr(registry, "reserve", counted)
     opening = asyncio.create_task(
-        store.open_or_create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        store.open_or_create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await asyncio.sleep(0.1)
     assert not opening.done()
@@ -187,7 +187,7 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
     await creating
     opened = await opening
 
-    created = await store._collection_registry.resolve(NAMESPACE, NAME)
+    created = await store._partition_registry.resolve(NAMESPACE, NAME)
     assert created is not None
     assert opened._incarnation == created.incarnation
 
@@ -197,17 +197,17 @@ async def test_open_or_create_gives_up_from_the_race_it_last_lost(store, monkeyp
     monkeypatch.setattr(
         registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
     )
-    lost = VectorStoreCollectionAlreadyExistsError(NAMESPACE, NAME)
+    lost = VectorStorePartitionAlreadyExistsError(NAMESPACE, NAME)
 
     async def taken(namespace, name, config):
         raise lost
 
-    monkeypatch.setattr(store._collection_registry, "reserve", taken)
+    monkeypatch.setattr(store._partition_registry, "reserve", taken)
 
     with pytest.raises(
         VectorStoreAttemptsExhaustedError, match="no progress"
     ) as gave_up:
-        await store.open_or_create_collection(
+        await store.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
     assert gave_up.value.__cause__ is lost
@@ -226,12 +226,12 @@ async def test_open_or_create_refuses_a_pending_collection_of_another_configurat
 
     store.prepare = slow
     creating = asyncio.create_task(
-        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await started.wait()
 
     with pytest.raises(VectorStoreCollectionConfigMismatchError):
-        await store.open_or_create_collection(
+        await store.open_or_create_partition(
             namespace=NAMESPACE,
             name=NAME,
             config=VectorStoreCollectionConfig(vector_dimensions=4),
@@ -242,7 +242,7 @@ async def test_open_or_create_refuses_a_pending_collection_of_another_configurat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("create", ["create_collection", "open_or_create_collection"])
+@pytest.mark.parametrize("create", ["create_partition", "open_or_create_partition"])
 async def test_a_failed_preparation_frees_the_name_and_queues_its_incarnation(
     store, create
 ):
@@ -256,11 +256,11 @@ async def test_a_failed_preparation_frees_the_name_and_queues_its_incarnation(
     with pytest.raises(RuntimeError, match="refused"):
         await getattr(store, create)(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is None
     assert await _purged(store) == incarnations
     store.prepare = _prepared
-    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
+    await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is not None
 
 
 @pytest.mark.asyncio
@@ -277,14 +277,14 @@ async def test_a_cancelled_preparation_frees_the_name_and_queues_its_incarnation
 
     store.prepare = hangs
     creating = asyncio.create_task(
-        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await started.wait()
     creating.cancel()
     with pytest.raises(asyncio.CancelledError):
         await creating
 
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is None
     assert await _purged(store) == incarnations
 
 
@@ -295,7 +295,7 @@ async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives
     started = asyncio.Event()
     cancelling = asyncio.Event()
     release = asyncio.Event()
-    reservation_type = sqlalchemy_collection_registry._SQLAlchemyReservation
+    reservation_type = sqlalchemy_partition_registry._SQLAlchemyReservation
     cancel = reservation_type.cancel
 
     async def hangs(namespace, config, incarnation) -> None:
@@ -310,7 +310,7 @@ async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives
     store.prepare = hangs
     monkeypatch.setattr(reservation_type, "cancel", slow)
     creating = asyncio.create_task(
-        store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
     await started.wait()
     creating.cancel()
@@ -321,7 +321,7 @@ async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives
 
     release.set()
     await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is None
 
 
 @pytest.mark.asyncio
@@ -341,26 +341,26 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     store.prepare = refused
     with monkeypatch.context() as cancellation:
         cancellation.setattr(
-            sqlalchemy_collection_registry._SQLAlchemyReservation,
+            sqlalchemy_partition_registry._SQLAlchemyReservation,
             "cancel",
             unreachable,
         )
         with pytest.raises(RuntimeError, match="refused"):
-            await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+            await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
     store.prepare = _prepared
 
-    with pytest.raises(VectorStoreCollectionPendingError):
-        await store.open_collection(namespace=NAMESPACE, name=NAME)
-    with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    with pytest.raises(VectorStoreCollectionPendingError):
-        await store.open_or_create_collection(
+    with pytest.raises(VectorStorePartitionPendingError):
+        await store.get_partition(namespace=NAMESPACE, name=NAME)
+    with pytest.raises(VectorStorePartitionAlreadyExistsError):
+        await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    with pytest.raises(VectorStorePartitionPendingError):
+        await store.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
 
-    await store.delete_collection(namespace=NAMESPACE, name=NAME)
-    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
+    await store.delete_partition(namespace=NAMESPACE, name=NAME)
+    await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is not None
 
 
 @pytest.mark.asyncio
@@ -372,13 +372,13 @@ async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_confirm
 
     async def deleted_meanwhile(namespace, config, incarnation) -> None:
         incarnations.append(incarnation)
-        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+        await store.delete_partition(namespace=NAMESPACE, name=NAME)
 
     store.prepare = deleted_meanwhile
-    with pytest.raises(VectorStoreCollectionDeletedError):
-        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    with pytest.raises(VectorStorePartitionDeletedError):
+        await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    assert await store.get_partition(namespace=NAMESPACE, name=NAME) is None
     assert await _purged(store) == incarnations
 
 
@@ -394,10 +394,10 @@ async def test_open_or_create_creates_again_after_a_deletion_during_preparation(
     async def deleted_the_first_time(namespace, config, incarnation) -> None:
         incarnations.append(incarnation)
         if len(incarnations) == 1:
-            await store.delete_collection(namespace=NAMESPACE, name=NAME)
+            await store.delete_partition(namespace=NAMESPACE, name=NAME)
 
     store.prepare = deleted_the_first_time
-    opened = await store.open_or_create_collection(
+    opened = await store.open_or_create_partition(
         namespace=NAMESPACE, name=NAME, config=CONFIG
     )
 
@@ -414,11 +414,11 @@ async def test_calling_the_purge_until_it_returns_false_drains_every_tombstone(
     due tombstone."""
     incarnations = []
     for name in ("a", "b"):
-        await store.create_collection(namespace=NAMESPACE, name=name, config=CONFIG)
-        live = await store._collection_registry.resolve(NAMESPACE, name)
+        await store.create_partition(namespace=NAMESPACE, name=name, config=CONFIG)
+        live = await store._partition_registry.resolve(NAMESPACE, name)
         assert live is not None
         incarnations.append(live.incarnation)
-        await store.delete_collection(namespace=NAMESPACE, name=name)
+        await store.delete_partition(namespace=NAMESPACE, name=name)
 
     assert sorted(await _purged(store)) == sorted(incarnations)
 
@@ -429,8 +429,8 @@ async def test_calling_the_purge_until_it_returns_false_drains_every_tombstone(
 async def test_a_query_limit_that_is_not_positive_is_refused(
     store, query_vectors, limit
 ):
-    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    collection = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    collection = await store.get_partition(namespace=NAMESPACE, name=NAME)
     assert collection is not None
 
     with pytest.raises(ValueError, match="not positive"):

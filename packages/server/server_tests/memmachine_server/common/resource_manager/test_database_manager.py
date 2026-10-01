@@ -23,8 +23,8 @@ from memmachine_server.common.errors import (
 )
 from memmachine_server.common.resource_manager.database_manager import DatabaseManager
 from memmachine_server.common.vector_graph_store import VectorGraphStore
-from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyVectorStoreCollectionRegistryParams,
+from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
+    SQLAlchemyVectorStorePartitionRegistryParams,
 )
 
 requires_pymilvus = pytest.mark.skipif(
@@ -303,7 +303,7 @@ def _qdrant_only_conf() -> MagicMock:
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {
         "qdrant1": QdrantConf(
-            collection_registry="registry",
+            partition_registry="registry",
             host="localhost",
             port=6333,
         ),
@@ -318,7 +318,7 @@ async def test_qdrant_client_kwargs_forwarded():
     """host, port, grpc_port, prefer_grpc, and https are forwarded to AsyncQdrantClient."""
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
-        collection_registry="registry",
+        partition_registry="registry",
         host="qdrant.example.com",
         port=7333,
         grpc_port=7334,
@@ -390,7 +390,7 @@ async def test_qdrant_creates_vector_store():
     """async_get_qdrant_client creates a QdrantVectorStore and stores it."""
     conf = _qdrant_only_conf()
     conf.qdrant_confs["qdrant1"] = QdrantConf(
-        collection_registry="registry",
+        partition_registry="registry",
         tombstone_retention_seconds=3600,
     )
 
@@ -405,7 +405,7 @@ async def test_qdrant_creates_vector_store():
             "memmachine_server.common.vector_store.qdrant_vector_store.QdrantVectorStore",
         ) as mock_store_cls,
         patch(
-            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStoreCollectionRegistry",
+            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStorePartitionRegistry",
         ) as mock_registry_cls,
         patch(
             "qdrant_client.AsyncQdrantClient",
@@ -418,7 +418,7 @@ async def test_qdrant_creates_vector_store():
         await builder.async_get_qdrant_client("qdrant1")
 
     mock_registry_cls.assert_called_once_with(
-        SQLAlchemyVectorStoreCollectionRegistryParams(
+        SQLAlchemyVectorStorePartitionRegistryParams(
             engine=builder.sql_engines["registry"],
             vector_store_name="qdrant1",
             tombstone_retention_seconds=3600,
@@ -428,7 +428,7 @@ async def test_qdrant_creates_vector_store():
     mock_params_cls.assert_called_once()
     kwargs = mock_params_cls.call_args.kwargs
     assert kwargs["client"] is mock_client
-    assert kwargs["collection_registry"] is mock_registry_cls.return_value
+    assert kwargs["partition_registry"] is mock_registry_cls.return_value
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
@@ -441,9 +441,9 @@ async def test_qdrant_creates_vector_store():
 @pytest.mark.asyncio
 async def test_qdrant_client_is_not_opened_when_the_registry_database_is_unknown():
     """The registry database is resolved before the client is opened, so a
-    bad collection_registry leaves no client behind."""
+    bad partition_registry leaves no client behind."""
     conf = _qdrant_only_conf()
-    conf.qdrant_confs["qdrant1"] = QdrantConf(collection_registry="missing")
+    conf.qdrant_confs["qdrant1"] = QdrantConf(partition_registry="missing")
 
     with patch("qdrant_client.AsyncQdrantClient") as mock_cls:
         builder = DatabaseManager(conf)
@@ -551,9 +551,7 @@ def _milvus_only_conf() -> MagicMock:
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {}
     conf.milvus_confs = {
-        "milvus1": MilvusConf(
-            collection_registry="registry", uri="http://milvus:19530"
-        ),
+        "milvus1": MilvusConf(partition_registry="registry", uri="http://milvus:19530"),
     }
     conf.sqlite_vector_store_confs = {}
     conf.sqlite_vec_vector_store_confs = {}
@@ -566,7 +564,7 @@ async def test_milvus_client_kwargs_forwarded():
     """uri, token, and db_name are forwarded to AsyncMilvusClient."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
-        collection_registry="registry",
+        partition_registry="registry",
         uri="https://example.zillizcloud.com",
         token=SecretStr("secret-token"),
         db_name="memory",
@@ -625,9 +623,9 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
 @requires_pymilvus
 async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown():
     """The registry database is resolved before the client is opened, so a
-    bad collection_registry leaves no client behind."""
+    bad partition_registry leaves no client behind."""
     conf = _milvus_only_conf()
-    conf.milvus_confs["milvus1"] = MilvusConf(collection_registry="missing")
+    conf.milvus_confs["milvus1"] = MilvusConf(partition_registry="missing")
 
     with patch("pymilvus.AsyncMilvusClient") as mock_cls:
         builder = DatabaseManager(conf)
@@ -644,7 +642,7 @@ async def test_milvus_creates_vector_store():
     """async_get_milvus_client creates a MilvusVectorStore and stores it."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
-        collection_registry="registry",
+        partition_registry="registry",
         tombstone_retention_seconds=3600,
     )
 
@@ -659,7 +657,7 @@ async def test_milvus_creates_vector_store():
             "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
         ) as mock_store_cls,
         patch(
-            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStoreCollectionRegistry",
+            "memmachine_server.common.resource_manager.database_manager.SQLAlchemyVectorStorePartitionRegistry",
         ) as mock_registry_cls,
         patch("pymilvus.AsyncMilvusClient", return_value=mock_client),
     ):
@@ -669,7 +667,7 @@ async def test_milvus_creates_vector_store():
         await builder.async_get_milvus_client("milvus1")
 
     mock_registry_cls.assert_called_once_with(
-        SQLAlchemyVectorStoreCollectionRegistryParams(
+        SQLAlchemyVectorStorePartitionRegistryParams(
             engine=builder.sql_engines["registry"],
             vector_store_name="milvus1",
             tombstone_retention_seconds=3600,
@@ -678,7 +676,7 @@ async def test_milvus_creates_vector_store():
     mock_registry_cls.return_value.startup.assert_awaited_once()
     mock_params_cls.assert_called_once_with(
         client=mock_client,
-        collection_registry=mock_registry_cls.return_value,
+        partition_registry=mock_registry_cls.return_value,
         request_timeout_seconds=30,
         max_varchar_length=65535,
         purge_batch_size=10000,

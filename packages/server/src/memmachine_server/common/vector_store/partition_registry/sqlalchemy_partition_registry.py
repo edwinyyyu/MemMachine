@@ -47,21 +47,21 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionDeletedError,
-    VectorStoreCollectionHandleStaleError,
-    VectorStoreCollectionPendingError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
+    VectorStorePartitionHandleStaleError,
+    VectorStorePartitionPendingError,
 )
 from memmachine_server.common.vector_store.utils import (
     _IDENTIFIER_MAX_BYTES,
 )
 
-from .collection_registry import (
+from .partition_registry import (
     PurgeClaim,
     Registration,
     Reservation,
-    VectorStoreCollectionRegistry,
+    VectorStorePartitionRegistry,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,14 +79,14 @@ _MAX_FAILED_PURGE_ROUNDS = 10
 _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 
-class BaseCollectionRegistry(DeclarativeBase):
+class BasePartitionRegistry(DeclarativeBase):
     """Base class for collection registry tables."""
 
 
-class CollectionRow(BaseCollectionRegistry):
+class PartitionRow(BasePartitionRegistry):
     """A registered collection of a vector store, pending or live."""
 
-    __tablename__ = "collection_registry_ct"
+    __tablename__ = "partition_registry_ct"
 
     vector_store_name: MappedColumn[str] = mapped_column(
         String(_VECTOR_STORE_NAME_MAX_LENGTH), primary_key=True
@@ -109,10 +109,10 @@ class CollectionRow(BaseCollectionRegistry):
     )
 
 
-class PurgeQueueRow(BaseCollectionRegistry):
+class PurgeQueueRow(BasePartitionRegistry):
     """A deleted collection's tombstone: its incarnation awaiting purge."""
 
-    __tablename__ = "collection_registry_gc"
+    __tablename__ = "partition_registry_gc"
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     vector_store_name: MappedColumn[str] = mapped_column(
@@ -140,7 +140,7 @@ class PurgeQueueRow(BaseCollectionRegistry):
     )
 
     __table_args__ = (
-        Index("collection_registry_gc__vs_ea", "vector_store_name", "enqueued_at"),
+        Index("partition_registry_gc__vs_ea", "vector_store_name", "enqueued_at"),
     )
 
 
@@ -148,9 +148,9 @@ class _RegistryInsertRejectedError(Exception):
     """A registry insert was rejected for a reason other than the name being taken."""
 
 
-class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
+class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
     """
-    Parameters for SQLAlchemyVectorStoreCollectionRegistry.
+    Parameters for SQLAlchemyVectorStorePartitionRegistry.
 
     Attributes:
         engine (AsyncEngine):
@@ -222,7 +222,7 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
         return engine
 
 
-class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
+class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
     """
     The registry of one vector store's collections.
 
@@ -233,7 +233,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     `failed_rounds` back to 0 returns it to the purge.
     """
 
-    def __init__(self, params: SQLAlchemyVectorStoreCollectionRegistryParams) -> None:
+    def __init__(self, params: SQLAlchemyVectorStorePartitionRegistryParams) -> None:
         """Initialize with the provided parameters."""
         self._engine = params.engine
         self._is_sqlite = params.engine.dialect.name == "sqlite"
@@ -251,7 +251,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     @override
     async def startup(self) -> None:
         async with self._engine.begin() as connection:
-            await connection.run_sync(BaseCollectionRegistry.metadata.create_all)
+            await connection.run_sync(BasePartitionRegistry.metadata.create_all)
 
     @override
     async def reserve(
@@ -303,7 +303,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         try:
             async with self._engine.begin() as connection:
                 await connection.execute(
-                    insert(CollectionRow).values(
+                    insert(PartitionRow).values(
                         vector_store_name=self._vector_store_name,
                         namespace=namespace,
                         name=name,
@@ -326,15 +326,15 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             async with self._engine.connect() as connection:
                 taken = (
                     await connection.execute(
-                        select(CollectionRow.incarnation).where(
-                            CollectionRow.vector_store_name == self._vector_store_name,
-                            CollectionRow.namespace == namespace,
-                            CollectionRow.name == name,
+                        select(PartitionRow.incarnation).where(
+                            PartitionRow.vector_store_name == self._vector_store_name,
+                            PartitionRow.namespace == namespace,
+                            PartitionRow.name == name,
                         )
                     )
                 ).scalar_one_or_none()
             if taken is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name) from err
+                raise VectorStorePartitionAlreadyExistsError(namespace, name) from err
             raise _RegistryInsertRejectedError(
                 "the insert failed and no row exists under the name"
             ) from err
@@ -345,14 +345,14 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             row = (
                 await connection.execute(
                     select(
-                        CollectionRow.incarnation,
-                        CollectionRow.config,
-                        CollectionRow.live,
-                        CollectionRow.registered_at,
+                        PartitionRow.incarnation,
+                        PartitionRow.config,
+                        PartitionRow.live,
+                        PartitionRow.registered_at,
                     ).where(
-                        CollectionRow.vector_store_name == self._vector_store_name,
-                        CollectionRow.namespace == namespace,
-                        CollectionRow.name == name,
+                        PartitionRow.vector_store_name == self._vector_store_name,
+                        PartitionRow.namespace == namespace,
+                        PartitionRow.name == name,
                     )
                 )
             ).one_or_none()
@@ -360,7 +360,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             return None
         config = VectorStoreCollectionConfig.model_validate(row.config)
         if not row.live:
-            raise VectorStoreCollectionPendingError(
+            raise VectorStorePartitionPendingError(
                 namespace, name, ensure_tz_aware(row.registered_at), config
             )
         return _SQLAlchemyRegistration(
@@ -377,8 +377,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         await _unregister_where(
             self._engine,
             self._vector_store_name,
-            CollectionRow.namespace == namespace,
-            CollectionRow.name == name,
+            PartitionRow.namespace == namespace,
+            PartitionRow.name == name,
         )
 
     @override
@@ -542,18 +542,18 @@ class _SQLAlchemyReservation(Reservation):
         # creation marks live only the collection it reserved.
         async with self.engine.begin() as connection:
             result = await connection.execute(
-                update(CollectionRow)
+                update(PartitionRow)
                 .where(
-                    CollectionRow.vector_store_name == self.vector_store_name,
-                    CollectionRow.namespace == self.namespace,
-                    CollectionRow.name == self.name,
-                    CollectionRow.incarnation == self.incarnation,
-                    CollectionRow.live.is_(False),
+                    PartitionRow.vector_store_name == self.vector_store_name,
+                    PartitionRow.namespace == self.namespace,
+                    PartitionRow.name == self.name,
+                    PartitionRow.incarnation == self.incarnation,
+                    PartitionRow.live.is_(False),
                 )
                 .values(live=True)
             )
         if result.rowcount != 1:
-            raise VectorStoreCollectionDeletedError(self.namespace, self.name)
+            raise VectorStorePartitionDeletedError(self.namespace, self.name)
         return _SQLAlchemyRegistration(
             namespace=self.namespace,
             name=self.name,
@@ -570,8 +570,8 @@ class _SQLAlchemyReservation(Reservation):
         await _unregister_where(
             self.engine,
             self.vector_store_name,
-            CollectionRow.incarnation == self.incarnation,
-            CollectionRow.live.is_(False),
+            PartitionRow.incarnation == self.incarnation,
+            PartitionRow.live.is_(False),
         )
 
 
@@ -587,15 +587,15 @@ class _SQLAlchemyRegistration(Registration):
         async with self.engine.connect() as connection:
             current = (
                 await connection.execute(
-                    select(CollectionRow.incarnation).where(
-                        CollectionRow.vector_store_name == self.vector_store_name,
-                        CollectionRow.namespace == self.namespace,
-                        CollectionRow.name == self.name,
+                    select(PartitionRow.incarnation).where(
+                        PartitionRow.vector_store_name == self.vector_store_name,
+                        PartitionRow.namespace == self.namespace,
+                        PartitionRow.name == self.name,
                     )
                 )
             ).scalar_one_or_none()
         if current != self.incarnation:
-            raise VectorStoreCollectionHandleStaleError(self.namespace, self.name)
+            raise VectorStorePartitionHandleStaleError(self.namespace, self.name)
 
 
 async def _unregister_where(
@@ -610,15 +610,13 @@ async def _unregister_where(
     async with engine.begin() as connection:
         row = (
             await connection.execute(
-                delete(CollectionRow)
-                .where(
-                    CollectionRow.vector_store_name == vector_store_name, *conditions
-                )
+                delete(PartitionRow)
+                .where(PartitionRow.vector_store_name == vector_store_name, *conditions)
                 .returning(
-                    CollectionRow.incarnation,
-                    CollectionRow.namespace,
-                    CollectionRow.name,
-                    CollectionRow.config,
+                    PartitionRow.incarnation,
+                    PartitionRow.namespace,
+                    PartitionRow.name,
+                    PartitionRow.config,
                 )
             )
         ).one_or_none()
