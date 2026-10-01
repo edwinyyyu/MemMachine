@@ -1,17 +1,15 @@
 # Milvus vector store
 
-How the Milvus store meets the shared contracts: [collection
-registry](vector_store_collection_registry.md),
+How the Milvus store meets the shared contracts: [partition
+registry](vector_store_partition_registry.md),
 [purge](vector_store_purge.md), [consistency](vector_store_consistency.md),
 [isolation](vector_store_isolation.md).
 
 ## Layout
 
-- **One native collection per namespace and configuration**, named
-  `memmachine_{namespace}__{sha256(config)}`, the digest over the
-  configuration's JSON. It holds every logical collection of that namespace
-  and configuration, one incarnation each. Admitting a collection creates
-  nothing in Milvus unless its configuration is new.
+- **One native collection per store**, named `sys_` followed by the vector
+  store name. It holds every partition of the store, one incarnation each.
+  Creating a partition creates nothing in Milvus.
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
   `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
@@ -35,8 +33,8 @@ registry](vector_store_collection_registry.md),
   resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
   a TIMESTAMPTZ field. Milvus caps a collection at `proxy.maxFieldNum` fields
-  (64 on 2.6, 256 on 3.0), so a configuration declares at most 59 properties
-  on 2.6, one fewer per datetime. A TIMESTAMPTZ field holds the instant, which
+  (64 on 2.6, 256 on 3.0), so a store declares at most 59 properties on 2.6,
+  one fewer per datetime. A TIMESTAMPTZ field holds the instant, which
   is all a filter compares; the datetime's UTC offset is stored beside it so
   the stored record is the one written, as the other stores keep it.
   Undeclared properties go in the JSON field, still filterable by path.
@@ -52,9 +50,9 @@ registry](vector_store_collection_registry.md),
   (10,000 unless configured, within
   `quotaAndLimits.limits.maxQueryResultWindow`); both are settings, not
   constants.
-- **Creation converges:** the collection and its indexes (named by their
-  fields) are created only when missing, and the collection is loaded, a
-  no-op when it is loaded already.
+- **Startup converges:** the collection and its indexes (named by their
+  fields) are created at startup only when missing, and the collection is
+  loaded, a no-op when it is loaded already.
 - **A delete raises unless Milvus accepted every key sent.** Milvus counts the
   primary keys a delete accepts, present or not (milvus-io/milvus#51566), and
   pymilvus's async client returns that count for a delete Milvus rejected, so
@@ -133,8 +131,8 @@ throughput unchanged.
 
 The incarnation is in the primary key because Milvus's upsert deletes by
 primary key in every partition (`AllPartitionsID`) before inserting: with the
-bare record UUID as the key, one collection's upsert would delete another
-collection's record of the same UUID. With the composite key, two collections'
+bare record UUID as the key, one partition's upsert would delete another
+partition's record of the same UUID. With the composite key, two partitions'
 records of one UUID are two entities, and a reused UUID's record is simply
 stored, which meets the [isolation](vector_store_isolation.md) guarantee. The
 record UUID is also kept in its own field, which reads return. Measured
