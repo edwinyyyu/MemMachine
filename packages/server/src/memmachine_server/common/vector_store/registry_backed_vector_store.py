@@ -13,7 +13,7 @@ deleted incarnation's records.
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from typing import override
 from uuid import UUID
 
@@ -22,7 +22,11 @@ from pydantic import BaseModel, Field, InstanceOf
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
-from .collection_registry import RegisteredCollection, VectorStoreCollectionRegistry
+from .collection_registry import (
+    LiveRegistration,
+    PendingRegistration,
+    VectorStoreCollectionRegistry,
+)
 from .data_types import (
     QueryResult,
     Record,
@@ -31,7 +35,6 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
     VectorStoreCollectionDeletedError,
-    VectorStoreCollectionHandleStaleError,
     VectorStoreCollectionPendingError,
 )
 from .utils import (
@@ -60,43 +63,23 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     `upsert` before and after its backend call, `query` before it, and
     `delete` after it.
 
+    A check after a write makes one that raced the collection's deletion
+    raise instead of reporting success; whatever such a write landed, the
+    purge reclaims.
+
     For subclasses: `_incarnation` is the incarnation the handle is bound to,
     and a subclass implements the backend calls `_upsert`, `_query` and
     `_delete`.
     """
 
     def __init__(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        incarnation: UUID,
-        config: VectorStoreCollectionConfig,
-        tracker: OperationTracker,
-        get_registered_collection: Callable[
-            [str, str], Awaitable[RegisteredCollection | None]
-        ],
+        self, *, registration: LiveRegistration, tracker: OperationTracker
     ) -> None:
-        """Initialize with the incarnation the handle is bound to, and the registry's lookup."""
-        self._namespace = namespace
-        self._name = name
-        self._incarnation = incarnation
-        self._config = config
+        """Initialize with the live registration the handle is bound to."""
+        self._registration = registration
+        self._incarnation = registration.incarnation
+        self._config = registration.config
         self._tracker = tracker
-        self._get_registered_collection = get_registered_collection
-
-    async def _fence(self) -> None:
-        """Raise if this handle's collection has been deleted.
-
-        The collection registered under the handle's name carries the
-        handle's incarnation until it is deleted; one created again under
-        the name carries another. A check after a write makes one that raced
-        the deletion raise instead of reporting success; whatever such a
-        write landed, the purge reclaims.
-        """
-        registered = await self._get_registered_collection(self._namespace, self._name)
-        if registered is None or registered.incarnation != self._incarnation:
-            raise VectorStoreCollectionHandleStaleError(self._namespace, self._name)
 
     @property
     @override
@@ -112,11 +95,11 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
                     record.properties, self._config.indexed_properties_schema
                 )
                 require_dimensions(record.vector, self._config.vector_dimensions)
-            await self._fence()
+            await self._registration.require_current()
             if not records:
                 return
             await self._upsert(records)
-            await self._fence()
+            await self._registration.require_current()
 
     @override
     async def query(
@@ -134,7 +117,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
             require_valid_score_threshold(score_threshold)
             if property_filter is not None and not validate_filter(property_filter):
                 raise ValueError("Filter contains an invalid property key")
-            await self._fence()
+            await self._registration.require_current()
             if not query_vectors:
                 return []
             if limit <= 0:
@@ -154,7 +137,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
             record_uuids = list(record_uuids)
             if record_uuids:
                 await self._delete(record_uuids)
-            await self._fence()
+            await self._registration.require_current()
 
     @abstractmethod
     async def _upsert(self, records: list[Record]) -> None:
@@ -308,13 +291,9 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             # The registry decides a creation race. The collection stays
             # pending until its storage is prepared; if it is deleted
             # meanwhile, mark_live raises.
-            incarnation = await self._collection_registry.register(
-                namespace, name, config
-            )
-            await self._prepare_storage_or_unregister(
-                namespace, name, config, incarnation
-            )
-            await self._collection_registry.mark_live(namespace, name, incarnation)
+            pending = await self._collection_registry.register(namespace, name, config)
+            await self._prepare_storage_or_unregister(pending)
+            await pending.mark_live()
 
     @override
     async def open_or_create_collection(
@@ -331,55 +310,48 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             # another creator took the name meanwhile, and losing the mark
             # means a deleter removed this one while its storage was prepared
             # (create again).
-            registered: RegisteredCollection | None = None
+            pending_error: VectorStoreCollectionPendingError | None = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
-                registered = await self._collection_registry.get(namespace, name)
-                if registered is not None:
-                    if registered.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, registered.config, config
-                        )
-                    if registered.live:
-                        return self._build_collection_handle(
-                            namespace, name, registered.incarnation, config
-                        )
-                    continue
                 try:
-                    incarnation = await self._collection_registry.register(
+                    live = await self._collection_registry.resolve(namespace, name)
+                except VectorStoreCollectionPendingError as err:
+                    if err.config != config:
+                        raise VectorStoreCollectionConfigMismatchError(
+                            namespace, name, err.config, config
+                        ) from err
+                    pending_error = err
+                    continue
+                pending_error = None
+                if live is not None:
+                    if live.config != config:
+                        raise VectorStoreCollectionConfigMismatchError(
+                            namespace, name, live.config, config
+                        )
+                    return self._build_collection_handle(live)
+                try:
+                    pending = await self._collection_registry.register(
                         namespace, name, config
                     )
                 except VectorStoreCollectionAlreadyExistsError:
                     continue
-                await self._prepare_storage_or_unregister(
-                    namespace, name, config, incarnation
-                )
+                await self._prepare_storage_or_unregister(pending)
                 try:
-                    await self._collection_registry.mark_live(
-                        namespace, name, incarnation
-                    )
+                    live = await pending.mark_live()
                 except VectorStoreCollectionDeletedError:
                     continue
-                return self._build_collection_handle(
-                    namespace, name, incarnation, config
-                )
+                return self._build_collection_handle(live)
             # The last lookup found the collection pending.
-            if registered is not None:
-                raise VectorStoreCollectionPendingError(
-                    namespace, name, registered.registered_at
-                )
+            if pending_error is not None:
+                raise pending_error
             raise VectorStoreAttemptsExhaustedError(
                 f"Opening or creating collection ({namespace!r}, {name!r}) made "
                 f"no progress after {_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
             )
 
     async def _prepare_storage_or_unregister(
-        self,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-        incarnation: UUID,
+        self, pending: PendingRegistration
     ) -> None:
         """Prepare a pending collection's storage, unregistering it if that raises or is cancelled.
 
@@ -387,12 +359,12 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         it is deleted.
         """
         try:
-            await self._prepare_storage(namespace, config, incarnation)
+            await self._prepare_storage(
+                pending.namespace, pending.config, pending.incarnation
+            )
         except BaseException:
             # Shielded, so a cancelled creation still frees the name.
-            unregistration = asyncio.create_task(
-                self._collection_registry.unregister_incarnation(incarnation)
-            )
+            unregistration = asyncio.create_task(pending.unregister())
             self._unregistrations.add(unregistration)
             unregistration.add_done_callback(self._unregistrations.discard)
             try:
@@ -402,24 +374,18 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                     "Could not unregister collection (%r, %r) after its "
                     "storage preparation failed; it stays pending until "
                     "deleted",
-                    namespace,
-                    name,
+                    pending.namespace,
+                    pending.name,
                 )
             raise
 
     @override
     async def open_collection(self, *, namespace: str, name: str) -> CollectionT | None:
         require_identifiers(namespace, name)
-        registered = await self._collection_registry.get(namespace, name)
-        if registered is None:
+        live = await self._collection_registry.resolve(namespace, name)
+        if live is None:
             return None
-        if not registered.live:
-            raise VectorStoreCollectionPendingError(
-                namespace, name, registered.registered_at
-            )
-        return self._build_collection_handle(
-            namespace, name, registered.incarnation, registered.config
-        )
+        return self._build_collection_handle(live)
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
@@ -480,31 +446,20 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         raise NotImplementedError
 
     @abstractmethod
-    def _build_collection_handle(
-        self,
-        namespace: str,
-        name: str,
-        incarnation: UUID,
-        config: VectorStoreCollectionConfig,
-    ) -> CollectionT:
+    def _build_collection_handle(self, registration: LiveRegistration) -> CollectionT:
         """
-        Build a handle bound to a live collection's incarnation.
+        Build a handle bound to a live collection's registration.
 
         The collection's storage was prepared before it was marked live.
 
         Args:
-            namespace (str):
-                Namespace of the collection.
-            name (str):
-                Name of the collection within the namespace.
-            incarnation (UUID):
-                The incarnation the collection is registered under.
-            config (VectorStoreCollectionConfig):
-                The configuration the collection was created with.
+            registration (LiveRegistration):
+                The live collection's registration, which carries its
+                namespace, name, configuration and incarnation.
 
         Returns:
             CollectionT:
-                A handle bound to the incarnation, whose operations raise
+                A handle bound to the registration, whose operations raise
                 once the collection is deleted.
         """
         raise NotImplementedError
