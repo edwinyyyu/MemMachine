@@ -33,7 +33,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.collection_registry import (
-    LiveRegistration,
+    Registration,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -939,8 +939,8 @@ class TestDelete:
 
 
 @dataclass(frozen=True)
-class _CurrentRegistration(LiveRegistration):
-    """A live registration whose collection is never deleted."""
+class _CurrentRegistration(Registration):
+    """A registration whose collection is never deleted."""
 
     @override
     async def require_current(self) -> None:
