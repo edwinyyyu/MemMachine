@@ -103,7 +103,8 @@ async def _age_deletion(
 async def _blocked_or_done(engine: AsyncEngine, task: asyncio.Task) -> str:
     """Wait until `task` finishes ("done") or another backend waits on a lock ("blocked").
 
-    Decided by the database's own state (pg_stat_activity), not elapsed time.
+    Decided by the database's own state (pg_stat_activity); raises TimeoutError
+    if neither happens within 30 seconds.
     """
     deadline = asyncio.get_running_loop().time() + 30
     while not task.done():
@@ -611,8 +612,7 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
         for r in caplog.records
         if r.levelno == logging.ERROR and str(failing) in r.getMessage()
     ]
-    # Skipped from now on, but kept: its records stay reclaimable once its
-    # count is reset, and its incarnation is never re-minted.
+    # Skipped from now on, but kept in the queue.
     assert await _round(registry, any_records_found=False) == later
     assert await _round(registry, any_records_found=False) is None
     assert await _queued(registry) == [failing]

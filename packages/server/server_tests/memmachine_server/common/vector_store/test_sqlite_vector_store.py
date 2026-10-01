@@ -899,7 +899,6 @@ class TestDotProductMetric:
 
 class TestInputValidation:
     def test_record_requires_a_vector(self):
-        """The model rejects it, so no store has to re-check."""
         with pytest.raises(ValidationError):
             Record.model_validate({"uuid": uuid4()})
 

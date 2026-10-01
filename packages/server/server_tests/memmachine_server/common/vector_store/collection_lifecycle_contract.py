@@ -56,7 +56,7 @@ async def _fresh(store, name: str):
 
 
 class CollectionLifecycleContract:
-    """Mixed into a store's test class, with its `store` fixture, `count_stored` and `stored_uuids`."""
+    """Mixed into a store's test class, which supplies a `store` fixture and the `count_stored`, `stored_uuids` and `settle` hooks."""
 
     @staticmethod
     async def count_stored(store, namespace: str, config) -> int:
@@ -291,9 +291,6 @@ class CollectionLifecycleContract:
     async def test_an_upsert_checks_the_registry_twice_and_a_query_or_delete_once(
         self, store
     ):
-        """An upsert costs two registry round trips, around it, so an upsert
-        under an incarnation that died meanwhile raises; a query one, before
-        it; a delete one, after it."""
         collection = await _fresh(store, LIFECYCLE_NAME)
         record = _records(1)[0]
         checks = 0

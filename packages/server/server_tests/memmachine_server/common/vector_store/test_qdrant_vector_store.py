@@ -1239,10 +1239,9 @@ class TestMetrics:
 class TestCollectionLifecycleAcrossWorkers:
     """Collection creation has to survive more than one creator.
 
-    Run the server with MEMMACHINE_WORKERS above 1 and each worker gets its
-    own client and its own store over the one registry database, so two
-    workers can decide to create the same collection at the same moment, and
-    one can find the native collection already there without its indexes.
+    Stores on separate clients can share one registry database, so two can
+    decide to create the same collection at the same moment, and one can find
+    the native collection already there without its indexes.
 
     These need a real server: payload indexes have no effect in local-mode
     Qdrant, so the thing under test is invisible there.
@@ -1264,8 +1263,6 @@ class TestCollectionLifecycleAcrossWorkers:
 
         A second creator, another worker or a retry after one died between the
         two calls, finds the collection there and creates the indexes it lacks.
-        Without the tenant index on the incarnation, filtering stays correct but
-        the multitenant storage layout and its query speed are lost.
         """
         namespace, name = "raced_ns", "raced_name"
         config = self._config()
@@ -1337,8 +1334,8 @@ class TestCollectionLifecycleAcrossWorkers:
             info = await client_a.get_collection(native)
             indexed = set(info.payload_schema or {})
             assert _PAYLOAD_INCARNATION in indexed, (
-                "two workers raced and the tenant incarnation index was lost: the "
-                "loser skips index creation entirely. present: "
+                "two workers raced and the tenant incarnation index is missing. "
+                "present: "
                 f"{sorted(indexed)}"
             )
 

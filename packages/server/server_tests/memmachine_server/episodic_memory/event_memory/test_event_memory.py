@@ -127,8 +127,7 @@ class TestEncodeEvents:
         record = next(iter(fake_vector_store_collection.records.values()))
         props = _record_properties(record)
         assert props["_timestamp"] == event.timestamp
-        # The derivative's segment is not copied here; the segment store owns
-        # that mapping and answers it from the derivative's own row.
+        # The segment store maps the derivative to its segment.
         assert "_segment_uuid" not in props
         assert await fake_segment_store_partition.get_segment_uuids_by_derivative_uuids(
             [record.uuid]

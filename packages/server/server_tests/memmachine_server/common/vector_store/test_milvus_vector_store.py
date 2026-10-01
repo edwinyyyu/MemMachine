@@ -154,8 +154,7 @@ async def store(milvus_client, tmp_path):
     await registry_engine.dispose()
 
 
-# AsyncMilvusClient's constructor timeout bounds the connection, not a request,
-# so every request must carry its own.
+# The client requests the store makes; each must carry the store's timeout.
 _CLIENT_REQUESTS = (
     "has_collection",
     "create_collection",
@@ -680,7 +679,7 @@ class TestFilters:
     @pytest.mark.asyncio
     async def test_negation_is_the_complement_missing_values_included(self, collection):
         """A condition on a property with no value is false, so its negation,
-        `!=` included, holds there, as on Qdrant."""
+        `!=` included, holds there."""
         r1, r2, r3, v1 = await self._setup(collection)
         bare = _make_record(vector=_normalize([1.0, 0.3, 0.0]), properties={})
         await collection.upsert(records=[bare])
@@ -931,8 +930,7 @@ class TestDelete:
 
 @pytest.mark.asyncio
 async def test_a_delete_milvus_does_not_accept_in_full_raises():
-    """pymilvus's async client returns for a delete Milvus rejected; the store
-    compares the primary keys Milvus accepted with those it sent."""
+    """A delete Milvus accepts for fewer primary keys than the store sent raises."""
     client = MagicMock(spec=AsyncMilvusClient)
     client.delete = AsyncMock(return_value={"delete_count": 0})
     incarnation = uuid4()
