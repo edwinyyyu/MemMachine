@@ -370,7 +370,7 @@ class CollectionLifecycleContract:
         async def vanished(namespace, name) -> None:
             return None
 
-        monkeypatch.setattr(registry, "register", lost)
+        monkeypatch.setattr(registry, "reserve", lost)
         monkeypatch.setattr(registry, "resolve", vanished)
         monkeypatch.setattr(
             registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
@@ -390,33 +390,33 @@ class CollectionLifecycleContract:
     async def test_open_or_create_opens_the_winner_after_losing_the_create(
         self, store, monkeypatch
     ):
-        """A creator whose registration loses to another process's opens
+        """A creator whose reservation loses to another process's opens
         the winner's collection, bound to the winner's life."""
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        register_collection = registry.register
-        lost_registrations = 0
+        reserve = registry.reserve
+        lost_reservations = 0
 
         async def another_process_wins(namespace, name, config):
             # The other process creates the collection between this caller's
-            # lookup and its own registration.
-            nonlocal lost_registrations
-            lost_registrations += 1
-            pending = await register_collection(namespace, name, config)
-            await store._prepare_storage(namespace, config, pending.incarnation)
-            await pending.mark_live()
+            # lookup and its own reservation.
+            nonlocal lost_reservations
+            lost_reservations += 1
+            reservation = await reserve(namespace, name, config)
+            await store._prepare_storage(namespace, config, reservation.incarnation)
+            await reservation.confirm()
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
-        monkeypatch.setattr(registry, "register", another_process_wins)
+        monkeypatch.setattr(registry, "reserve", another_process_wins)
         collection = await store.open_or_create_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
         monkeypatch.undo()
 
         # It lost once, then found the winner instead of registering again.
-        assert lost_registrations == 1
+        assert lost_reservations == 1
 
         winner = await registry.resolve(LIFECYCLE_NAMESPACE, LIFECYCLE_NAME)
         assert winner is not None
@@ -442,18 +442,18 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        register_collection = registry.register
+        reserve = registry.reserve
         other_config = VectorStoreCollectionConfig(vector_dimensions=4)
-        lost_registrations = 0
+        lost_reservations = 0
 
         async def another_process_wins(namespace, name, config):
-            nonlocal lost_registrations
-            lost_registrations += 1
-            pending = await register_collection(namespace, name, other_config)
-            await pending.mark_live()
+            nonlocal lost_reservations
+            lost_reservations += 1
+            reservation = await reserve(namespace, name, other_config)
+            await reservation.confirm()
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
-        monkeypatch.setattr(registry, "register", another_process_wins)
+        monkeypatch.setattr(registry, "reserve", another_process_wins)
         with pytest.raises(VectorStoreCollectionConfigMismatchError):
             await store.open_or_create_collection(
                 namespace=LIFECYCLE_NAMESPACE,
@@ -461,7 +461,7 @@ class CollectionLifecycleContract:
                 config=LIFECYCLE_CONFIG,
             )
         monkeypatch.undo()
-        assert lost_registrations == 1
+        assert lost_reservations == 1
         await store.delete_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
@@ -476,7 +476,7 @@ class CollectionLifecycleContract:
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
         )
         registry = store._collection_registry
-        register_collection = registry.register
+        reserve = registry.reserve
         lost = False
 
         async def lose_once(namespace, name, config):
@@ -484,9 +484,9 @@ class CollectionLifecycleContract:
             if not lost:
                 lost = True
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name)
-            return await register_collection(namespace, name, config)
+            return await reserve(namespace, name, config)
 
-        monkeypatch.setattr(registry, "register", lose_once)
+        monkeypatch.setattr(registry, "reserve", lose_once)
 
         collection = await store.open_or_create_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
