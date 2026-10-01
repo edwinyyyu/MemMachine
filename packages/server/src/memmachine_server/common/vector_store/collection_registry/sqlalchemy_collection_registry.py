@@ -66,8 +66,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
 
-# The first SQLite with RETURNING, which unregistration and counting a failed
-# purge round use.
+# The first SQLite with RETURNING, which the registry uses.
 _MIN_SQLITE_VERSION = (3, 35)
 
 # Consecutive failed purge rounds after which a tombstone is dead-lettered.
