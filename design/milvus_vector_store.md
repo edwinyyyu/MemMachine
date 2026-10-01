@@ -1,17 +1,15 @@
 # Milvus vector store
 
-How the Milvus store meets the shared contracts: [collection
-registry](vector_store_collection_registry.md),
+How the Milvus store meets the shared contracts: [partition
+registry](vector_store_partition_registry.md),
 [purge](vector_store_purge.md), [consistency](vector_store_consistency.md),
 [isolation](vector_store_isolation.md).
 
 ## Layout
 
-- **One native collection per namespace and configuration**, named
-  `memmachine_{namespace}__{sha256(config)}`, the digest over the
-  configuration's JSON. It holds every logical collection of that namespace
-  and configuration, one incarnation each. Admitting a collection creates
-  nothing in Milvus unless its configuration is new.
+- **One native collection per store**, named `sys_` followed by the vector
+  store name. It holds every partition of the store, one incarnation each.
+  Creating a partition creates nothing in Milvus.
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
   `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
@@ -36,8 +34,8 @@ registry](vector_store_collection_registry.md),
   a TIMESTAMPTZ field holding its instant, written in UTC: a filter compares
   only instants, a search answers with record UUIDs and scores, and Milvus
   refuses an offset with a seconds component. Milvus caps a collection at
-  `proxy.maxFieldNum` fields (64 on 2.6, 256 on 3.0), so a configuration
-  declares at most 59 properties on 2.6.
+  `proxy.maxFieldNum` fields (64 on 2.6, 256 on 3.0), so a store declares at
+  most 59 properties on 2.6.
   Undeclared properties go in the JSON field, still filterable by path.
   Negation is the complement, as on Qdrant: a negated condition holds where
   the property has no value, which Milvus's SQL-style null evaluation does not
@@ -56,9 +54,9 @@ registry](vector_store_collection_registry.md),
   which the server refuses above `common.JSONMaxLength` bytes (65,536 unless
   configured). A declared property's field name is its key, at most 32
   bytes, under `_p_`, within `proxy.maxNameLength` (255 unless configured).
-- **Creation converges:** the collection and its indexes (named by their
-  fields) are created only when missing, and the collection is loaded, a
-  no-op when it is loaded already.
+- **Startup converges:** the collection and its indexes (named by their
+  fields) are created at startup only when missing, and the collection is
+  loaded, a no-op when it is loaded already.
 - **A delete raises unless Milvus accepted every key sent.** Milvus counts the
   primary keys a delete accepts, present or not (milvus-io/milvus#51566), and
   pymilvus's async client returns that count for a delete Milvus rejected, so
@@ -103,7 +101,7 @@ default says to raise `ef` and `refine_k` if recall is insufficient
 (milvus-io/milvus#47386). The store keeps every default but `refine_k`.
 
 Measured on Milvus 2.6.24 (180k vectors of 384 dimensions from a mixture of
-64 clusters; tenants of 100k, 10k, 1k, and 100 rows; 100 queries per tenant
+64 clusters; tenants of 100k, 10k, 1k and 100 rows; 100 queries per tenant
 size; recall@k against exact search within the tenant), on the 100k-row
 tenant, over two runs unless marked:
 
@@ -127,14 +125,14 @@ runs, MemMachine's own HNSW engines' parameters (hnswlib and usearch: M=16,
 efConstruction=128) recalled up to 0.03 less than AUTOINDEX's and at most
 0.002 more, and building took 1.3 to 1.7 times as long with AUTOINDEX's.
 Raising `ef` changed little once enough candidates were rescored; `refine_k`
-decided it (with `ef = max(k, 128)`: 0.80, 0.94, and 0.99 at recall@10 for
-`refine_k` of 1, 2, and 4, one run). With the default `ef`, `refine_k = 8` is
+decided it (with `ef = max(k, 128)`: 0.80, 0.94 and 0.99 at recall@10 for
+`refine_k` of 1, 2 and 4, one run). With the default `ef`, `refine_k = 8` is
 the least measured that comes within 0.01 of float32 HNSW searched with
 `ef = max(k, 128)` at k=10 and beats it at k=100, at a latency within noise
 of `refine_k = 4`; 16 recalls within noise of 8 and adds 1 ms at k=100.
 
 Memory, measured on Milvus 3.0.2 at 600k vectors of 768 dimensions (tenants
-of 200k, 50k, 5k, and 2,000 of 100; 4 CPUs; one run): HNSW_SQ took 0.8 GB less
+of 200k, 50k, 5k and 2,000 of 100; 4 CPUs; one run): HNSW_SQ took 0.8 GB less
 than float32 HNSW and 2.9 against 3.7 ms of CPU per search on the 200k
 tenant, at similar recall. Partition-key isolation halved the index-build CPU
 there (855 against 448 CPU-seconds) for about 0.2 GB more memory, with search
@@ -144,8 +142,8 @@ throughput unchanged.
 
 The incarnation is in the primary key because Milvus's upsert deletes by
 primary key in every partition (`AllPartitionsID`) before inserting: with the
-bare record UUID as the key, one collection's upsert would delete another
-collection's record of the same UUID. With the composite key, two collections'
+bare record UUID as the key, one partition's upsert would delete another
+partition's record of the same UUID. With the composite key, two partitions'
 records of one UUID are two entities, and a reused UUID's record is simply
 stored, which meets the [isolation](vector_store_isolation.md) guarantee. The
 record UUID is also kept in its own field, which reads return. Measured
@@ -168,11 +166,8 @@ variation.
 
 Bounded batches. A round lists up to `purge_batch_size` of the incarnation's
 primary keys, by a query on the incarnation field at the store's read level,
-and deletes them by key. It first creates the native collection's missing
-indexes and loads it, as a creation does: a creation that failed partway can
-leave it unindexed and unloaded, and only a loaded collection answers the
-listing. Measured (Milvus 3.0.2; 2.11M points in this layout,
-dead incarnations of 10k to 1M among live tenants under search, upsert, and
+and deletes them by key. Measured (Milvus 3.0.2; 2.11M points in this layout,
+dead incarnations of 10k to 1M among live tenants under search, upsert and
 scroll traffic; 2 CPUs / 4 GB): rounds stayed flat at about 100 ms to the end
 of a 1M purge, with at most a 0.3 s stall for other tenants; one filter-delete
 of 1M points instead stalled every tenant's reads and writes for 2.7-9 s at
