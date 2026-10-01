@@ -40,7 +40,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.utils import ensure_tz_aware
 
-from .collection_registry import LiveRegistration
+from .collection_registry import Registration
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -242,10 +242,10 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         *,
         client: AsyncQdrantClient,
         native_collection_name: str,
-        registration: LiveRegistration,
+        registration: Registration,
         tracker: OperationTracker,
     ) -> None:
-        """Initialize with a Qdrant client and the live registration the handle is bound to."""
+        """Initialize with a Qdrant client and the registration the handle is bound to."""
         super().__init__(registration=registration, tracker=tracker)
         self._client = client
         self._native_collection_name = native_collection_name
@@ -443,7 +443,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
 
     @override
     def _build_collection_handle(
-        self, registration: LiveRegistration
+        self, registration: Registration
     ) -> QdrantVectorStoreCollection:
         return QdrantVectorStoreCollection(
             client=self._client,
