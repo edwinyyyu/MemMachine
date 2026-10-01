@@ -424,7 +424,7 @@ class EventMemory:
         )
         t_vector_query = time.monotonic()
 
-        segment_by_derivative = (
+        segments_by_derivatives = (
             await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
                 match.record_uuid for match in query_result.matches
             )
@@ -435,7 +435,7 @@ class EventMemory:
         # First occurrence has the best score since matches are ordered best-to-worst.
         seed_embedding_scores: dict[UUID, float] = {}
         for match in query_result.matches:
-            segment_uuid = segment_by_derivative.get(match.record_uuid)
+            segment_uuid = segments_by_derivatives.get(match.record_uuid)
             if segment_uuid is None:
                 # The derivative's segment is gone; its vector outlived it.
                 continue
