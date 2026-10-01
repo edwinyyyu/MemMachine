@@ -2,8 +2,9 @@
 
 import asyncio
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -31,7 +32,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionSchemaMismatchError,
 )
 from memmachine_server.common.vector_store.partition_registry import (
-    RegisteredPartition,
+    LiveRegistration,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
@@ -312,30 +313,33 @@ class TestUpsertAndQuery:
         assert len(all_results) == 0
 
 
+@dataclass(frozen=True)
+class _CurrentRegistration(LiveRegistration):
+    """A live registration whose partition is never deleted."""
+
+    @override
+    async def require_current(self) -> None:
+        return None
+
+
 def _partition_on(client: AsyncQdrantClient) -> QdrantVectorStorePartition:
     """A handle on a given client, bound to a live incarnation."""
-    incarnation = uuid4()
     return QdrantVectorStorePartition(
         client=client,
         vector_store_name=VECTOR_STORE_NAME,
-        partition_key=NAME,
-        incarnation=incarnation,
+        registration=_CurrentRegistration(
+            partition_key=NAME,
+            schema=PartitionSchema(
+                vector_dimensions=VECTOR_DIM,
+                similarity_metric=SimilarityMetric.COSINE,
+                indexed_properties={},
+            ),
+            incarnation=uuid4(),
+        ),
         vector_dimensions=VECTOR_DIM,
         similarity_metric=SimilarityMetric.COSINE,
         indexed_properties={},
         tracker=OperationTracker(None, prefix="test"),
-        get_registered_partition=AsyncMock(
-            return_value=RegisteredPartition(
-                incarnation=incarnation,
-                schema=PartitionSchema(
-                    vector_dimensions=VECTOR_DIM,
-                    similarity_metric=SimilarityMetric.COSINE,
-                    indexed_properties={},
-                ),
-                live=True,
-                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
-            )
-        ),
     )
 
 
