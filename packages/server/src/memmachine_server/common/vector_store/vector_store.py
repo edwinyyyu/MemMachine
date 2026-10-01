@@ -26,6 +26,9 @@ class VectorStoreCollection(ABC):
     Identified by a (namespace, name) pair.
     All data operations are scoped to this logical collection.
 
+    An `upsert` or `delete` is durable once it returns; queries may not
+    reflect it right away. A store that guarantees more states it.
+
     Implementations must support storing and filtering on record properties
     not declared in the configured indexed properties schema.
 
