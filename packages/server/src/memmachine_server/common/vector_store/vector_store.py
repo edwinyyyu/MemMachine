@@ -222,6 +222,8 @@ class VectorStore(ABC):
         Raises:
             VectorStorePartitionAlreadyExistsError: If the partition already exists,
                 or is being created.
+            VectorStorePartitionDeletedError: If the partition was deleted
+                before its creation completed.
             VectorStoreAttemptsExhaustedError: If the store gave up creating the
                 partition after repeated attempts that made no progress.
         """
