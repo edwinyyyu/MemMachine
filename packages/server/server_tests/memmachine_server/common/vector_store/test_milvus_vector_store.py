@@ -3,8 +3,9 @@
 # ruff: noqa: E402
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -43,7 +44,7 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStorePartition,
 )
 from memmachine_server.common.vector_store.partition_registry import (
-    RegisteredPartition,
+    LiveRegistration,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
@@ -943,34 +944,37 @@ class TestDelete:
         assert await _stored(collection, [record.uuid]) == {}
 
 
+@dataclass(frozen=True)
+class _CurrentRegistration(LiveRegistration):
+    """A live registration whose partition is never deleted."""
+
+    @override
+    async def require_current(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_a_delete_milvus_does_not_accept_in_full_raises():
     """A delete Milvus accepts for fewer primary keys than the store sent raises."""
     client = MagicMock(spec=AsyncMilvusClient)
     client.delete = AsyncMock(return_value={"delete_count": 0})
-    incarnation = uuid4()
     partition = MilvusVectorStorePartition(
         client=client,
         collection_name=f"sys_{VECTOR_STORE_NAME}",
         vector_store_name=VECTOR_STORE_NAME,
-        partition_key=NAME,
-        incarnation=incarnation,
+        registration=_CurrentRegistration(
+            partition_key=NAME,
+            schema=PartitionSchema(
+                vector_dimensions=VECTOR_DIM,
+                similarity_metric=SimilarityMetric.COSINE,
+                indexed_properties={},
+            ),
+            incarnation=uuid4(),
+        ),
         vector_dimensions=VECTOR_DIM,
         similarity_metric=SimilarityMetric.COSINE,
         indexed_properties={},
         tracker=OperationTracker(None, prefix="test"),
-        get_registered_partition=AsyncMock(
-            return_value=RegisteredPartition(
-                incarnation=incarnation,
-                schema=PartitionSchema(
-                    vector_dimensions=VECTOR_DIM,
-                    similarity_metric=SimilarityMetric.COSINE,
-                    indexed_properties={},
-                ),
-                live=True,
-                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
-            )
-        ),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 

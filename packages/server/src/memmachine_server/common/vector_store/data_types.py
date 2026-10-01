@@ -114,16 +114,34 @@ class VectorStorePartitionPendingError(Exception):
     """Raised when opening a partition whose creation has not completed."""
 
     def __init__(
-        self, vector_store_name: str, partition_key: str, registered_at: datetime
+        self,
+        vector_store_name: str,
+        partition_key: str,
+        registered_at: datetime,
+        schema: PartitionSchema,
     ) -> None:
-        """Initialize with the vector store, the key and the registration time of the pending partition."""
+        """Initialize with the pending partition's vector store, key, registration time and schema."""
         self.vector_store_name = vector_store_name
         self.partition_key = partition_key
         self.registered_at = registered_at
+        self.schema = schema
         super().__init__(
             f"Partition {partition_key!r} of vector store {vector_store_name!r} has "
             f"been pending since {registered_at.isoformat()}; if its creation was "
             "abandoned, delete it to create it again."
+        )
+
+
+class VectorStorePartitionDeletedError(Exception):
+    """Raised when a partition is deleted before its creation completes."""
+
+    def __init__(self, vector_store_name: str, partition_key: str) -> None:
+        """Initialize with the vector store and the key of the deleted partition."""
+        self.vector_store_name = vector_store_name
+        self.partition_key = partition_key
+        super().__init__(
+            f"Partition {partition_key!r} of vector store {vector_store_name!r} was "
+            "deleted before its creation completed"
         )
 
 
