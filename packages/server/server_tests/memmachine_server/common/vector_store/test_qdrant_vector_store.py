@@ -104,7 +104,7 @@ async def registry_engine(tmp_path):
 
 
 async def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
-    """Parameters for one store: its own provisioned registry over the shared registry database."""
+    """Parameters for one store: its own started registry over the shared registry database."""
     params: dict[str, Any] = {
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
@@ -122,14 +122,13 @@ async def _params(client, registry_engine, **overrides) -> QdrantVectorStorePara
             tombstone_retention_seconds=0,
         )
     )
-    await params["partition_registry"].provision()
+    await params["partition_registry"].startup()
     return QdrantVectorStoreParams(**params)
 
 
 @pytest_asyncio.fixture
 async def store(any_qdrant_client, registry_engine):
     s = QdrantVectorStore(await _params(any_qdrant_client, registry_engine))
-    await s.provision()
     await s.startup()
     yield s
 
@@ -1163,7 +1162,6 @@ class TestMetrics:
         store = QdrantVectorStore(
             await _params(qdrant_client, registry_engine, metrics_factory=mock_factory)
         )
-        await store.provision()
         await store.startup()
 
         await store.create_partition("metrics_test")
@@ -1191,10 +1189,10 @@ class TestMetrics:
 
 @pytest.mark.integration
 class TestCollectionProvisioningAcrossWorkers:
-    """Provisioning has to survive more than one provisioner.
+    """Startup has to survive more than one store starting.
 
     Stores on separate clients can share one registry database, so two can
-    provision the same collection at the same moment, and one can find the
+    start up on the same collection at the same moment, and one can find the
     native collection already there without its indexes.
 
     These need a real server: payload indexes have no effect in local-mode
@@ -1207,13 +1205,13 @@ class TestCollectionProvisioningAcrossWorkers:
     ):
         """A collection that exists without its indexes still gets them.
 
-        A second provisioner, another worker or a retry after one died between
-        the two calls, finds the collection there and creates the indexes it
-        lacks.
+        A second store starting, another worker's or a retry after one died
+        between the two calls, finds the collection there and creates the
+        indexes it lacks.
         """
         native, name = "raced", "raced_name"
 
-        # Stand in for a provisioner that got as far as the collection and no further.
+        # Stand in for a startup that got as far as the collection and no further.
         await qdrant_client.create_collection(
             collection_name=native,
             vectors_config=models.VectorParams(
@@ -1224,7 +1222,6 @@ class TestCollectionProvisioningAcrossWorkers:
         store = QdrantVectorStore(
             await _params(qdrant_client, registry_engine, vector_store_name=native)
         )
-        await store.provision()
         await store.startup()
         try:
             await store.open_or_create_partition(name)
@@ -1262,9 +1259,7 @@ class TestCollectionProvisioningAcrossWorkers:
         store_b = QdrantVectorStore(
             await _params(client_b, registry_engine, vector_store_name=native)
         )
-        await store_a.provision()
         await store_a.startup()
-        await store_b.provision()
         await store_b.startup()
 
         try:

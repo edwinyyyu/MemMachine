@@ -84,7 +84,7 @@ def _make_record(
 
 
 async def _params(client, registry_engine, **overrides) -> MilvusVectorStoreParams:
-    """Parameters for one store: its own provisioned registry over the shared registry database."""
+    """Parameters for one store: its own started registry over the shared registry database."""
     params: dict[str, Any] = {
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
@@ -105,7 +105,7 @@ async def _params(client, registry_engine, **overrides) -> MilvusVectorStorePara
             tombstone_retention_seconds=0,
         )
     )
-    await params["partition_registry"].provision()
+    await params["partition_registry"].startup()
     return MilvusVectorStoreParams(**params)
 
 
@@ -163,7 +163,6 @@ async def store(milvus_client, tmp_path):
         f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
     )
     vector_store = MilvusVectorStore(await _params(milvus_client, registry_engine))
-    await vector_store.provision()
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
@@ -191,13 +190,12 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
         spies[name] = MagicMock(wraps=getattr(store._client, name))
         monkeypatch.setattr(store._client, name, spies[name])
 
-    # A collection of its own, so provisioning creates it through the spies.
+    # A collection of its own, so startup creates it through the spies.
     timed = MilvusVectorStore(
         await _params(
             store._client, store._partition_registry._engine, vector_store_name="timed"
         )
     )
-    await timed.provision()
     await timed.startup()
     await timed.create_partition("timed")
     coll = await timed.get_partition("timed")
@@ -236,10 +234,10 @@ async def collection(store):
 class TestPartitionLifecycle:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failing_step", ["create_index", "load_collection"])
-    async def test_a_provisioning_that_failed_part_way_is_as_if_never_attempted(
+    async def test_a_startup_that_failed_part_way_is_as_if_never_attempted(
         self, store, monkeypatch, failing_step
     ):
-        """The next provisioning completes the native collection a failed one left behind."""
+        """The next startup completes the native collection a failed one left behind."""
         partial = MilvusVectorStore(
             await _params(
                 store._client,
@@ -255,9 +253,9 @@ class TestPartitionLifecycle:
         with monkeypatch.context() as patch:
             patch.setattr(store._client, failing_step, refuse)
             with pytest.raises(pymilvus.MilvusException, match="refused"):
-                await partial.provision()
+                await partial.startup()
 
-        await partial.provision()
+        await partial.startup()
         await partial.create_partition("partial")
         coll = await partial.get_partition("partial")
         assert coll is not None
@@ -328,7 +326,7 @@ class TestPartitionLifecycle:
                 vector_store_name="0_digit_first",
             )
         )
-        await digit_first.provision()
+        await digit_first.startup()
         await digit_first.create_partition("digit_first")
         assert await digit_first.get_partition("digit_first") is not None
         await digit_first.delete_partition("digit_first")
@@ -905,7 +903,6 @@ class TestScores:
                 similarity_metric=metric,
             )
         )
-        await scored.provision()
         await scored.startup()
         await scored.delete_partition("scores")
         await scored.create_partition("scores")

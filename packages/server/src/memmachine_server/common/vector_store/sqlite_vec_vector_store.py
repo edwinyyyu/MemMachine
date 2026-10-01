@@ -475,13 +475,9 @@ class SQLiteVecVectorStore(VectorStore):
         return self._indexed_properties
 
     @override
-    async def provision(self) -> None:
+    async def startup(self) -> None:
         async with self._engine.begin() as connection:
             await connection.run_sync(BaseSQLiteVecVectorStore.metadata.create_all)
-
-    @override
-    async def startup(self) -> None:
-        pass
 
     @override
     async def shutdown(self) -> None:
