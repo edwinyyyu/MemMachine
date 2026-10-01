@@ -2,8 +2,7 @@
 Abstract base class for a vector store.
 
 A store is one collection: a body of records searched together, with one
-dimensionality, one similarity metric and one declared schema, named at
-construction. Within it, a partition holds one tenant's records, and
+dimensionality and one declared schema, named at construction. Within it, a partition holds one tenant's records, and
 `VectorStorePartition` is the handle a data consumer holds for it.
 """
 
@@ -11,7 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -46,12 +45,6 @@ class VectorStorePartition(ABC):
     @abstractmethod
     def partition_key(self) -> str:
         """The key this handle is bound to."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def similarity_metric(self) -> SimilarityMetric:
-        """The metric every query of this partition scores by."""
         raise NotImplementedError
 
     @property
@@ -92,13 +85,13 @@ class VectorStorePartition(ABC):
         *,
         query_vectors: Iterable[Sequence[float]],
         limit: int,
-        score_threshold: float | None = None,
+        min_cosine_similarity: float | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
         """
         Query for records matching the criteria by query vectors.
 
-        Each match holds a record's UUID and score.
+        Each match holds a record's UUID and cosine similarity.
 
         Args:
             query_vectors (Iterable[Sequence[float]]):
@@ -106,10 +99,10 @@ class VectorStorePartition(ABC):
             limit (int):
                 Maximum number of matching records to return per query vector;
                 positive.
-            score_threshold (float | None):
-                The worst score a match may have, by the store's
-                similarity metric; a match scoring exactly the threshold is
-                returned (default: None).
+            min_cosine_similarity (float | None):
+                If provided, only return matches whose cosine similarity
+                is greater than or equal to this value
+                (default: None).
             property_filter (FilterExpr | None):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
@@ -124,8 +117,8 @@ class VectorStorePartition(ABC):
             ValueError:
                 If the limit is not positive, a query vector does not have
                 the store's dimensions or has a coordinate that is not
-                finite, the score threshold is not finite, or the property
-                filter names an invalid property key.
+                finite, the minimum cosine similarity is not finite, or the
+                property filter names an invalid property key.
         """
         raise NotImplementedError
 
@@ -150,12 +143,12 @@ class VectorStore(ABC):
     Abstract base class for a vector store.
 
     A store is one collection, named at construction with its vector
-    dimensions, its similarity metric and its declared schema; the
-    composition root builds one store per collection it needs, and the
-    name is what keeps two stores over one engine or one client apart.
-    Every partition of the store shares the collection's dimensions,
-    metric and schema, and the schema is fixed for the life of the store's
-    data: changing it is a migration.
+    dimensions and its declared schema; the composition root builds one
+    store per collection it needs, and the name is what keeps two stores
+    over one engine or one client apart. Every partition of the store
+    shares the collection's dimensions and schema, and the schema is fixed
+    for the life of the store's data: changing it is a migration. Every
+    store scores by cosine similarity.
 
     A partition is identified by its key. A partition deleted and created
     again under the same key starts empty, and reclaiming the deleted one's
@@ -180,12 +173,6 @@ class VectorStore(ABC):
     @abstractmethod
     def vector_dimensions(self) -> int:
         """Dimensionality of every vector in the store."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def similarity_metric(self) -> SimilarityMetric:
-        """The metric every query of the store scores by."""
         raise NotImplementedError
 
     @property
@@ -248,8 +235,7 @@ class VectorStore(ABC):
         Raises:
             VectorStorePartitionSchemaMismatchError:
                 If the partition exists and was created under other
-                dimensions, another metric, or another declared schema
-                than this store's.
+                dimensions or another declared schema than this store's.
             VectorStorePartitionPendingError: If the partition's creation, by
                 another caller, did not complete within the store's attempts
                 to open it.
@@ -275,8 +261,8 @@ class VectorStore(ABC):
 
         Raises:
             VectorStorePartitionSchemaMismatchError:
-                If the partition was created under other dimensions,
-                another metric, or another declared schema than this store's.
+                If the partition was created under other dimensions or
+                another declared schema than this store's.
             VectorStorePartitionPendingError: If the partition's creation
                 has not completed.
         """
