@@ -56,7 +56,14 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
 )
-from .utils import validate_filter, validate_identifier
+from .declared_properties import require_declared_types
+from .utils import (
+    require_dimensions,
+    require_valid_query_vector,
+    require_valid_score_threshold,
+    validate_filter,
+    validate_identifier,
+)
 from .vector_search_engine import VectorSearchEngine
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -275,6 +282,11 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         records = list(records)
         if not records:
             return
+        for record in records:
+            require_declared_types(
+                record.properties, self._config.indexed_properties_schema
+            )
+            require_dimensions(record.vector, self._config.vector_dimensions)
 
         async with self._create_session() as session, session.begin():
             upsert_records = (
@@ -374,6 +386,9 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
         query_vectors = list(query_vectors)
         if not query_vectors:
             return []
+        for query_vector in query_vectors:
+            require_valid_query_vector(query_vector, self._config.vector_dimensions)
+        require_valid_score_threshold(score_threshold)
 
         if limit <= 0:
             return [QueryResult(matches=[]) for _ in query_vectors]

@@ -50,7 +50,14 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
 )
-from .utils import validate_filter, validate_identifier
+from .declared_properties import require_declared_types
+from .utils import (
+    require_dimensions,
+    require_valid_query_vector,
+    require_valid_score_threshold,
+    validate_filter,
+    validate_identifier,
+)
 from .vector_store import VectorStore, VectorStoreCollection
 
 _ID_FIELD = "id"
@@ -216,6 +223,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
             records = list(records)
+            for record in records:
+                require_declared_types(
+                    record.properties, self._config.indexed_properties_schema
+                )
+                require_dimensions(record.vector, self._config.vector_dimensions)
             if not records:
                 return
 
@@ -241,6 +253,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
+            for query_vector in query_vectors:
+                require_valid_query_vector(query_vector, self._config.vector_dimensions)
+            require_valid_score_threshold(score_threshold)
+            if property_filter is not None and not validate_filter(property_filter):
+                raise ValueError("Filter contains an invalid property key")
             if not query_vectors:
                 return []
             if limit <= 0:
@@ -248,8 +265,6 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
 
             filter_expr = self._partition_filter()
             if property_filter is not None:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
                 property_expr = self._build_milvus_filter(property_filter)
                 filter_expr = f"({filter_expr}) && ({property_expr})"
 

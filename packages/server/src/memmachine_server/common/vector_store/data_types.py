@@ -3,7 +3,13 @@
 from collections.abc import Mapping
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    FiniteFloat,
+    field_serializer,
+    field_validator,
+)
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
@@ -115,14 +121,14 @@ class Record(BaseModel):
         uuid (UUID):
             Unique identifier for the record.
         vector (list[float]):
-            Vector for similarity search.
+            Vector for similarity search, of finite coordinates.
         properties (dict[str, PropertyValue]):
             Property key-value pairs to filter on
             (default: `{}`).
     """
 
     uuid: UUID
-    vector: list[float]
+    vector: list[FiniteFloat]
     properties: dict[str, PropertyValue] = Field(default_factory=dict)
 
     @field_validator("properties", mode="after")

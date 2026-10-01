@@ -57,6 +57,12 @@ class VectorStoreCollection(ABC):
                 Records containing properties
                 not in the indexed properties schema
                 are allowed.
+
+        Raises:
+            ValueError:
+                If a record's declared property holds a value of another
+                type, or its vector does not have the collection's
+                dimensions.
         """
         raise NotImplementedError
 
@@ -91,6 +97,13 @@ class VectorStoreCollection(ABC):
             list[QueryResult]:
                 Results for each query vector,
                 ordered as in the input iterable.
+
+        Raises:
+            ValueError:
+                If a query vector does not have the collection's dimensions
+                or has a coordinate that is not finite, the score threshold
+                is not finite, or the property filter names an invalid
+                property key.
         """
         raise NotImplementedError
 

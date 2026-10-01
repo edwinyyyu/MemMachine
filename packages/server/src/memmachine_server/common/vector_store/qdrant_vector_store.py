@@ -52,7 +52,14 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
 )
-from .utils import validate_filter, validate_identifier
+from .declared_properties import require_declared_types
+from .utils import (
+    require_dimensions,
+    require_valid_query_vector,
+    require_valid_score_threshold,
+    validate_filter,
+    validate_identifier,
+)
 from .vector_store import VectorStore, VectorStoreCollection
 
 # Point payload keys (stored on every Qdrant point).
@@ -275,6 +282,12 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
     ) -> None:
         """Upsert records into the collection."""
         async with self._tracker("upsert"):
+            records = list(records)
+            for record in records:
+                require_declared_types(
+                    record.properties, self._config.indexed_properties_schema
+                )
+                require_dimensions(record.vector, self._config.vector_dimensions)
             points = [
                 models.PointStruct(
                     id=record.uuid,
@@ -313,13 +326,16 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
         """Query for records matching the criteria by query vectors."""
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
+            for query_vector in query_vectors:
+                require_valid_query_vector(query_vector, self._config.vector_dimensions)
+            require_valid_score_threshold(score_threshold)
+            if property_filter is not None and not validate_filter(property_filter):
+                raise ValueError("Filter contains an invalid property key")
             if not query_vectors:
                 return []
 
             partition_key_filter = _partition_filter(self._partition_key)
             if property_filter:
-                if not validate_filter(property_filter):
-                    raise ValueError("Filter contains an invalid property key")
                 property_qdrant_filter = (
                     QdrantVectorStoreCollection._build_qdrant_filter(property_filter)
                 )
