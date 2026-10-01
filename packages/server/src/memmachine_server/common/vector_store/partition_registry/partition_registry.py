@@ -66,8 +66,12 @@ class VectorStorePartitionRegistry(ABC):
     """
 
     @abstractmethod
-    async def provision(self) -> None:
-        """Create the registry's durable resources, idempotently."""
+    async def startup(self) -> None:
+        """
+        Make the registry ready for use, creating its durable resources idempotently.
+
+        Its owner calls it before the first use.
+        """
         raise NotImplementedError
 
     @abstractmethod

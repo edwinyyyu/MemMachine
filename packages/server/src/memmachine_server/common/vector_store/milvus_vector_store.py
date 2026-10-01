@@ -504,7 +504,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
     @override
     async def _prepare_storage(self) -> None:
         # Each step runs when it is missing, and the collection is loaded, so
-        # the next provisioning completes one that failed part way.
+        # the next startup completes one that failed part way.
         index_params = self._client.prepare_index_params()
         index_params.add_index(
             field_name=_VECTOR_FIELD,
@@ -623,7 +623,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
         self, partition_key: str, incarnation: UUID
     ) -> None:
         # A partition is the entities carrying its incarnation in the
-        # store's one native collection, which provisioning prepared; it has no
+        # store's one native collection, which startup prepared; it has no
         # storage of its own.
         pass
 
