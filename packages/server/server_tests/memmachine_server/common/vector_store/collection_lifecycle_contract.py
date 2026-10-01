@@ -288,9 +288,12 @@ class CollectionLifecycleContract:
                 )
 
     @pytest.mark.asyncio
-    async def test_a_read_checks_the_registry_once_and_a_write_twice(self, store):
-        """A read costs one registry round trip, before it; a write two,
-        around it, so a write under an incarnation that died meanwhile raises."""
+    async def test_an_upsert_checks_the_registry_twice_and_a_query_or_delete_once(
+        self, store
+    ):
+        """An upsert costs two registry round trips, around it, so an upsert
+        under an incarnation that died meanwhile raises; a query one, before
+        it; a delete one, after it."""
         collection = await _fresh(store, LIFECYCLE_NAME)
         record = _records(1)[0]
         checks = 0
@@ -310,7 +313,7 @@ class CollectionLifecycleContract:
         assert checks == 1
         checks = 0
         await collection.delete(record_uuids=[record.uuid])
-        assert checks == 2
+        assert checks == 1
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

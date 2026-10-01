@@ -56,8 +56,9 @@ behind its choices.
 2. **Open.** The registry resolves `(namespace, name)` to the live incarnation
    and its configuration; the handle is bound to that incarnation.
 3. **Use.** Every record a handle writes carries its incarnation, and every
-   read and delete is scoped to it. Before each operation, and after each
-   write, the handle checks that its incarnation is still live.
+   read and delete is scoped to it. Before each upsert and query, and after
+   each upsert and delete, the handle checks that its incarnation is still
+   live.
 4. **Delete.** One registry transaction removes the collection's row and
    queues a tombstone. Every handle of that life is stale from then on, in
    every process.

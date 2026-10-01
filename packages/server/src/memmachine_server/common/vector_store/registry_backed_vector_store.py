@@ -148,11 +148,11 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         async with self._tracker("delete"):
+            # One check, after: a delete adds nothing a purge must reclaim,
+            # and a stale handle's delete reaches only its own incarnation.
             record_uuids = list(record_uuids)
-            await self._fence()
-            if not record_uuids:
-                return
-            await self._delete(record_uuids)
+            if record_uuids:
+                await self._delete(record_uuids)
             await self._fence()
 
     @abstractmethod
@@ -211,8 +211,9 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
         """
         Delete the handle's incarnation's records with these UUIDs.
 
-        Called between two liveness checks, with at least one UUID. A UUID
-        the collection holds no record under is not an error.
+        Called before a liveness check, with at least one UUID, possibly
+        through a handle whose collection was deleted. A UUID the collection
+        holds no record under is not an error.
 
         Args:
             record_uuids (list[UUID]): The UUIDs of the records to delete.

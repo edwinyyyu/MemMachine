@@ -239,8 +239,9 @@ where the backend is remote:
 
 - deletion is `DELETE ... RETURNING` then the queue insert, since there is no
   write fence to pin the row with;
-- a handle is fenced by a registry lookup before and after, not by a row lock
-  held across the write, since the write is not in the database;
+- a handle's upsert is fenced by a registry lookup before and after it (a
+  query by one before, a delete by one after), not by a row lock held across
+  the write, since the write is not in the database;
 - the purge is one tombstone per call, each backend deleting the way it
   measured best;
 - a tombstone waits out a retention, since a remote write can land after the
@@ -294,4 +295,4 @@ where the backend is remote:
   collections are no longer read, and existing records carry name-keyed values
   no incarnation resolves. No migration; pre-GA.
 - The liveness check costs every operation one primary-key lookup on the
-  registry's database (two for a write).
+  registry's database (two for an upsert).
