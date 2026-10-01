@@ -251,7 +251,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
         )
 
     @override
-    async def provision(self) -> None:
+    async def startup(self) -> None:
         async with self._engine.begin() as connection:
             await connection.run_sync(BasePartitionRegistry.metadata.create_all)
 
