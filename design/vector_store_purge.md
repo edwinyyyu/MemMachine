@@ -4,9 +4,9 @@ Part of [vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
-Deleting a Qdrant or Milvus collection with one filter-delete by name, issued
-when the collection is deleted, has three defects once more than one process
-serves a backend:
+Deleting a partition of a Qdrant or Milvus store with one filter-delete,
+issued when the partition is deleted, has three defects once more than one
+process serves a backend:
 
 - A write in flight during the deletion, from a handle in another process,
   lands after it and outlives it.
@@ -22,9 +22,9 @@ and retried.
 
 ### Tombstones
 
-`unregister` removes the collection's row and queues the incarnation's
-*tombstone* in one transaction (see [collection
-registry](vector_store_collection_registry.md)). The collection is unreachable
+`unregister` removes the partition's row and queues the incarnation's
+*tombstone* in one transaction (see [partition
+registry](vector_store_partition_registry.md)). The partition is unreachable
 when it commits. Its records stay in the backend until purge rounds reclaim
 them.
 
@@ -45,7 +45,7 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
 - **The retention decides nothing about validity.** A stale write is refused
   by the handle's check after it; the retention only has to outlast any write
   in flight. A write that lands after its tombstone is gone stays under a dead
-  incarnation no collection reads: leaked storage, never a wrong result.
+  incarnation no partition reads: leaked storage, never a wrong result.
 - **The configuration enforces a floor of 10 × `request_timeout_seconds` +
   300 s.** The request timeout is the only part of a write's time in flight
   the store knows. Neither Qdrant nor Milvus bounds how long a received write
@@ -62,38 +62,30 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
   order). A changed retention therefore reaches every tombstone already
   queued, and no client clock enters a decision.
 - An incarnation is never re-minted while its tombstone exists, so no new
-  collection can adopt, or have reclaimed out from under it, a dead life's
+  partition can adopt, or have reclaimed out from under it, a dead life's
   records.
 
 ### The purge round
 
-`VectorStore.purge_deleted_collections()` is part of the contract: each call
+`VectorStore.purge_deleted_partitions()` is part of the contract: each call
 does a bounded amount of work and returns whether it ran a round, `False` once
 nothing is due, so a caller drains the queue by calling it until `False`. On
 Qdrant and Milvus a call is one round on the tombstone that came due first;
 both SQLite stores, whose deletion reclaims physically, return `False`.
 
-`run_purge_round()` runs one round:
+A round runs inside `claim_purgeable_incarnation()`:
 
-1. **Claim.** One range on the `(vector_store_name, enqueued_at)` index: the
-   oldest due tombstone that is neither backing off nor dead-lettered,
-   `LIMIT 1`. On PostgreSQL it is selected `FOR UPDATE SKIP LOCKED`: a
-   concurrent purger skips a locked tombstone and takes the next, so purgers
-   on every process split a backlog without coordinating. SQLite has no row
-   locks, so there the claim is an `UPDATE` of the tombstone's row, which
-   opens SQLite's write transaction: purgers serialize at the claim, and
-   rounds run one at a time. SQLite's write lock covers the whole database
-   file and is then held across the round's remote calls, each bounded by the
-   store's request timeout (30 s by default). Every writer to that database
-   waits for it: the registry's, and those of every store sharing the
-   database, as the episode store, session manager, segment store and
-   configuration database do under the configuration wizard's defaults. Past
-   the driver's busy timeout (SQLite's 5 s default, which the server does not
-   change) they fail with a locked-database error.
-2. **Round.** The registry calls the store's round with the tombstone's
-   namespace, configuration and incarnation. The round looks for records under
-   the incarnation where the namespace and configuration locate them, deletes
-   what it finds (per backend, below), and returns whether it found any.
+1. **Claim.** One range on the `enqueued_at` index: the oldest due tombstone
+   that is neither backing off nor dead-lettered, `LIMIT 1`, under `FOR UPDATE
+   SKIP LOCKED`. On PostgreSQL a concurrent purger skips a locked tombstone
+   and takes the next, so purgers on every process split a backlog without
+   coordinating. SQLite holds no row lock, so two purgers can claim one
+   tombstone; that costs a repeated round and nothing more, since by the time
+   any round runs no write can land, so a round finding nothing still proves
+   the incarnation empty.
+2. **Round.** The store looks for records under the incarnation in its
+   native collection, deletes what it finds (per backend, below), and reports
+   whether it found any.
 3. **Record.** In the claim's transaction: a round that found nothing removes
    the tombstone, which frees the incarnation; a round that found records keeps
    it due and clears its failed rounds.
@@ -143,7 +135,7 @@ holds nothing: the round finds nothing, and the tombstone goes.
 
 The store never schedules its own purge. The resource manager starts one
 sweeper task per vector store the first time it hands the store out, and
-`close()` cancels them. A sweeper calls `purge_deleted_collections()` again
+`close()` cancels them. A sweeper calls `purge_deleted_partitions()` again
 after 1 s when it ran a round and after 60 s when nothing was due; a round that
 raises is logged and retried a tick later. Sweepers on other
 processes need no coordination: the claim arbitrates.
@@ -156,7 +148,7 @@ processes need no coordination: the claim arbitrates.
   PostgreSQL and 0.3 / 2.1 / 21 ms on SQLite with 1k / 10k / 100k tombstones
   backing off, and 0.15-0.3 ms with none.
 - Interference (PostgreSQL 16, the claim's earlier two-statement form; 20,000
-  live collections and 20,000 tombstones): with two sweepers running rounds
+  live registry rows and 20,000 tombstones): with two sweepers running rounds
   back to back, about 78 per second, beside 16 interactive workers,
   interactive throughput and the p99 of the handles' liveness lookup were
   unchanged within run-to-run noise on PostgreSQL. On SQLite, where the
