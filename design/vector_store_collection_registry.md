@@ -71,11 +71,10 @@ wrote it.
 ### Tables
 
 The registries of every vector store share two tables, defined once at module
-level as the segment store's are, and keyed by `vector_store_name`: the
-backend's key under `resources.databases`, which must match `[a-z0-9_]+` and
-be at most 32 bytes. Two registry objects under one name are one registry.
-One table pair with a key column, rather than a table pair per vector store,
-keeps the schema static.
+level as the segment store's are, and keyed by `vector_store_name`, the
+backend's key under `resources.databases`, of at most 255 characters. Two
+registry objects under one name are one registry. One table pair with a key
+column, rather than a table pair per vector store, keeps the schema static.
 
 `collection_registry_ct`, the registered collections, pending or live:
 

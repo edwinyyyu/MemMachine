@@ -53,7 +53,6 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.common.vector_store.utils import (
     _IDENTIFIER_MAX_BYTES,
-    validate_identifier,
 )
 
 from .collection_registry import (
@@ -65,6 +64,8 @@ from .collection_registry import (
 logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
+
+_VECTOR_STORE_NAME_MAX_LENGTH = 255
 
 # The first SQLite with RETURNING, which the registry uses.
 _MIN_SQLITE_VERSION = (3, 35)
@@ -85,7 +86,7 @@ class CollectionRow(BaseCollectionRegistry):
     __tablename__ = "collection_registry_ct"
 
     vector_store_name: MappedColumn[str] = mapped_column(
-        String(_IDENTIFIER_MAX_BYTES), primary_key=True
+        String(_VECTOR_STORE_NAME_MAX_LENGTH), primary_key=True
     )
     namespace: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), primary_key=True
@@ -112,7 +113,7 @@ class PurgeQueueRow(BaseCollectionRegistry):
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     vector_store_name: MappedColumn[str] = mapped_column(
-        String(_IDENTIFIER_MAX_BYTES), nullable=False
+        String(_VECTOR_STORE_NAME_MAX_LENGTH), nullable=False
     )
     namespace: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), nullable=False
@@ -152,9 +153,9 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
         engine (AsyncEngine):
             Async SQLAlchemy engine, on PostgreSQL or SQLite.
         vector_store_name (str):
-            The name the registry's rows are kept under: registry objects with
-            the same name on the same database are one registry. It must match
-            [a-z0-9_]+ and be at most 32 bytes.
+            The name the registry's rows are kept under, at most 255
+            characters: registry objects with the same name on the same
+            database are one registry.
         tombstone_retention_seconds (int):
             Seconds a deleted collection's records are kept before its purge
             starts, on the database clock. It must exceed, by orders of
@@ -173,9 +174,9 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
     vector_store_name: str = Field(
         ...,
         description=(
-            "The name the registry's rows are kept under: registry objects with "
-            "the same name on the same database are one registry. It must match "
-            "[a-z0-9_]+ and be at most 32 bytes"
+            "The name the registry's rows are kept under, at most 255 "
+            "characters: registry objects with the same name on the same "
+            "database are one registry"
         ),
     )
     tombstone_retention_seconds: int = Field(
@@ -218,16 +219,6 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
                 f"support the registry depends on. Use SQLite {minimum} or newer."
             )
         return engine
-
-    @field_validator("vector_store_name")
-    @classmethod
-    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
-        if not validate_identifier(vector_store_name):
-            raise ValueError(
-                f"Vector store name {vector_store_name!r} must match [a-z0-9_]+ "
-                "and be at most 32 bytes"
-            )
-        return vector_store_name
 
 
 class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):

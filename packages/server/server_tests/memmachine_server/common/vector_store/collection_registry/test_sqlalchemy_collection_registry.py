@@ -277,16 +277,17 @@ async def test_a_taken_name_is_already_exists_whatever_the_config(
         await registry.mark_live(incarnation)
 
 
-@pytest.mark.parametrize(
-    "invalid_name", ["", "Upper", "with-hyphen", "trailing_newline\n", "x" * 33]
-)
-def test_a_vector_store_name_must_be_an_identifier(invalid_name):
-    with pytest.raises(ValueError, match="Vector store name"):
-        SQLAlchemyVectorStoreCollectionRegistryParams(
-            engine=create_async_engine("sqlite+aiosqlite://"),
-            vector_store_name=invalid_name,
-            tombstone_retention_seconds=RETENTION_SECONDS,
-        )
+@pytest.mark.asyncio
+async def test_any_string_of_at_most_255_characters_names_a_registry(
+    sqlalchemy_engine, vector_store_name
+):
+    name = f"Store-{vector_store_name} ".ljust(255, "x")
+    registry = await _registry(sqlalchemy_engine, name)
+    incarnation = await registry.register(NAMESPACE, "c", CONFIG)
+
+    registered = await registry.get(NAMESPACE, "c")
+    assert registered is not None
+    assert registered.incarnation == incarnation
 
 
 def test_an_engine_of_another_dialect_is_refused(monkeypatch):
