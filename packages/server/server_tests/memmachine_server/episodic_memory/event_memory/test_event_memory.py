@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -224,7 +224,6 @@ class TestEncodeEvents:
     ):
         # Collection without context fields.
         collection = InMemoryVectorStorePartition(
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={
                 "_segment_uuid": str,
                 "_timestamp": datetime.datetime,
@@ -252,7 +251,6 @@ class TestEncodeEvents:
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
         # Collection without _timestamp — base field required at init.
         collection = InMemoryVectorStorePartition(
-            similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={
                 "_segment_uuid": str,
             },
@@ -1048,7 +1046,6 @@ class TestIngestFormatOptions:
     @staticmethod
     def _build(embedder: FakeEmbedder) -> EventMemory:
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=embedder.similarity_metric,
             indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
         )
         return EventMemory(
@@ -1087,7 +1084,6 @@ class TestIngestFormatOptions:
         embedder = _RecordingEmbedder()
         partition = InMemorySegmentStorePartition()
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=embedder.similarity_metric,
             indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
         )
         event_memory = EventMemory(

@@ -15,7 +15,6 @@ from memmachine_server.common.data_types import (
     OrderedValue,
     PropertyType,
     PropertyValue,
-    SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
@@ -242,7 +241,6 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         vector_store_name: str,
         registration: LiveRegistration,
         vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
     ) -> None:
@@ -251,7 +249,6 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
             vector_store_name=vector_store_name,
             registration=registration,
             vector_dimensions=vector_dimensions,
-            similarity_metric=similarity_metric,
             indexed_properties=indexed_properties,
             tracker=tracker,
         )
@@ -315,7 +312,7 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         query_vectors: list[list[float]],
         *,
         limit: int,
-        score_threshold: float | None,
+        min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
         qdrant_filter = _incarnation_filter(self._incarnation)
@@ -331,7 +328,7 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
             models.QueryRequest(
                 query=query_vector,
                 filter=qdrant_filter,
-                score_threshold=score_threshold,
+                score_threshold=min_cosine_similarity,
                 limit=limit,
                 with_vector=False,
                 with_payload=models.PayloadSelectorInclude(
@@ -350,7 +347,7 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
             QueryResult(
                 matches=[
                     QueryMatch(
-                        score=point.score,
+                        cosine_similarity=point.score,
                         record_uuid=UUID((point.payload or {})[_PAYLOAD_RECORD_UUID]),
                     )
                     for point in batch.points
@@ -396,14 +393,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
     payload.
     """
 
-    _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[
-        dict[SimilarityMetric, models.Distance]
-    ] = {
-        SimilarityMetric.COSINE: models.Distance.COSINE,
-        SimilarityMetric.DOT: models.Distance.DOT,
-        SimilarityMetric.EUCLIDEAN: models.Distance.EUCLID,
-        SimilarityMetric.MANHATTAN: models.Distance.MANHATTAN,
-    }
+    _QDRANT_DISTANCE: ClassVar[models.Distance] = models.Distance.COSINE
 
     _PROPERTY_TYPE_TO_INDEX_TYPE: ClassVar[
         dict[type[PropertyValue], models.PayloadSchemaType]
@@ -435,9 +425,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
 
     @override
     async def _prepare_storage(self) -> None:
-        distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-            self.similarity_metric
-        ]
+        distance = QdrantVectorStore._QDRANT_DISTANCE
         # The collection and each payload index are created under their own
         # already-exists guard, so a creation that finds the collection there
         # still creates the indexes it lacks.
@@ -499,7 +487,6 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
             vector_store_name=self.vector_store_name,
             registration=registration,
             vector_dimensions=self.vector_dimensions,
-            similarity_metric=self.similarity_metric,
             indexed_properties=self.indexed_properties,
             tracker=self._tracker,
         )

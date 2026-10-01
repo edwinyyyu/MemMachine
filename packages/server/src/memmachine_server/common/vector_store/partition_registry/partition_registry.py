@@ -156,7 +156,7 @@ class VectorStorePartitionRegistry(ABC):
             partition_key (str): The key of the partition.
             schema (PartitionSchema):
                 What the partition is created under: its store's
-                dimensions, metric and declared schema.
+                dimensions and declared schema.
 
         Returns:
             PendingRegistration: The new partition's registration.

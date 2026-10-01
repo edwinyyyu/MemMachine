@@ -606,7 +606,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
         [query_result] = await self._vector_partition.query(
             query_vectors=[vector_search_opts.query_embedding.tolist()],
             limit=limit,
-            score_threshold=vector_search_opts.min_distance,
+            min_cosine_similarity=vector_search_opts.min_distance,
         )
         matched_uuids = [match.record_uuid for match in query_result.matches]
         # Resolve hits through the column that owns the mapping, keeping the

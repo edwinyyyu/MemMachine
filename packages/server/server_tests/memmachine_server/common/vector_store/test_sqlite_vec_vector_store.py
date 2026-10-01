@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -94,7 +94,6 @@ def _params(engine, **overrides) -> SQLiteVecVectorStoreParams:
         "engine": engine,
         "vector_store_name": VECTOR_STORE_NAME,
         "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
         "indexed_properties": INDEXED_PROPERTIES,
     }
     params.update(overrides)
@@ -104,7 +103,7 @@ def _params(engine, **overrides) -> SQLiteVecVectorStoreParams:
 async def _store_with(
     store, vector_store_name: str, **overrides
 ) -> SQLiteVecVectorStore:
-    """Another store over the fixture's engine: its own collection, dimensions or metric."""
+    """Another store over the fixture's engine: its own collection, dimensions or declared schema."""
     other = SQLiteVecVectorStore(
         _params(store._engine, vector_store_name=vector_store_name, **overrides)
     )
@@ -182,17 +181,6 @@ class TestPartitionLifecycle:
         assert await store.get_partition("nope") is None
 
     @pytest.mark.asyncio
-    async def test_unsupported_metric_raises(self, store):
-        with pytest.raises(ValueError, match="sqlite-vec"):
-            SQLiteVecVectorStore(
-                _params(
-                    store._engine,
-                    vector_store_name="bad_metric",
-                    similarity_metric=SimilarityMetric.DOT,
-                )
-            )
-
-    @pytest.mark.asyncio
     async def test_invalid_partition_key_raises(self, store):
         with pytest.raises(ValueError, match="Invalid partition key"):
             await store.create_partition("INVALID")
@@ -219,7 +207,11 @@ class TestUpsertAndQuery:
 
         assert len(matches) == 3
         assert matches[0].record_uuid == r1.uuid
-        assert matches[0].score >= matches[1].score >= matches[2].score
+        assert (
+            matches[0].cosine_similarity
+            >= matches[1].cosine_similarity
+            >= matches[2].cosine_similarity
+        )
 
     @pytest.mark.asyncio
     async def test_upsert_update(self, collection):
@@ -247,7 +239,7 @@ class TestUpsertAndQuery:
         await collection.upsert(records=[r1, r2])
 
         query_results = await collection.query(
-            query_vectors=[v1], limit=10, score_threshold=0.9
+            query_vectors=[v1], limit=10, min_cosine_similarity=0.9
         )
         matches = query_results[0].matches
 
@@ -609,14 +601,14 @@ class TestFilters:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
-    async def test_a_score_threshold_that_is_not_finite_is_refused(
+    async def test_a_min_cosine_similarity_that_is_not_finite_is_refused(
         self, collection, threshold
     ):
         with pytest.raises(ValueError, match="not finite"):
             await collection.query(
                 query_vectors=[_normalize([1.0, 0.0, 0.0])],
                 limit=1,
-                score_threshold=threshold,
+                min_cosine_similarity=threshold,
             )
 
 
@@ -776,31 +768,6 @@ class TestPartitionIsolation:
         await store.delete_partition("sibling_b")
 
 
-# ── Euclidean metric ──
-
-
-class TestEuclideanMetric:
-    @pytest.mark.asyncio
-    async def test_euclidean_ordering(self, store):
-        euclidean = await _store_with(
-            store,
-            "euclidean",
-            vector_dimensions=2,
-            similarity_metric=SimilarityMetric.EUCLIDEAN,
-            indexed_properties={},
-        )
-        coll = await euclidean.open_or_create_partition("euclidean")
-        r1 = _make_record(vector=[0.0, 0.0])
-        r2 = _make_record(vector=[3.0, 4.0])
-        await coll.upsert(records=[r1, r2])
-
-        results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
-        assert results[0].matches[0].score < results[0].matches[1].score
-
-        await euclidean.delete_partition("euclidean")
-        await euclidean.shutdown()
-
-
 # ── No-properties collection ──
 
 
@@ -853,31 +820,8 @@ class TestScoreSemantics:
         await collection.upsert(records=[r1, r2])
 
         results = await collection.query(query_vectors=[v1], limit=2)
-        scores = [m.score for m in results[0].matches]
+        scores = [m.cosine_similarity for m in results[0].matches]
         assert scores[0] > scores[1]
-
-    @pytest.mark.asyncio
-    async def test_euclidean_lower_is_better(self, store):
-        euclidean = await _store_with(
-            store,
-            "euclidean_score",
-            vector_dimensions=2,
-            similarity_metric=SimilarityMetric.EUCLIDEAN,
-            indexed_properties={},
-        )
-        coll = await euclidean.open_or_create_partition("euclidean_score")
-        r1 = _make_record(vector=[0.0, 0.0])
-        r2 = _make_record(vector=[3.0, 4.0])
-        await coll.upsert(records=[r1, r2])
-
-        results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
-        scores = [m.score for m in results[0].matches]
-        assert scores[0] < scores[1]
-        assert scores[0] == pytest.approx(0.0, abs=0.01)
-        assert scores[1] == pytest.approx(5.0, abs=0.01)
-
-        await euclidean.delete_partition("euclidean_score")
-        await euclidean.shutdown()
 
 
 # ── Upsert behavior ──
@@ -905,7 +849,7 @@ class TestUpsertBehavior:
 
         results = await collection.query(query_vectors=[v2], limit=1)
         assert results[0].matches[0].record_uuid == record_uuid
-        assert results[0].matches[0].score == pytest.approx(1.0, abs=0.01)
+        assert results[0].matches[0].cosine_similarity == pytest.approx(1.0, abs=0.01)
 
 
 # ── Filter edge cases ──
