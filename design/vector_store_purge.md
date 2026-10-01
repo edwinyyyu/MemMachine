@@ -4,9 +4,9 @@ Part of [vector store horizontal scaling](vector_store_horizontal_scaling.md).
 
 ## Problem
 
-Deleting a Qdrant or Milvus collection used to be a filter-delete by name,
-issued when the collection was deleted. It had three defects once more than
-one process serves a backend:
+Deleting a Qdrant or Milvus collection with one filter-delete by name, issued
+when the collection is deleted, has three defects once more than one process
+serves a backend:
 
 - A write in flight during the deletion, from a handle in another process,
   lands after it and outlives it.
@@ -37,9 +37,9 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
   `request_timeout_seconds` (30 unless configured) bounds the client's part.
 - **What a round sees.** A round lists the incarnation's records with the
   store's own reads, which may lag writes by a delay the store states (see
-  [consistency](vector_store_consistency.md)): at most 5 s on Milvus at
-  Bounded. The retention exceeds that delay too, so a round that runs after
-  it and finds nothing proves the incarnation empty. A round that lists
+  [consistency](vector_store_consistency.md)): at most `common.gracefulTime`
+  (5 s by default) on Milvus at Bounded. The retention exceeds that delay too,
+  so a round that runs after it and finds nothing proves the incarnation empty. A round that lists
   records an earlier round deleted, before the deletion is reflected, deletes
   them again: a repeated round, never a wrong result.
 - **The retention decides nothing about validity.** A stale write is refused
@@ -67,11 +67,11 @@ A tombstone becomes *due* once `tombstone_retention_seconds` (per store;
 
 ### The purge round
 
-`VectorStore.purge_deleted_collections()` is part of the contract: one bounded
-round per call, on the tombstone that came due first; it returns whether it
-ran a round, `False` once nothing is due, so a caller drains the queue by
-calling it until `False`. The stores whose deletion reclaims physically (both
-SQLite stores) return `False`.
+`VectorStore.purge_deleted_collections()` is part of the contract: each call
+does a bounded amount of work and returns whether it ran a round, `False` once
+nothing is due, so a caller drains the queue by calling it until `False`. On
+Qdrant and Milvus a call is one round on the tombstone that came due first;
+both SQLite stores, whose deletion reclaims physically, return `False`.
 
 A round runs inside `claim_purgeable_incarnation()`:
 
@@ -102,8 +102,8 @@ the database clock.
   60 s, 120 s and so on, at most 1 h. The tombstones behind it are claimed
   meanwhile, so one failing tombstone does not hold the queue.
 - **Dead-lettering.** After 10 consecutive failures, about 3 hours of retries,
-  the tombstone is dead-lettered: kept, never re-minted, no longer claimed,
-  and reported by an error log naming the incarnation, the last error, and the
+  the tombstone is dead-lettered: kept, its incarnation reserved, skipped by
+  claims, and reported by an error log naming the incarnation, the last error, and the
   table. Setting its `failed_rounds` back to 0 returns it to the purge.
 - The backoff is computed from recorded facts (the count and the time of the
   last failure), not stored as a time to retry at. Both durations are registry
@@ -118,8 +118,8 @@ never purges a visible problem instead of garbage that is quietly retried.
 Each backend deletes the way it measured best: Qdrant with one filter-delete
 of the whole incarnation per round, Milvus in bounded batches listed by the
 incarnation. The measurements are in the [Qdrant](qdrant_vector_store.md) and
-[Milvus](milvus_vector_store.md) documents. A native collection that no longer
-exists holds nothing: the round finds nothing, and the tombstone goes.
+[Milvus](milvus_vector_store.md) documents. A native collection that is gone
+holds nothing: the round finds nothing, and the tombstone goes.
 
 ### The sweeper
 
@@ -149,7 +149,7 @@ processes need no coordination: the claim arbitrates.
 
 ## Alternatives considered
 
-- **Delete immediately, by filter** (the previous design). Rejected for the
+- **Delete immediately, by filter.** Rejected for the
   three defects above.
 - **Order the claim by failures first**, sinking a failing tombstone behind
   untried ones. Rejected: it retains a failing tombstone's records indefinitely

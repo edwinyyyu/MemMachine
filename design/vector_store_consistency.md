@@ -32,10 +32,10 @@ from which no caller can read back what it wrote.
 
 | Store | Delay before queries reflect a write (stated by the store) | Overlapping writes to one record (not in the contract) |
 |---|---|---|
-| SQLite (engine-backed) | none | a known bug: the table and the search engine can apply them in different orders (#1468; fixed by #1469 and #1673) |
+| SQLite (engine-backed) | none | a known bug: the table and the search engine can apply them in different orders (#1468) |
 | sqlite-vec | none | one SQL transaction each |
 | Qdrant, one node | none, stated: a write returns once applied | applied in one order |
-| Qdrant, replicated | unbounded, not stated: a query reads one replica | can diverge across replicas under Qdrant's default `weak` ordering (measured, below) |
+| Qdrant, replicated | unbounded, not stated: a query reads one replica | can diverge across replicas under Qdrant's default `weak` ordering (see below) |
 | Milvus | at most `common.gracefulTime` (5 s by default) at Bounded, the default level; stated | one write-ahead log order |
 
 The measurements and mechanisms are in the [Qdrant](qdrant_vector_store.md)
@@ -64,7 +64,7 @@ which is unmeasured.
 
 ## Decisions
 
-**`get` is gone.** It had one production caller, semantic memory's
+**The contract has no `get`.** It had one production caller, semantic memory's
 `update_feature`, which read a feature's stored vector back to write it again
 with fresh properties, because `upsert` replaces a whole record.
 
@@ -75,7 +75,8 @@ with fresh properties, because `upsert` replaces a whole record.
 - A `get` safe to write from must reflect every write that returned before it
   began, from any process. Qdrant gives that on one node, replicated Qdrant
   only with read-consistency settings the store does not make, and Milvus only
-  at Strong, whose wait under steady writes reached a p99 of 3.0-3.5 s.
+  at Strong, whose wait under steady writes is measured in the
+  [Milvus](milvus_vector_store.md) document.
 - Nothing replaces it. The feature row is the authority for everything but the
   embedding, and an update writes the vector store only when given a new
   embedding.
@@ -108,20 +109,14 @@ document).
 
 ## Overlapping writes on replicated Qdrant
 
-On a three-node Qdrant 1.19.1 cluster with every shard replicated three times,
-two clients upserting different values of one point at once, through different
-nodes, left the replicas holding different values for 115 of 400 points under
-the default `weak` ordering, and for none under `medium` or `strong`.
-Sequential writes, each sent after the previous returned, stayed in order
-under all three (0 of 1,200). The contract does not promise convergence, and
-the store sets no ordering. Passing `medium` or `strong` would cost even a
-single node: single-point upserts ran 3,533-4,425 per second under `medium`
-and 3,684-4,321 under `strong`, against 5,570-5,727 under `weak` (p50 1.7-1.9
-ms against 1.2 ms); 10-point upserts ran the same under all three. Nothing in
-MemMachine writes one record from two places at once and depends on the
-outcome, so the store keeps the default; a caller that did would need `medium`
-(or `strong`, which costs the same but makes writes unavailable while a
-shard's permanent leader is down).
+Under Qdrant's default `weak` ordering, overlapping writes to one point
+through different nodes can leave replicas disagreeing; `medium` or `strong`
+prevent it at a cost to write throughput (measured in the
+[Qdrant](qdrant_vector_store.md) document). The contract does not promise
+convergence, and nothing in MemMachine writes one record from two places at
+once and depends on the outcome, so the store keeps the default; a caller that
+did would need `medium` (or `strong`, which costs the same but makes writes
+unavailable while a shard's permanent leader is down).
 
 ## Alternatives considered
 
@@ -131,7 +126,7 @@ shard's permanent leader is down).
   every tenant's writes (measured in the [Milvus](milvus_vector_store.md)
   document), and replicated Qdrant would need stronger read consistency on
   every query.
-- **Keep `get` with Strong until #1663.** Cheaper to write, but it keeps the
+- **Keep `get`, read at Strong.** Cheaper to write, but it keeps the
   lost-update race and a contract clause the stores meet only at Strong's
   cost.
 - **Carry write timestamps across processes**, in the registry (a SQL write

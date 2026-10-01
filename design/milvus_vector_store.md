@@ -30,7 +30,7 @@ registry](vector_store_collection_registry.md),
   `refine_k = 8` and leaves `ef` at knowhere's default, `max(limit, 16)`:
   knowhere walks the graph on the 4-bit codes keeping `max(ef, limit x
   refine_k)` candidates, and rescores `limit x refine_k` of them against the
-  FP16 vectors. Neither the index nor the search is configurable yet.
+  FP16 vectors. Neither the index nor the search is configurable.
 - **Declared properties:** each has a scalar AUTOINDEX, which Milvus
   resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
@@ -52,12 +52,13 @@ registry](vector_store_collection_registry.md),
   (10,000 unless configured, within
   `quotaAndLimits.limits.maxQueryResultWindow`); both are settings, not
   constants.
-- **Creation converges:** the collection, its indexes (named by their fields)
-  and its load are three steps, each run only when missing.
+- **Creation converges:** the collection and its indexes (named by their
+  fields) are created only when missing, and the collection is loaded, a
+  no-op when it is loaded already.
 - **A delete raises unless Milvus accepted every key sent.** Milvus counts the
   primary keys a delete accepts, present or not (milvus-io/milvus#51566), and
-  pymilvus's async client returns rather than raises for a delete Milvus
-  rejected, so the store compares that count with the keys it sent.
+  pymilvus's async client returns that count for a delete Milvus rejected, so
+  the store compares it with the keys it sent.
 - **Milvus Lite is not supported.** It is a separate embedded engine that
   scores, indexes and enforces collection properties differently; a URI with
   no scheme, which pymilvus reads as a Lite file, is refused. Every call the
@@ -222,9 +223,7 @@ from 2.6.15).
 creates a collection, so pymilvus creates it at Bounded, and none on a read,
 so every read runs at the collection's level. The level is not configurable:
 the stated delay of at most `common.gracefulTime` and the tombstone retention
-depend on it. `MilvusConf` had
-`consistency_level` since the Milvus backend arrived in #1471, defaulting to
-Session with no stated reason; a configuration that still sets it is ignored.
+depend on it.
 
 Measured on Milvus 2.6.24 (4 CPUs / 5 GB; one native collection in this
 layout, 300 tenants x 1,000 rows of 128 dimensions; 8 tasks searching tenants
@@ -257,12 +256,12 @@ reads reflect every earlier write (see
 
 ## Client
 
-The store calls pymilvus's `AsyncMilvusClient`, whose docstring still calls it
-experimental and partial; it has every call the store makes. It had run the
-synchronous `MilvusClient` under `asyncio.to_thread`, where every call held a
-thread of the event loop's default executor, min(32, CPUs + 4) threads shared
-by every `to_thread` call of the process, for as long as Milvus took to
-answer, a read's wait for its level included. Measured
+The store calls pymilvus's `AsyncMilvusClient`, whose docstring calls it
+experimental and partial; it has every call the store makes. The alternative,
+the synchronous `MilvusClient` under `asyncio.to_thread`, holds a thread of
+the event loop's default executor, min(32, CPUs + 4) threads shared by every
+`to_thread` call of the process, for as long as Milvus takes to answer, a
+read's wait for its level included. Measured on Milvus 2.6.24
 (collection Bounded; writers in another process; the measured process running
 8 Bounded searches plus G gets by id at level L; 15 executor threads for the
 synchronous client; two rounds):

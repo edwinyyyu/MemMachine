@@ -27,7 +27,7 @@ registry](vector_store_collection_registry.md),
   under separate already-exists guards, so a creation that failed between them
   is completed by the next.
 - **Client:** `AsyncQdrantClient`, with `request_timeout_seconds` as its
-  timeout. Custom sharding was removed in #1671.
+  timeout.
 - **Oversized upserts are halved.** Qdrant's REST API refuses a request over
   `service.max_request_size_mb` (32 unless configured) with a 400 (measured on
   1.19.1; the status is not documented), and a proxy in front of it may
@@ -156,8 +156,8 @@ deletes and 60-120 s stalls for every tenant.
 
 ## Consistency
 
-**One node.** Upserts and deletes pass `wait=True`, qdrant-client's default,
-and return once applied, so every later query, from any process, reflects
+**One node.** Upserts and deletes run with qdrant-client's default
+`wait=True` and return once applied, so every later query, from any process, reflects
 them; the store states no delay. Writes to a point apply in one order.
 
 **Replicated.** Qdrant's consistency documentation: a write succeeds once
@@ -166,7 +166,7 @@ replica by default and can miss a write another replica has; and with the
 default `weak` write ordering "write operations can be freely reordered",
 while `medium` and `strong` serialize them through a leader. The store sets
 none of these, and creates collections with the server's default replication
-factor. It states the replicated read delay as unbounded.
+factor. It states no replicated read delay, which is unbounded.
 
 Measured on a three-node Qdrant 1.19.1 cluster in Docker (1.5 CPUs / 1.5 GB
 per node; one shard replicated on all three nodes; write consistency factor 1;
@@ -202,5 +202,3 @@ nothing writes one point from two places at once (see
 
 - A Qdrant tenant's filtered searches can be wrong on Qdrant 1.15 and later
   until qdrant#10741 ships.
-- Existing Qdrant points written before #1631 are orphaned (see [collection
-  registry](vector_store_collection_registry.md)).

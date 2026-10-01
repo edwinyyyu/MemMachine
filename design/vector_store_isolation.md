@@ -27,10 +27,6 @@ has to be able to keep the promise.
   or its tombstone is queued, so a new life starts empty: no dead life's
   records are adopted by it or reclaimed out from under it, whatever record
   UUIDs either life used.
-- The backends store UUIDs in RFC 9562's hyphenated text form, `str(uuid)`, 36
-  characters, everywhere. In the registry an incarnation is SQLAlchemy's `Uuid`
-  type, whose storage (native on PostgreSQL, 32-character hex on SQLite) never
-  leaves the registry.
 
 ## The guarantee
 
@@ -42,8 +38,7 @@ has to be able to keep the promise.
 
 A record UUID may come from anywhere, a caller included: reusing one in
 another collection stores another record, and no operation on one collection
-reads, replaces or deletes another's. The rule that the service mints every
-UUID is gone.
+reads, replaces or deletes another's.
 
 | Store | How ids are scoped to a collection |
 |---|---|
@@ -55,7 +50,7 @@ A UUIDv5 carries 122 bits, and deriving one from a random incarnation and any
 record UUID gives a caller no way to aim at another collection's point: a
 SHA-1 collision needs control of both inputs.
 
-### Can every backend keep it?
+### Other backends
 
 Surveyed from vendor documentation and source (2026-09-29; none of these
 backends was run). Every one can, almost always by scoping the id.
@@ -90,24 +85,8 @@ backends was run). Every one can, almost always by scoping the id.
 - **Check before writing** (read the id, then write if it is absent or the
   writer's). Not atomic: another collection's write can land between the read
   and the write.
-- **Readable point ids on Qdrant.** Deriving hides the record UUID from the
-  point id, but it stays in the payload, so an operator still finds a record
-  by filtering on it, as with Milvus's composite key; the cost is a payload
-  field returned by every search (measured in the
-  [Qdrant](qdrant_vector_store.md) document).
-- **Reversible derived ids on Qdrant** (for instance the record UUID XOR the
-  incarnation), which would spare a search the payload read. Isolation would
-  then rest on incarnations staying secret: someone who learns two
-  incarnations and a record UUID, from logs, the registry's tables or a
-  backup, could compute a colliding UUID and, through an ordinary tenant
-  account, hide another tenant's record. A one-way UUIDv5 needs write access
-  to a database for that. The analysis is in the
-  [Qdrant](qdrant_vector_store.md) document.
-
-## Consequences
-
-- Existing Qdrant points written before #1631 are orphaned with the rest of
-  its layout changes; their ids are not derived.
-- A lookup by hand on Qdrant filters on `sys-record_uuid`, which scans the
-  collection; a keyword index on it would make that an index read, at a small
-  cost to writes, and is not added.
+- **Bare or reversible point ids on Qdrant.** A bare record UUID as the point
+  id lets one collection's upsert replace another's point; a reversible
+  derivation lets anyone who learns two incarnations compute a colliding UUID.
+  The [Qdrant](qdrant_vector_store.md) document has the analysis and the cost
+  of reading the record UUID from the payload.

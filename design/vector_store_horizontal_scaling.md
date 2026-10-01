@@ -35,7 +35,7 @@ Shared: contracts and choices made with every backend in mind.
 |---|---|
 | [collection registry](vector_store_collection_registry.md) | The SQL catalog that arbitrates which collections exist, incarnations, handles and their fencing, creation races. |
 | [purge](vector_store_purge.md) | Tombstones, the retention, the claim, backoff, dead-lettering, the sweeper. |
-| [consistency](vector_store_consistency.md) | What a query sees of earlier writes, as the contract states it; why `get` is gone; asynchronous clients; how tests observe state. |
+| [consistency](vector_store_consistency.md) | What a query sees of earlier writes, as the contract states it; why the contract has no `get`; asynchronous clients; how tests observe state. |
 | [isolation](vector_store_isolation.md) | Isolation between collections, record UUIDs and their reuse, and whether other vector databases can meet the guarantee. |
 
 Per backend: how each implementation meets the contracts, and the measurements
@@ -77,44 +77,20 @@ behind its choices.
 
 ## Configuration
 
-`QdrantConf` and `MilvusConf` gain:
-
-- `collection_registry` (required): the relational database, a name under
-  `resources.databases`, that holds the store's registry;
-- `tombstone_retention_seconds` (86,400): how long a deleted collection's
-  records stay before their purge starts;
-- `request_timeout_seconds` (30): the bound on every request to the backend.
-  The retention must be at least 10 times it plus 300 seconds.
-
-`MilvusConf` also gains `max_varchar_length` (65,535) and `purge_batch_size`
-(10,000), two sizes the Milvus server's own configuration bounds, and loses
-`consistency_level`: the store reads at Milvus's default, Bounded. The
-wizard points the registry at its SQLite database; the sample configurations
-and the Helm chart point it at the relational database their other components
-use.
-
-## Clients
-
-Every backend client is the library's asynchronous client: `AsyncQdrantClient`
-and pymilvus's `AsyncMilvusClient`. A synchronous client run on worker threads
-holds a thread of the process's shared executor for the whole of each request,
-and enough slow requests starve every other call of the process (measured in
-the [Milvus](milvus_vector_store.md) document).
+`QdrantConf` and `MilvusConf` name the relational database that holds the
+store's registry (`collection_registry`), the retention before a deleted
+collection's purge starts (`tombstone_retention_seconds`, a day by default),
+and the bound on every request to the backend (`request_timeout_seconds`,
+30 s by default). The retention must be at least 10 times the request timeout
+plus 300 seconds (see [purge](vector_store_purge.md)).
 
 ## Related work
 
-- The segment store's shared tables with incarnation-scoped keys (#1661, [its
+- The segment store's shared tables with incarnation-scoped keys ([its
   design](segment_store_shared_tables.md)) are the model for the registry's
   incarnation logic.
-- #1627 makes a vector store one native collection with string-keyed
-  partitions, on top of this.
-- #1663 makes scores cosine similarities only; #1631 already removed `get` and
-  answers queries with UUIDs and scores.
 - #1570 tracks moving provisioning (table and collection creation) out of
   runtime startup for every store.
-- #1468 (SQLite store: writes reach the table and the search engine in
-  different orders) is fixed by #1469 and #1673.
-- #1721 (semantic memory's read-modify-write of its vector) is fixed by #1631.
 
 ## Deployment consequences
 
