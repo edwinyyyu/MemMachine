@@ -11,9 +11,10 @@ one partition, and purges a deleted incarnation's records.
 """
 
 import asyncio
+import contextlib
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import override
 from uuid import UUID
 
@@ -30,13 +31,17 @@ from .data_types import (
     Record,
     VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
-    VectorStorePartitionHandleStaleError,
+    VectorStorePartitionDeletedError,
     VectorStorePartitionPendingError,
     VectorStorePartitionSchemaMismatchError,
     indexed_property_names,
     validate_vector_store_name,
 )
-from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
+from .partition_registry import (
+    LiveRegistration,
+    PendingRegistration,
+    VectorStorePartitionRegistry,
+)
 from .utils import (
     require_declared_types,
     require_dimensions,
@@ -64,6 +69,10 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
     `upsert` before and after its backend call, `query` before it, and
     `delete` after it.
 
+    A check after a write makes one that raced the partition's deletion
+    raise instead of reporting success; whatever such a write landed, the
+    purge reclaims.
+
     For subclasses: `_vector_store_name` is the store's name and
     `_incarnation` the incarnation the handle is bound to, and a subclass
     implements the backend calls `_upsert`, `_query` and `_delete`.
@@ -73,40 +82,21 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         self,
         *,
         vector_store_name: str,
-        partition_key: str,
-        incarnation: UUID,
+        registration: LiveRegistration,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
-        get_registered_partition: Callable[
-            [str], Awaitable[RegisteredPartition | None]
-        ],
     ) -> None:
-        """Initialize with the incarnation the handle is bound to, and the registry's lookup."""
+        """Initialize with the live registration the handle is bound to."""
         self._vector_store_name = vector_store_name
-        self._partition_key = partition_key
-        self._incarnation = incarnation
+        self._registration = registration
+        self._partition_key = registration.partition_key
+        self._incarnation = registration.incarnation
         self._vector_dimensions = vector_dimensions
         self._similarity_metric = similarity_metric
         self._indexed_properties = dict(indexed_properties)
         self._tracker = tracker
-        self._get_registered_partition = get_registered_partition
-
-    async def _fence(self) -> None:
-        """Raise if this handle's partition has been deleted.
-
-        The partition registered under the handle's key carries the handle's
-        incarnation until it is deleted; one created again under the key
-        carries another. A check after a write makes one that raced the
-        deletion raise instead of reporting success; whatever such a write
-        landed, the purge reclaims.
-        """
-        registered = await self._get_registered_partition(self._partition_key)
-        if registered is None or registered.incarnation != self._incarnation:
-            raise VectorStorePartitionHandleStaleError(
-                self._vector_store_name, self._partition_key
-            )
 
     @property
     @override
@@ -130,11 +120,11 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
             for record in records:
                 require_declared_types(record.properties, self._indexed_properties)
                 require_dimensions(record.vector, self._vector_dimensions)
-            await self._fence()
+            await self._registration.require_current()
             if not records:
                 return
             await self._upsert(records)
-            await self._fence()
+            await self._registration.require_current()
 
     @override
     async def query(
@@ -153,7 +143,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
             require_valid_limit(limit)
             if property_filter is not None and not validate_filter(property_filter):
                 raise ValueError("Filter contains an invalid property key")
-            await self._fence()
+            await self._registration.require_current()
             if not query_vectors:
                 return []
             return await self._query(
@@ -171,7 +161,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
             record_uuids = list(record_uuids)
             if record_uuids:
                 await self._delete(record_uuids)
-            await self._fence()
+            await self._registration.require_current()
 
     @abstractmethod
     async def _upsert(self, records: list[Record]) -> None:
@@ -379,20 +369,18 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         async with self._tracker("create_partition"):
             # The registry decides a creation race. The partition stays
             # pending until its storage is prepared; if it is deleted
-            # meanwhile, mark_live finds nothing to mark, and the creation
-            # counts as one followed by a deletion.
+            # meanwhile, mark_live raises.
             try:
-                incarnation = await self._partition_registry.register(
+                pending = await self._partition_registry.register(
                     partition_key, self._declared_schema()
                 )
             except VectorStorePartitionAlreadyExistsError:
                 # A key taken under another schema is reported as such.
-                await self._checked_entry(partition_key)
+                with contextlib.suppress(VectorStorePartitionPendingError):
+                    await self._checked_entry(partition_key)
                 raise
-            await self._prepare_partition_storage_or_unregister(
-                partition_key, incarnation
-            )
-            await self._partition_registry.mark_live(incarnation)
+            await self._prepare_partition_storage_or_unregister(pending)
+            await pending.mark_live()
 
     @override
     async def open_or_create_partition(self, partition_key: str) -> PartitionT:
@@ -403,33 +391,33 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
             # another creator took the key meanwhile, and losing the mark
             # means a deleter removed this one while its storage was prepared
             # (create again).
-            registered: RegisteredPartition | None = None
+            pending_error: VectorStorePartitionPendingError | None = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
-                registered = await self._checked_entry(partition_key)
-                if registered is not None:
-                    if registered.live:
-                        return self._partition_handle(
-                            partition_key, registered.incarnation
-                        )
-                    continue
                 try:
-                    incarnation = await self._partition_registry.register(
+                    live = await self._checked_entry(partition_key)
+                except VectorStorePartitionPendingError as err:
+                    pending_error = err
+                    continue
+                pending_error = None
+                if live is not None:
+                    return self._partition_handle(live)
+                try:
+                    pending = await self._partition_registry.register(
                         partition_key, self._declared_schema()
                     )
                 except VectorStorePartitionAlreadyExistsError:
                     continue
-                await self._prepare_partition_storage_or_unregister(
-                    partition_key, incarnation
-                )
-                if await self._partition_registry.mark_live(incarnation):
-                    return self._partition_handle(partition_key, incarnation)
+                await self._prepare_partition_storage_or_unregister(pending)
+                try:
+                    live = await pending.mark_live()
+                except VectorStorePartitionDeletedError:
+                    continue
+                return self._partition_handle(live)
             # The last lookup found the partition pending.
-            if registered is not None:
-                raise VectorStorePartitionPendingError(
-                    self._vector_store_name, partition_key, registered.registered_at
-                )
+            if pending_error is not None:
+                raise pending_error
             raise VectorStoreAttemptsExhaustedError(
                 f"Opening or creating partition {partition_key!r} of vector store "
                 f"{self._vector_store_name!r} made no progress after "
@@ -437,7 +425,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
             )
 
     async def _prepare_partition_storage_or_unregister(
-        self, partition_key: str, incarnation: UUID
+        self, pending: PendingRegistration
     ) -> None:
         """Prepare a pending partition's storage, unregistering it if that raises or is cancelled.
 
@@ -445,12 +433,12 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         it is deleted.
         """
         try:
-            await self._prepare_partition_storage(partition_key, incarnation)
+            await self._prepare_partition_storage(
+                pending.partition_key, pending.incarnation
+            )
         except BaseException:
             # Shielded, so a cancelled creation still frees the key.
-            unregistration = asyncio.create_task(
-                self._partition_registry.unregister_incarnation(incarnation)
-            )
+            unregistration = asyncio.create_task(pending.unregister())
             self._unregistrations.add(unregistration)
             unregistration.add_done_callback(self._unregistrations.discard)
             try:
@@ -460,7 +448,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                     "Could not unregister partition %r of vector store %r after "
                     "its storage preparation failed; it stays pending until "
                     "deleted",
-                    partition_key,
+                    pending.partition_key,
                     self._vector_store_name,
                 )
             raise
@@ -468,29 +456,40 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     @override
     async def get_partition(self, partition_key: str) -> PartitionT | None:
         require_partition_key(partition_key)
-        registered = await self._checked_entry(partition_key)
-        if registered is None:
+        live = await self._checked_entry(partition_key)
+        if live is None:
             return None
-        if not registered.live:
-            raise VectorStorePartitionPendingError(
-                self._vector_store_name, partition_key, registered.registered_at
-            )
-        return self._partition_handle(partition_key, registered.incarnation)
+        return self._partition_handle(live)
 
-    async def _checked_entry(self, partition_key: str) -> RegisteredPartition | None:
-        """The partition under the key, pending or live, or None; raises if its schema is not this store's."""
-        registered = await self._partition_registry.get(partition_key)
-        if registered is None:
-            return None
+    async def _checked_entry(self, partition_key: str) -> LiveRegistration | None:
+        """
+        The live partition under the key, or None.
+
+        Raises VectorStorePartitionSchemaMismatchError if the partition under
+        the key, pending or live, was created under another schema than this
+        store's, and VectorStorePartitionPendingError if it is pending under
+        this store's.
+        """
         declared_schema = self._declared_schema()
-        if registered.schema != declared_schema:
+        try:
+            live = await self._partition_registry.resolve(partition_key)
+        except VectorStorePartitionPendingError as err:
+            if err.schema != declared_schema:
+                raise VectorStorePartitionSchemaMismatchError(
+                    self._vector_store_name,
+                    partition_key,
+                    err.schema,
+                    declared_schema,
+                ) from err
+            raise
+        if live is not None and live.schema != declared_schema:
             raise VectorStorePartitionSchemaMismatchError(
                 self._vector_store_name,
                 partition_key,
-                registered.schema,
+                live.schema,
                 declared_schema,
             )
-        return registered
+        return live
 
     def _declared_schema(self) -> PartitionSchema:
         return PartitionSchema(
@@ -546,10 +545,10 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         """
         Prepare the storage a newly registered partition needs of its own.
 
-        The partition is registered, pending, under the incarnation, and is
+        The partition is registered as pending under the incarnation, and is
         marked live once this returns. The storage the store's partitions
-        share was prepared at startup; this prepares
-        what the partition keeps of its own, such as a unit named by its
+        share was prepared at startup; this prepares what the partition
+        keeps of its own, such as a unit named by its
         incarnation, or nothing. Whatever a failed or interrupted call leaves
         must be recoverable: reclaimed by the purge rounds of the incarnation
         once its pending partition is deleted.
@@ -569,22 +568,21 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         raise NotImplementedError
 
     @abstractmethod
-    def _partition_handle(self, partition_key: str, incarnation: UUID) -> PartitionT:
+    def _partition_handle(self, registration: LiveRegistration) -> PartitionT:
         """
-        Build a handle bound to a live partition's incarnation.
+        Build a handle bound to a live partition's registration.
 
         The storage the store's partitions share was prepared at startup,
         and the partition's own before it was marked live.
 
         Args:
-            partition_key (str):
-                Key of the partition.
-            incarnation (UUID):
-                The incarnation the partition's registry row holds.
+            registration (LiveRegistration):
+                The live partition's registration, which carries its key,
+                schema and incarnation.
 
         Returns:
             PartitionT:
-                A handle bound to the incarnation, whose operations raise
+                A handle bound to the registration, whose operations raise
                 once the partition is deleted.
         """
         raise NotImplementedError

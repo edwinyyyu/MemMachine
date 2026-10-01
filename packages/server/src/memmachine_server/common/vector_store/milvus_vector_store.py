@@ -2,7 +2,7 @@
 
 import json
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
@@ -51,7 +51,7 @@ from .data_types import (
     QueryResult,
     Record,
 )
-from .partition_registry import RegisteredPartition
+from .partition_registry import LiveRegistration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
     RegistryBackedVectorStoreParams,
@@ -259,27 +259,21 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         client: AsyncMilvusClient,
         collection_name: str,
         vector_store_name: str,
-        partition_key: str,
-        incarnation: UUID,
+        registration: LiveRegistration,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
-        get_registered_partition: Callable[
-            [str], Awaitable[RegisteredPartition | None]
-        ],
         request_timeout_seconds: int,
     ) -> None:
-        """Initialize with a Milvus client and the incarnation the handle is bound to."""
+        """Initialize with a Milvus client and the live registration the handle is bound to."""
         super().__init__(
             vector_store_name=vector_store_name,
-            partition_key=partition_key,
-            incarnation=incarnation,
+            registration=registration,
             vector_dimensions=vector_dimensions,
             similarity_metric=similarity_metric,
             indexed_properties=indexed_properties,
             tracker=tracker,
-            get_registered_partition=get_registered_partition,
         )
         self._client = client
         self._collection_name = collection_name
@@ -639,19 +633,17 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
 
     @override
     def _partition_handle(
-        self, partition_key: str, incarnation: UUID
+        self, registration: LiveRegistration
     ) -> MilvusVectorStorePartition:
         return MilvusVectorStorePartition(
             client=self._client,
             collection_name=self._collection_name,
             vector_store_name=self.vector_store_name,
-            partition_key=partition_key,
-            incarnation=incarnation,
+            registration=registration,
             vector_dimensions=self.vector_dimensions,
             similarity_metric=self.similarity_metric,
             indexed_properties=self.indexed_properties,
             tracker=self._tracker,
-            get_registered_partition=self._partition_registry.get,
             request_timeout_seconds=self._request_timeout_seconds,
         )
 

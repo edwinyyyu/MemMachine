@@ -1,6 +1,6 @@
 """Qdrant-based vector store implementation."""
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
@@ -46,7 +46,7 @@ from .data_types import (
     QueryResult,
     Record,
 )
-from .partition_registry import RegisteredPartition
+from .partition_registry import LiveRegistration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
     RegistryBackedVectorStoreParams,
@@ -240,26 +240,20 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         *,
         client: AsyncQdrantClient,
         vector_store_name: str,
-        partition_key: str,
-        incarnation: UUID,
+        registration: LiveRegistration,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
-        get_registered_partition: Callable[
-            [str], Awaitable[RegisteredPartition | None]
-        ],
     ) -> None:
-        """Initialize with a Qdrant client and the incarnation the handle is bound to."""
+        """Initialize with a Qdrant client and the live registration the handle is bound to."""
         super().__init__(
             vector_store_name=vector_store_name,
-            partition_key=partition_key,
-            incarnation=incarnation,
+            registration=registration,
             vector_dimensions=vector_dimensions,
             similarity_metric=similarity_metric,
             indexed_properties=indexed_properties,
             tracker=tracker,
-            get_registered_partition=get_registered_partition,
         )
         self._client = client
 
@@ -501,18 +495,16 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
 
     @override
     def _partition_handle(
-        self, partition_key: str, incarnation: UUID
+        self, registration: LiveRegistration
     ) -> QdrantVectorStorePartition:
         return QdrantVectorStorePartition(
             client=self._client,
             vector_store_name=self.vector_store_name,
-            partition_key=partition_key,
-            incarnation=incarnation,
+            registration=registration,
             vector_dimensions=self.vector_dimensions,
             similarity_metric=self.similarity_metric,
             indexed_properties=self.indexed_properties,
             tracker=self._tracker,
-            get_registered_partition=self._partition_registry.get,
         )
 
     @override
