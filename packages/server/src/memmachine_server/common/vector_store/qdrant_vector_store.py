@@ -301,8 +301,9 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         error raises at once.
         """
         try:
-            # Waiting for Qdrant to apply the write paces the writer to
-            # Qdrant's apply rate and reports a failure to apply.
+            # Waiting for Qdrant to apply the write keeps the writes it has
+            # accepted but not applied to those in flight, whose callers see
+            # the wait as latency, and reports a failure to apply.
             await self._client.upsert(
                 collection_name=self._native_collection_name,
                 points=points,

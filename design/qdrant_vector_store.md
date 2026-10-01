@@ -184,8 +184,10 @@ tail at load. It changes neither the searches nor the CPU, nor what Qdrant
 sustains: at three times the workload's peak both stalled, a waiting writer
 for up to 1.3 s and, in one round, a writer that did not wait for 4.4 s. A
 tenant's writes, a few small batches at a time, are well served either way,
-so the store waits: a writer is paced to what Qdrant applies, and a failure
-to apply reaches it.
+so the store waits. Then the writes Qdrant has accepted but not applied are at
+most the store's writes in flight, each one's wait visible to its caller as
+latency, where without waiting they would build up unseen; and a failure to
+apply reaches the caller.
 
 **Replicated.** Qdrant's consistency documentation: a write succeeds once
 `write_consistency_factor` replicas (1 by default) apply it; a query reads one
