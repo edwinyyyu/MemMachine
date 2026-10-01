@@ -301,9 +301,12 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         error raises at once.
         """
         try:
+            # Waiting for Qdrant to apply the write paces the writer to
+            # Qdrant's apply rate and reports a failure to apply.
             await self._client.upsert(
                 collection_name=self._native_collection_name,
                 points=points,
+                wait=True,
             )
         except UnexpectedResponse as err:
             if err.status_code not in (400, 413) or len(points) <= 1:
@@ -369,6 +372,7 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             points_selector=models.PointIdsList(
                 points=[str(self._point_id(uuid)) for uuid in record_uuids]
             ),
+            wait=True,
         )
 
 
@@ -392,8 +396,6 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
 
     A logical collection is the points carrying its incarnation in their
     payload.
-
-    On a single node, queries reflect a write as soon as it returns.
     """
 
     _SIMILARITY_METRIC_TO_QDRANT_DISTANCE: ClassVar[

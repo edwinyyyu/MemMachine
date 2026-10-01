@@ -34,7 +34,7 @@ from which no caller can read back what it wrote.
 |---|---|---|
 | SQLite (engine-backed) | none | a known bug: the table and the search engine can apply them in different orders (#1468) |
 | sqlite-vec | none | one SQL transaction each |
-| Qdrant, one node | none, stated: a write returns once applied | applied in one order |
+| Qdrant, one node | not stated; a write returns once applied, since the store waits for it (see [Qdrant](qdrant_vector_store.md)) | applied in one order |
 | Qdrant, replicated | unbounded, not stated: a query reads one replica | can diverge across replicas under Qdrant's default `weak` ordering (see below) |
 | Milvus | at most `common.gracefulTime` (5 s by default) at Bounded, the default level; stated | one write-ahead log order |
 

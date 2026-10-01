@@ -72,7 +72,7 @@ behind its choices.
 |---|---|---|---|
 | SQLite (engine-backed) | one | as soon as it returns | at once |
 | sqlite-vec | any on one node | as soon as it returns | at once |
-| Qdrant | any, sharing the store's registry | as soon as it returns on one node; replicated, after an unbounded delay | by purge, after the retention |
+| Qdrant | any, sharing the store's registry | not stated; on one node as soon as it returns, since the store waits for each write; replicated, after an unbounded delay | by purge, after the retention |
 | Milvus | any, sharing the store's registry | within the server's `common.gracefulTime` (5 s by default) at Bounded | by purge, after the retention |
 
 ## Configuration

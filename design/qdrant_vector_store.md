@@ -156,9 +156,39 @@ deletes and 60-120 s stalls for every tenant.
 
 ## Consistency
 
-**One node.** Upserts and deletes run with qdrant-client's default
-`wait=True` and return once applied, so every later query, from any process, reflects
-them; the store states no delay. Writes to a point apply in one order.
+**One node.** Upserts and deletes pass `wait=True` and return once Qdrant has
+applied them, so a later query reflects them; writes to a point apply in one
+order. The store does not state this: the contract needs only a write durable
+on return, which Qdrant gives once the write is in its write-ahead log, and
+Milvus at Bounded gives no more, so a caller relies on neither store to see
+its own writes at once.
+
+**Why the writes wait.** Without `wait`, Qdrant replies once a write is in its
+write-ahead log and applies it from a queue. Measured (Qdrant 1.19.1, 4 CPUs /
+4 GB; each phase on a fresh collection of 100 tenants x 1,000 points of 768
+dimensions in the store's per-tenant layout; two rounds):
+
+| | `wait=True` | `wait=False` |
+|---|---|---|
+| One writer, 1 point: p50 | 1.5-1.7 ms | 0.6 ms |
+| One writer, 10 points: p50 / p99 | 3.4-3.5 / 16-25 ms | 2.6-2.7 / 7-9 ms |
+| One writer, 100 points: p50 / p99 | 23-24 / 88-181 ms | 21-22 / 33-76 ms |
+| 800 points/s in batches of 10 beside 4 searchers: write p50 / p99 | 4.9-5.0 / 119-170 ms | 3.6 / 7-10 ms |
+| The same: search p50 / p99 | 1.6 / 5 ms | 1.7 / 4 ms |
+| 2,400 points/s: write p50 / p99 | 3.7-4.1 / 712-835 ms | 3.5-3.6 / 17 ms, and 3,969 ms in a round with a 4.4 s stall |
+| The same: search p50 / p99 | 4.2 / 17-21 ms | 4.2 / 19-24 ms |
+| Delay until a retrieve sees a write: p99 / max | none | 5-8 / 71-145 ms at 800 points/s; 137-362 / 226-4,847 ms at 2,400 |
+
+Not waiting saves a writer about a millisecond at the median and much of its
+tail at load. It changes neither the searches nor the CPU, nor what Qdrant
+sustains: at three times the workload's peak both stalled, a waiting writer
+for up to 1.3 s and, in one round, a writer that did not wait for 4.4 s. With
+8 writers sending back to back as fast as they could, some waiting writes
+stalled past a 120 s client timeout; such a write raises at the store's
+`request_timeout_seconds` and may still be applied, which the purge's
+retention covers. A tenant's writes, a few small batches at a time, are well
+served either way, so the store waits: a writer is paced to what Qdrant
+applies, and a failure to apply reaches it.
 
 **Replicated.** Qdrant's consistency documentation: a write succeeds once
 `write_consistency_factor` replicas (1 by default) apply it; a query reads one

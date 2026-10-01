@@ -370,7 +370,7 @@ async def test_a_batch_refused_as_sent_is_halved_until_it_fits(status_code: int)
     upserted: list[list[str]] = []
 
     async def refuse_more_than_two(
-        *, collection_name: str, points: list[models.PointStruct]
+        *, collection_name: str, points: list[models.PointStruct], wait: bool
     ) -> None:
         if len(points) > 2:
             raise UnexpectedResponse(status_code, "", b"", httpx.Headers())
