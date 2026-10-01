@@ -191,6 +191,8 @@ class VectorStore(ABC):
         Raises:
             VectorStoreCollectionAlreadyExistsError: If a collection with the same
                 (namespace, name) already exists, or is being created.
+            VectorStoreCollectionDeletedError: If the collection was deleted
+                before its creation completed.
             VectorStoreAttemptsExhaustedError: If the store gave up creating the
                 collection after repeated attempts that made no progress.
         """

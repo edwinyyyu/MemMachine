@@ -30,6 +30,7 @@ from .data_types import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionHandleStaleError,
     VectorStoreCollectionPendingError,
 )
@@ -306,15 +307,14 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         async with self._tracker("create_collection"):
             # The registry decides a creation race. The collection stays
             # pending until its storage is prepared; if it is deleted
-            # meanwhile, mark_live finds nothing to mark, and the creation
-            # counts as one followed by a deletion.
+            # meanwhile, mark_live raises.
             incarnation = await self._collection_registry.register(
                 namespace, name, config
             )
             await self._prepare_storage_or_unregister(
                 namespace, name, config, incarnation
             )
-            await self._collection_registry.mark_live(incarnation)
+            await self._collection_registry.mark_live(namespace, name, incarnation)
 
     @override
     async def open_or_create_collection(
@@ -355,10 +355,15 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 await self._prepare_storage_or_unregister(
                     namespace, name, config, incarnation
                 )
-                if await self._collection_registry.mark_live(incarnation):
-                    return self._build_collection_handle(
-                        namespace, name, incarnation, config
+                try:
+                    await self._collection_registry.mark_live(
+                        namespace, name, incarnation
                     )
+                except VectorStoreCollectionDeletedError:
+                    continue
+                return self._build_collection_handle(
+                    namespace, name, incarnation, config
+                )
             # The last lookup found the collection pending.
             if registered is not None:
                 raise VectorStoreCollectionPendingError(
