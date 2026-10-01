@@ -607,10 +607,8 @@ class VectorStoreSemanticStorage(SemanticStorage):
             query_vectors=[vector_search_opts.query_embedding.tolist()],
             limit=limit,
             score_threshold=vector_search_opts.min_distance,
-            return_vector=False,
-            return_properties=False,
         )
-        matched_uuids = [match.record.uuid for match in query_result.matches]
+        matched_uuids = [match.record_uuid for match in query_result.matches]
         # Resolve hits through the column that owns the mapping, keeping the
         # order the search returned them in. A hit whose feature is gone is
         # dropped: its vector outlived the row.
