@@ -58,8 +58,8 @@ from .long_term_memory import (
 logger = logging.getLogger(__name__)
 
 _EVENT_BACKEND_NAMESPACE = "long_term_memory"
-# Attempts, a second apart, to open or create a partition's collection before
-# the locator gives up waiting for it to become live.
+# Attempts, _OPEN_RETRY_DELAY_SECONDS apart, to open or create a partition's
+# collection before the locator gives up waiting for it to become live.
 _MAX_OPEN_ATTEMPTS = 10
 _OPEN_RETRY_DELAY_SECONDS = 1
 
@@ -115,10 +115,9 @@ async def _event_params(
     partition_key = partition_key_for_session(config.session_id)
 
     # Open the existing collection if any (preserves the original schema). Only
-    # create with our merged schema if the partition does not yet exist. The
-    # registry arbitrates creation across processes: a worker that loses the
-    # race, or finds another's creation pending, opens the collection once it
-    # is live.
+    # create with our merged schema if the partition does not yet exist. A
+    # create that loses a race to another caller, or an open of a collection
+    # another caller is still creating, is retried until the collection opens.
     for attempt in range(_MAX_OPEN_ATTEMPTS):
         if attempt:
             await asyncio.sleep(_OPEN_RETRY_DELAY_SECONDS)

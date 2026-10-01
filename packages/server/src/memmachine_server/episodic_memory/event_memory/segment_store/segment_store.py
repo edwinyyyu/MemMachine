@@ -120,8 +120,7 @@ class SegmentStorePartition(ABC):
         """
         Get the segment each of the given derivatives belongs to.
 
-        A derivative belongs to exactly one segment. UUIDs the partition does
-        not hold are omitted.
+        A derivative belongs to exactly one segment.
 
         Args:
             derivative_uuids (Iterable[UUID]):
@@ -129,7 +128,8 @@ class SegmentStorePartition(ABC):
 
         Returns:
             dict[UUID, UUID]:
-                A mapping from each derivative UUID to its segment's UUID.
+                A mapping from each given derivative UUID the partition holds
+                to its segment's UUID.
         """
         raise NotImplementedError
 

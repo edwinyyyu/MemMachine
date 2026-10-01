@@ -119,7 +119,7 @@ _MIN_SQLITE_VERSION = (3, 35)
 
 
 class _RegistryInsertRejectedError(Exception):
-    """A registry insert was rejected for a reason other than the key being taken.
+    """A registry insert was rejected although its key is free.
 
     Raised when the insert fails with an integrity error but no row
     exists under the key, or when the minted incarnation still has

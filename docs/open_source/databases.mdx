@@ -34,9 +34,8 @@ SQLiteVecVectorStore. Qdrant and Milvus keep the registry of their logical
 collections in a relational database named by `collection_registry`, so any
 number of server processes can share one backend; the SQLite stores are bound
 to one node. A backend's registry is kept under its key in
-`resources.databases` (lowercase letters, digits and underscores, at most 32
-bytes), so several backends can keep their registries in one relational
-database. Every process must configure a given Qdrant server or Milvus
+`resources.databases`, so several backends can keep their registries in one
+relational database. Every process must configure a given Qdrant server or Milvus
 database under the same key, so that they share its registry.
 
 Milvus supports two deployment shapes through the same configuration fields:
@@ -45,7 +44,7 @@ Milvus supports two deployment shapes through the same configuration fields:
   `http://localhost:19530`.
 - **Zilliz Cloud:** set `uri` to the cloud endpoint and set `token`.
 
-The Milvus store needs Milvus 2.6.8 or later, for its 4-bit HNSW index. Milvus
+The Milvus store needs Milvus 2.6.8 or later. Milvus
 Lite is not supported: it is a separate embedded engine that does not behave
 like the server. For a local, single-node deployment, use SQLiteVectorStore.
 

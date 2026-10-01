@@ -500,7 +500,7 @@ class ConfigurationWizard:
                     )
                 }
             case self.MILVUS_VECTOR_STORE_ID:
-                # The default URI is a Milvus server on localhost:19530; the
+                # MilvusConf's default URI points at a local Milvus server; the
                 # user edits cfg.yml to point at another Milvus or Zilliz Cloud.
                 databases.milvus_confs = {
                     self.MILVUS_VECTOR_STORE_ID: MilvusConf(

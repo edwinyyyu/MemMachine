@@ -374,9 +374,9 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         resolved = cls._resolve_env(v)
         if not isinstance(resolved, str):
             raise TypeError("Milvus URI must be a string")
-        # pymilvus reads a URI without a scheme as a Milvus Lite file, which
-        # is not supported: it is a separate engine that behaves unlike the
-        # server.
+        # pymilvus reads a URI without a scheme as a Milvus Lite file, a
+        # separate engine with its own behavior, so only server URLs are
+        # accepted.
         if resolved and "://" not in resolved:
             raise ValueError(
                 f"Milvus URI {resolved!r} must be a server URL such as "
