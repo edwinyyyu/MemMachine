@@ -48,7 +48,7 @@ behind its choices.
 
 ## Lifecycle of a collection
 
-1. **Create.** The store inserts a registry row, pending, under a freshly
+1. **Create.** The store inserts a pending registry row under a freshly
    minted incarnation, prepares the collection's storage (on Qdrant and
    Milvus, the native collection its namespace and configuration share), and
    marks the row live. A racing creator loses at the registry's primary key,

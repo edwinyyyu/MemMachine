@@ -77,7 +77,7 @@ class VectorStoreCollectionRegistry(ABC):
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
     ) -> UUID:
         """
-        Register a new collection, pending, under a freshly minted incarnation.
+        Register a new pending collection under a freshly minted incarnation.
 
         The (namespace, name) is arbitrated across processes, and the
         incarnation is one no registered or queued collection carries, so the
@@ -107,7 +107,7 @@ class VectorStoreCollectionRegistry(ABC):
     @abstractmethod
     async def mark_live(self, incarnation: UUID) -> bool:
         """
-        Mark the collection registered, pending, under an incarnation live.
+        Mark the pending collection with the given incarnation as live.
 
         Called once the collection's storage is prepared.
 
@@ -116,8 +116,8 @@ class VectorStoreCollectionRegistry(ABC):
 
         Returns:
             bool:
-                Whether a collection was registered, pending, under the
-                incarnation, and is now live.
+                Whether the incarnation's collection was pending and is now
+                live.
         """
         raise NotImplementedError
 
