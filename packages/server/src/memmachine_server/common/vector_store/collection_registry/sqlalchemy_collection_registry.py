@@ -150,9 +150,8 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
         engine (AsyncEngine):
             Async SQLAlchemy engine, on PostgreSQL or SQLite.
         vector_store_name (str):
-            The name the registry's rows are kept under, at most 255
-            characters: registry objects with the same name on the same
-            database are one registry.
+            The name the registry's rows are kept under: registry objects with
+            the same name on the same database are one registry.
         tombstone_retention_seconds (int):
             Seconds a deleted collection's records are kept before its purge
             starts, on the database clock. It must exceed, by orders of
@@ -171,9 +170,8 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
     vector_store_name: str = Field(
         ...,
         description=(
-            "The name the registry's rows are kept under, at most 255 "
-            "characters: registry objects with the same name on the same "
-            "database are one registry"
+            "The name the registry's rows are kept under: registry objects with "
+            "the same name on the same database are one registry"
         ),
     )
     tombstone_retention_seconds: int = Field(
