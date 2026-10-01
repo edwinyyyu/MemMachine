@@ -182,13 +182,10 @@ dimensions in the store's per-tenant layout; two rounds):
 Not waiting saves a writer about a millisecond at the median and much of its
 tail at load. It changes neither the searches nor the CPU, nor what Qdrant
 sustains: at three times the workload's peak both stalled, a waiting writer
-for up to 1.3 s and, in one round, a writer that did not wait for 4.4 s. With
-8 writers sending back to back as fast as they could, some waiting writes
-stalled past a 120 s client timeout; such a write raises at the store's
-`request_timeout_seconds` and may still be applied, which the purge's
-retention covers. A tenant's writes, a few small batches at a time, are well
-served either way, so the store waits: a writer is paced to what Qdrant
-applies, and a failure to apply reaches it.
+for up to 1.3 s and, in one round, a writer that did not wait for 4.4 s. A
+tenant's writes, a few small batches at a time, are well served either way,
+so the store waits: a writer is paced to what Qdrant applies, and a failure
+to apply reaches it.
 
 **Replicated.** Qdrant's consistency documentation: a write succeeds once
 `write_consistency_factor` replicas (1 by default) apply it; a query reads one
