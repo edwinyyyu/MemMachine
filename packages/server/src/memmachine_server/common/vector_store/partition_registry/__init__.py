@@ -1,15 +1,15 @@
 """Collection registry interface and implementations."""
 
-from .collection_registry import (
+from .partition_registry import (
     PurgeRound,
     Registration,
     Reservation,
-    VectorStoreCollectionRegistry,
+    VectorStorePartitionRegistry,
 )
 
 __all__ = [
     "PurgeRound",
     "Registration",
     "Reservation",
-    "VectorStoreCollectionRegistry",
+    "VectorStorePartitionRegistry",
 ]

@@ -43,9 +43,9 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStorePartitionAlreadyExistsError,
 )
 from .utils import (
     require_declared_types,
@@ -56,14 +56,14 @@ from .utils import (
     require_valid_score_threshold,
     validate_filter,
 )
-from .vector_store import VectorStore, VectorStoreCollection
+from .vector_store import VectorStore, VectorStorePartition
 
 
 class BaseSQLiteVecVectorStore(DeclarativeBase):
     """Base class for SQLiteVecVectorStore ORM models."""
 
 
-class _CollectionRow(BaseSQLiteVecVectorStore):
+class _PartitionRow(BaseSQLiteVecVectorStore):
     __tablename__ = "vector_store_sqlite_vec_cl"
 
     namespace: MappedColumn[str] = mapped_column(String(255), primary_key=True)
@@ -73,7 +73,7 @@ class _CollectionRow(BaseSQLiteVecVectorStore):
     )
 
 
-class SQLiteVecVectorStoreCollection(VectorStoreCollection):
+class SQLiteVecVectorStorePartition(VectorStorePartition):
     """A logical collection backed by SQLite + sqlite-vec."""
 
     _DISTANCE_FUNCTIONS: ClassVar[dict[SimilarityMetric, str]] = {
@@ -400,7 +400,7 @@ class SQLiteVecVectorStore(VectorStore):
         pass
 
     @override
-    async def create_collection(
+    async def create_partition(
         self,
         *,
         namespace: str,
@@ -413,11 +413,11 @@ class SQLiteVecVectorStore(VectorStore):
         async with self._create_session() as session, session.begin():
             existing_config = await self._get_stored_config(session, namespace, name)
             if existing_config is not None:
-                raise VectorStoreCollectionAlreadyExistsError(namespace, name)
+                raise VectorStorePartitionAlreadyExistsError(namespace, name)
 
             await self._ensure_collection_tables(session, namespace, name, config)
             session.add(
-                _CollectionRow(
+                _PartitionRow(
                     namespace=namespace,
                     name=name,
                     config_json=config.model_dump(mode="json"),
@@ -425,13 +425,13 @@ class SQLiteVecVectorStore(VectorStore):
             )
 
     @override
-    async def open_or_create_collection(
+    async def open_or_create_partition(
         self,
         *,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> VectorStoreCollection:
+    ) -> VectorStorePartition:
         require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
 
@@ -446,7 +446,7 @@ class SQLiteVecVectorStore(VectorStore):
                 records_table, vector_table_name = await self._ensure_collection_tables(
                     session, namespace, name, existing_config
                 )
-                return SQLiteVecVectorStoreCollection(
+                return SQLiteVecVectorStorePartition(
                     create_session=self._create_session,
                     config=existing_config,
                     records_table=records_table,
@@ -457,14 +457,14 @@ class SQLiteVecVectorStore(VectorStore):
                 session, namespace, name, config
             )
             session.add(
-                _CollectionRow(
+                _PartitionRow(
                     namespace=namespace,
                     name=name,
                     config_json=config.model_dump(mode="json"),
                 )
             )
 
-        return SQLiteVecVectorStoreCollection(
+        return SQLiteVecVectorStorePartition(
             create_session=self._create_session,
             config=config,
             records_table=records_table,
@@ -472,9 +472,9 @@ class SQLiteVecVectorStore(VectorStore):
         )
 
     @override
-    async def open_collection(
+    async def get_partition(
         self, *, namespace: str, name: str
-    ) -> VectorStoreCollection | None:
+    ) -> VectorStorePartition | None:
         require_identifiers(namespace, name)
 
         async with self._create_session() as session:
@@ -484,7 +484,7 @@ class SQLiteVecVectorStore(VectorStore):
 
         records_table = self._records_table(namespace, name)
         vector_table_name = self._vector_table_name(namespace, name)
-        return SQLiteVecVectorStoreCollection(
+        return SQLiteVecVectorStorePartition(
             create_session=self._create_session,
             config=existing,
             records_table=records_table,
@@ -492,7 +492,7 @@ class SQLiteVecVectorStore(VectorStore):
         )
 
     @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
+    async def delete_partition(self, *, namespace: str, name: str) -> None:
         require_identifiers(namespace, name)
 
         async with self._create_session() as session, session.begin():
@@ -507,16 +507,16 @@ class SQLiteVecVectorStore(VectorStore):
             await session.execute(text(f"DROP TABLE IF EXISTS [{records_table.name}]"))
 
             await session.execute(
-                delete(_CollectionRow).where(
-                    _CollectionRow.namespace == namespace,
-                    _CollectionRow.name == name,
+                delete(_PartitionRow).where(
+                    _PartitionRow.namespace == namespace,
+                    _PartitionRow.name == name,
                 )
             )
 
             self._sa_metadata.remove(records_table)
 
     @override
-    async def purge_deleted_collections(self) -> bool:
+    async def purge_deleted_partitions(self) -> bool:
         # delete_collection drops the tables itself.
         return False
 
@@ -556,9 +556,9 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> VectorStoreCollectionConfig | None:
         stored_config = (
             await session.execute(
-                select(_CollectionRow.config_json).where(
-                    _CollectionRow.namespace == namespace,
-                    _CollectionRow.name == name,
+                select(_PartitionRow.config_json).where(
+                    _PartitionRow.namespace == namespace,
+                    _PartitionRow.name == name,
                 )
             )
         ).scalar_one_or_none()

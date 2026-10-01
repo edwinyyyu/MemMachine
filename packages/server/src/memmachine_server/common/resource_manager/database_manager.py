@@ -33,9 +33,9 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
     Neo4jVectorGraphStoreParams,
 )
 from memmachine_server.common.vector_store import VectorStore
-from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    SQLAlchemyVectorStoreCollectionRegistry,
-    SQLAlchemyVectorStoreCollectionRegistryParams,
+from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
+    SQLAlchemyVectorStorePartitionRegistry,
+    SQLAlchemyVectorStorePartitionRegistryParams,
 )
 from memmachine_server.common.vector_store.vector_search_engine import (
     VectorSearchEngine,
@@ -626,14 +626,14 @@ class DatabaseManager:
 
             # The registry first, so a failed lookup or startup leaves no
             # client open.
-            collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-                SQLAlchemyVectorStoreCollectionRegistryParams(
-                    engine=await self.async_get_sql_engine(conf.collection_registry),
+            partition_registry = SQLAlchemyVectorStorePartitionRegistry(
+                SQLAlchemyVectorStorePartitionRegistryParams(
+                    engine=await self.async_get_sql_engine(conf.partition_registry),
                     vector_store_name=name,
                     tombstone_retention_seconds=conf.tombstone_retention_seconds,
                 )
             )
-            await collection_registry.startup()
+            await partition_registry.startup()
 
             client = AsyncQdrantClient(**client_kwargs)
 
@@ -647,7 +647,7 @@ class DatabaseManager:
 
             params = QdrantVectorStoreParams(
                 client=client,
-                collection_registry=collection_registry,
+                partition_registry=partition_registry,
                 metrics_factory=conf.get_metrics_factory(),
             )
             try:
@@ -721,14 +721,14 @@ class DatabaseManager:
 
             # The registry first, so a failed lookup or startup leaves no
             # client open.
-            collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
-                SQLAlchemyVectorStoreCollectionRegistryParams(
-                    engine=await self.async_get_sql_engine(conf.collection_registry),
+            partition_registry = SQLAlchemyVectorStorePartitionRegistry(
+                SQLAlchemyVectorStorePartitionRegistryParams(
+                    engine=await self.async_get_sql_engine(conf.partition_registry),
                     vector_store_name=name,
                     tombstone_retention_seconds=conf.tombstone_retention_seconds,
                 )
             )
-            await collection_registry.startup()
+            await partition_registry.startup()
 
             client = AsyncMilvusClient(**client_kwargs)
 
@@ -742,7 +742,7 @@ class DatabaseManager:
 
             params = MilvusVectorStoreParams(
                 client=client,
-                collection_registry=collection_registry,
+                partition_registry=partition_registry,
                 request_timeout_seconds=conf.request_timeout_seconds,
                 max_varchar_length=conf.max_varchar_length,
                 purge_batch_size=conf.purge_batch_size,

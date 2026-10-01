@@ -92,7 +92,9 @@ async def _purge_deleted_partitions_forever(store: SegmentStore) -> None:
         )
 
 
-async def _purge_deleted_collections_forever(store: VectorStore, label: str) -> None:
+async def _purge_deleted_vector_store_partitions_forever(
+    store: VectorStore, label: str
+) -> None:
     """Run the store's purge rounds for as long as the task runs.
 
     A call that ran a round is followed after a short pause, one that found
@@ -102,7 +104,7 @@ async def _purge_deleted_collections_forever(store: VectorStore, label: str) -> 
     """
     while True:
         try:
-            more = await store.purge_deleted_collections()
+            more = await store.purge_deleted_partitions()
         except Exception:
             logger.exception("%s purge failed; retrying next tick", label)
             more = False
@@ -210,7 +212,9 @@ class ResourceManagerImpl:
         store = await self._database_manager.get_vector_store(name)
         if name not in self._vector_store_purge_tasks:
             self._vector_store_purge_tasks[name] = asyncio.create_task(
-                _purge_deleted_collections_forever(store, f"Vector store {name}")
+                _purge_deleted_vector_store_partitions_forever(
+                    store, f"Vector store {name}"
+                )
             )
         return store
 
