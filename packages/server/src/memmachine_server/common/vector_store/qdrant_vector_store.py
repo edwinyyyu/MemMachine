@@ -495,7 +495,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
         self, partition_key: str, incarnation: UUID
     ) -> None:
         # A partition is the points carrying its incarnation in the
-        # store's one native collection, which provisioning prepared; it has no
+        # store's one native collection, which startup prepared; it has no
         # storage of its own.
         pass
 
