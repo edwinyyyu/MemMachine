@@ -150,7 +150,7 @@ class EventMemory:
         )
 
         self._schema_fields = frozenset(
-            params.vector_store_partition.config.indexed_properties_schema
+            params.vector_store_partition.indexed_properties
         )
 
         missing_base_fields = (
@@ -158,7 +158,7 @@ class EventMemory:
         )
         if missing_base_fields:
             raise ValueError(
-                f"Collection schema missing fields required by EventMemory: "
+                f"Vector store schema missing fields required by EventMemory: "
                 f"{', '.join(sorted(missing_base_fields))}"
             )
 
@@ -323,11 +323,10 @@ class EventMemory:
         """Build a vector record from a derivative and its embedding.
 
         The record carries the reserved timestamp and the properties the
-        vector store collection declares. Every other property stays on the
-        segment: the segment store holds them all and evaluates the whole
-        filter (see `_vector_store_filter`).
+        vector store declares. The segment store holds every property and
+        evaluates the whole filter (see `_vector_store_filter`).
         """
-        declared = self._vector_store_partition.config.indexed_properties_schema
+        declared = self._vector_store_partition.indexed_properties
         properties: dict[str, PropertyValue] = {
             self._TIMESTAMP_FIELD_NAME: derivative.timestamp,
             **{
@@ -359,14 +358,14 @@ class EventMemory:
     def _vector_store_filter(self, property_filter: FilterExpr) -> FilterExpr | None:
         """The conjuncts of a filter the vector store evaluates.
 
-        A vector record carries the properties the collection declares, so
+        A vector record carries the properties the store declares, so
         a conjunct naming any other field has nothing to match there and is
         left to the segment store, which holds every property and evaluates
         the whole filter on the context windows. A conjunct is dropped whole
         when any field under it is undeclared, so dropping only ever widens
         the vector search; the segment store narrows it back.
         """
-        declared = self._vector_store_partition.config.indexed_properties_schema
+        declared = self._vector_store_partition.indexed_properties
         mapped = map_filter_fields(property_filter, self._to_vector_record_property)
         return _conjoin(
             conjunct
@@ -515,7 +514,7 @@ class EventMemory:
         # Embedding scores depend on the similarity metric.
         higher_is_better = (
             self._reranker is not None
-            or self._vector_store_partition.config.similarity_metric.higher_is_better
+            or self._vector_store_partition.similarity_metric.higher_is_better
         )
 
         # Return scored contexts ordered by score.

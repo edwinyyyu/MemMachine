@@ -3,6 +3,7 @@
 import asyncio
 import gc
 import weakref
+from typing import Any
 from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
@@ -30,6 +31,7 @@ from memmachine_server.common.configuration.language_model_conf import (
     OpenAIResponsesLanguageModelConf,
 )
 from memmachine_server.common.configuration.reranker_conf import EmbedderRerankerConf
+from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.errors import (
     InvalidEmbedderError,
     InvalidLanguageModelError,
@@ -400,6 +402,14 @@ async def test_vector_store_purge_drains_backlog_without_waiting(monkeypatch):
     assert calls == 3
 
 
+_VECTOR_STORE: dict[str, Any] = {
+    "vector_store_name": "c",
+    "vector_dimensions": 3,
+    "similarity_metric": SimilarityMetric.COSINE,
+    "indexed_properties": {},
+}
+
+
 @pytest.mark.asyncio
 async def test_get_vector_store_starts_one_sweeper_per_store(
     invalid_resource_manager, monkeypatch
@@ -420,8 +430,8 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
         invalid_resource_manager._database_manager, "close", AsyncMock()
     )
 
-    first = await invalid_resource_manager.get_vector_store("vs")
-    second = await invalid_resource_manager.get_vector_store("vs")
+    first = await invalid_resource_manager.get_vector_store("vs", **_VECTOR_STORE)
+    second = await invalid_resource_manager.get_vector_store("vs", **_VECTOR_STORE)
     await asyncio.sleep(0)  # the loop makes its first call and parks in sleep
 
     assert first is second is store
@@ -451,7 +461,7 @@ async def test_vector_store_purge_task_does_not_pin_the_manager(
             store, "Vector store s"
         )
     )
-    manager._vector_store_purge_tasks["vs"] = task
+    manager._vector_store_purge_tasks["vs", "c"] = task
     manager_ref = weakref.ref(manager)
     await asyncio.sleep(0)
 

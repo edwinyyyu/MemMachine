@@ -3,9 +3,8 @@
 # ruff: noqa: E402
 
 import math
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from typing import override
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -21,7 +20,7 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 AsyncMilvusClient = pymilvus.AsyncMilvusClient
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -33,10 +32,10 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
+    PartitionSchema,
     Record,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
     VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionSchemaMismatchError,
 )
 from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStore,
@@ -44,17 +43,23 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStorePartition,
 )
 from memmachine_server.common.vector_store.partition_registry import (
-    Registration,
+    RegisteredPartition,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
     SQLAlchemyVectorStorePartitionRegistryParams,
 )
 
-NAMESPACE = "test_namespace"
+VECTOR_STORE_NAME = "test_vector_store"
 NAME = "test_name"
 VECTOR_DIM = 3
-VECTOR_STORE_NAME = "milvus_test"
+INDEXED_PROPERTIES: dict[str, PropertyType] = {
+    "name": str,
+    "age": int,
+    "score": float,
+    "active": bool,
+    "created_at": datetime,
+}
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_VARCHAR_LENGTH = 1024
 PURGE_BATCH_SIZE = 10000
@@ -78,16 +83,42 @@ def _make_record(
     )
 
 
-async def _settle(collection: MilvusVectorStorePartition) -> None:
+async def _params(client, registry_engine, **overrides) -> MilvusVectorStoreParams:
+    """Parameters for one store: its own provisioned registry over the shared registry database."""
+    params: dict[str, Any] = {
+        "client": client,
+        "vector_store_name": VECTOR_STORE_NAME,
+        "vector_dimensions": VECTOR_DIM,
+        "similarity_metric": SimilarityMetric.COSINE,
+        "indexed_properties": INDEXED_PROPERTIES,
+        "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
+        "max_varchar_length": MAX_VARCHAR_LENGTH,
+        "purge_batch_size": PURGE_BATCH_SIZE,
+    }
+    params.update(overrides)
+    params["partition_registry"] = SQLAlchemyVectorStorePartitionRegistry(
+        SQLAlchemyVectorStorePartitionRegistryParams(
+            engine=registry_engine,
+            vector_store_name=params["vector_store_name"],
+            # Tombstones come due at once, so a test can purge right after
+            # deleting.
+            tombstone_retention_seconds=0,
+        )
+    )
+    await params["partition_registry"].provision()
+    return MilvusVectorStoreParams(**params)
+
+
+async def _settle(partition: MilvusVectorStorePartition) -> None:
     """Return once the store's reads reflect every write made so far.
 
     The store reads at Bounded, which may lag its writes. A Strong read
     returns only once the server has applied every earlier write, and with
     one replica the store's later reads start from that point.
     """
-    await collection._client.query(
-        collection_name=collection._native_collection_name,
-        filter=f'partition_key == "{collection._incarnation}"',
+    await partition._client.query(
+        collection_name=partition._collection_name,
+        filter=f'partition_key == "{partition._incarnation}"',
         output_fields=["id"],
         limit=1,
         consistency_level="Strong",
@@ -96,16 +127,16 @@ async def _settle(collection: MilvusVectorStorePartition) -> None:
 
 
 async def _stored(
-    collection: MilvusVectorStorePartition, record_uuids: list[UUID]
+    partition: MilvusVectorStorePartition, record_uuids: list[UUID]
 ) -> dict[UUID, dict]:
     """The entities Milvus holds under these UUIDs, read past the store at Strong.
 
     The store's reads may lag its writes by its consistency level; a Strong
     read reflects every write that returned before it.
     """
-    rows = await collection._client.get(
-        collection_name=collection._native_collection_name,
-        ids=[collection._primary_id(record_uuid) for record_uuid in record_uuids],
+    rows = await partition._client.get(
+        collection_name=partition._collection_name,
+        ids=[partition._primary_id(record_uuid) for record_uuid in record_uuids],
         output_fields=["*"],
         consistency_level="Strong",
     )
@@ -131,25 +162,8 @@ async def store(milvus_client, tmp_path):
     registry_engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
     )
-    partition_registry = SQLAlchemyVectorStorePartitionRegistry(
-        SQLAlchemyVectorStorePartitionRegistryParams(
-            engine=registry_engine,
-            vector_store_name=VECTOR_STORE_NAME,
-            # Tombstones come due at once, so a test can purge right after
-            # deleting.
-            tombstone_retention_seconds=0,
-        )
-    )
-    await partition_registry.startup()
-    vector_store = MilvusVectorStore(
-        MilvusVectorStoreParams(
-            client=milvus_client,
-            partition_registry=partition_registry,
-            request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-            max_varchar_length=MAX_VARCHAR_LENGTH,
-            purge_batch_size=PURGE_BATCH_SIZE,
-        )
-    )
+    vector_store = MilvusVectorStore(await _params(milvus_client, registry_engine))
+    await vector_store.provision()
     await vector_store.startup()
     yield vector_store
     await vector_store.shutdown()
@@ -159,7 +173,7 @@ async def store(milvus_client, tmp_path):
 # The client requests the store makes; each must carry the store's timeout.
 _CLIENT_REQUESTS = (
     "has_collection",
-    "create_partition",
+    "create_collection",
     "list_indexes",
     "create_index",
     "load_collection",
@@ -172,32 +186,34 @@ _CLIENT_REQUESTS = (
 
 @pytest.mark.asyncio
 async def test_every_request_carries_the_timeout(store, monkeypatch):
-    # Its own namespace: a native collection an earlier test left behind
-    # would let create_collection skip its Milvus request.
-    namespace = "timed_namespace"
     spies = {}
     for name in _CLIENT_REQUESTS:
         spies[name] = MagicMock(wraps=getattr(store._client, name))
         monkeypatch.setattr(store._client, name, spies[name])
 
-    await store.create_partition(
-        namespace=namespace,
-        name="timed",
-        config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+    # A collection of its own, so provisioning creates it through the spies.
+    timed = MilvusVectorStore(
+        await _params(
+            store._client, store._partition_registry._engine, vector_store_name="timed"
+        )
     )
-    coll = await store.get_partition(namespace=namespace, name="timed")
+    await timed.provision()
+    await timed.startup()
+    await timed.create_partition("timed")
+    coll = await timed.get_partition("timed")
     assert coll is not None
+    vector = _normalize([1.0, 0.0, 0.0])
     record, kept = (
-        _make_record(vector=_normalize([1.0, 0.0, 0.0])),
+        _make_record(vector=vector),
         _make_record(vector=_normalize([0.0, 1.0, 0.0])),
     )
     await coll.upsert(records=[record, kept])
     await _settle(coll)
-    await coll.query(query_vectors=[record.vector], limit=1)
+    await coll.query(query_vectors=[vector], limit=1)
     await coll.delete(record_uuids=[record.uuid])
-    await store.delete_partition(namespace=namespace, name="timed")
+    await timed.delete_partition("timed")
     # The purge finds the record the deletion left and reclaims it.
-    while await store.purge_deleted_partitions():
+    while await timed.purge_deleted_partitions():
         pass
 
     assert {name for name, spy in spies.items() if spy.call_count} >= set(
@@ -210,37 +226,27 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
 
 @pytest_asyncio.fixture
 async def collection(store):
-    await store.create_partition(
-        namespace=NAMESPACE,
-        name=NAME,
-        config=VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-            similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties_schema={
-                "name": str,
-                "age": int,
-                "score": float,
-                "active": bool,
-                "created_at": datetime,
-            },
-        ),
-    )
-    coll = await store.get_partition(namespace=NAMESPACE, name=NAME)
+    await store.create_partition(NAME)
+    coll = await store.get_partition(NAME)
     assert coll is not None
     yield coll
-    await store.delete_partition(namespace=NAMESPACE, name=NAME)
+    await store.delete_partition(NAME)
 
 
-class TestCollectionLifecycle:
+class TestPartitionLifecycle:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failing_step", ["create_index", "load_collection"])
-    async def test_a_creation_that_failed_part_way_is_as_if_never_attempted(
+    async def test_a_provisioning_that_failed_part_way_is_as_if_never_attempted(
         self, store, monkeypatch, failing_step
     ):
-        """The next creation completes the native collection a failed one left behind."""
-        namespace = f"partial_{failing_step}"
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
+        """The next provisioning completes the native collection a failed one left behind."""
+        partial = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                vector_store_name=f"partial_{failing_step}",
+                indexed_properties={"name": str},
+            )
         )
 
         async def refuse(*args, **kwargs):
@@ -249,111 +255,110 @@ class TestCollectionLifecycle:
         with monkeypatch.context() as patch:
             patch.setattr(store._client, failing_step, refuse)
             with pytest.raises(pymilvus.MilvusException, match="refused"):
-                await store.create_partition(
-                    namespace=namespace, name="partial", config=config
-                )
-        assert await store.get_partition(namespace=namespace, name="partial") is None
+                await partial.provision()
 
-        await store.create_partition(namespace=namespace, name="partial", config=config)
-        coll = await store.get_partition(namespace=namespace, name="partial")
+        await partial.provision()
+        await partial.create_partition("partial")
+        coll = await partial.get_partition("partial")
         assert coll is not None
-        record = _make_record(
-            vector=_normalize([1.0, 0.0, 0.0]), properties={"name": "alice"}
-        )
+        vector = _normalize([1.0, 0.0, 0.0])
+        record = _make_record(vector=vector, properties={"name": "alice"})
         await coll.upsert(records=[record])
         await _settle(coll)
         [result] = await coll.query(
-            query_vectors=[record.vector],
+            query_vectors=[vector],
             limit=1,
             property_filter=Comparison(field="name", op="=", value="alice"),
         )
         assert [match.record_uuid for match in result.matches] == [record.uuid]
-        native = coll._native_collection_name
-        assert set(await store._client.list_indexes(native)) == {"vector", "_p_name"}
-        await store.delete_partition(namespace=namespace, name="partial")
+        assert set(await store._client.list_indexes(partial._collection_name)) == {
+            "vector",
+            "_p_name",
+        }
+        await partial.delete_partition("partial")
 
     @pytest.mark.asyncio
     async def test_create_open_delete(self, store):
-        await store.create_partition(
-            namespace=NAMESPACE,
-            name="lifecycle",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        coll = await store.get_partition(namespace=NAMESPACE, name="lifecycle")
+        await store.create_partition("lifecycle")
+        coll = await store.get_partition("lifecycle")
         assert isinstance(coll, MilvusVectorStorePartition)
-        await store.delete_partition(namespace=NAMESPACE, name="lifecycle")
+        await store.delete_partition("lifecycle")
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
         with pytest.raises(VectorStorePartitionAlreadyExistsError):
-            await store.create_partition(
-                namespace=NAMESPACE,
-                name=NAME,
-                config=collection.config,
-            )
+            await store.create_partition(NAME)
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
-        await store.delete_partition(namespace=NAMESPACE, name="nonexistent")
+        await store.delete_partition("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_partition(
-            namespace=NAMESPACE,
-            name="mismatch",
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-        )
-        with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_partition(
-                namespace=NAMESPACE,
-                name="mismatch",
-                config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
+    async def test_a_store_with_another_schema_cannot_open_the_partition(self, store):
+        """The schema is the collection's: another store of it must declare the same."""
+        await store.create_partition("mismatch")
+        other_dimensions = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                vector_dimensions=VECTOR_DIM + 1,
             )
-        await store.delete_partition(namespace=NAMESPACE, name="mismatch")
+        )
+        with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
+            await other_dimensions.open_or_create_partition("mismatch")
+        other_keys = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                indexed_properties={"name": str},
+            )
+        )
+        with pytest.raises(VectorStorePartitionSchemaMismatchError, match="mismatch"):
+            await other_keys.get_partition("mismatch")
+        await store.delete_partition("mismatch")
 
     @pytest.mark.asyncio
-    async def test_same_config_shares_native_collection(self, store):
-        schema: dict[str, type[PropertyValue]] = {"name": str}
-        config = VectorStoreCollectionConfig(
-            vector_dimensions=VECTOR_DIM,
-            similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties_schema=schema,
+    async def test_a_vector_store_name_may_begin_with_a_digit(self, store):
+        """Milvus refuses a collection name beginning with a digit; the store's
+        collection name begins with its prefix instead."""
+        digit_first = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                vector_store_name="0_digit_first",
+            )
         )
-        await store.create_partition(namespace=NAMESPACE, name="coll_a", config=config)
-        await store.create_partition(namespace=NAMESPACE, name="coll_b", config=config)
+        await digit_first.provision()
+        await digit_first.create_partition("digit_first")
+        assert await digit_first.get_partition("digit_first") is not None
+        await digit_first.delete_partition("digit_first")
 
-        coll_a = await store.get_partition(namespace=NAMESPACE, name="coll_a")
-        coll_b = await store.get_partition(namespace=NAMESPACE, name="coll_b")
+    @pytest.mark.asyncio
+    async def test_partitions_share_the_store_collection(self, store):
+        """Every partition is a partition-key value inside the store's one native collection."""
+        await store.create_partition("coll_a")
+        await store.create_partition("coll_b")
+
+        coll_a = await store.get_partition("coll_a")
+        coll_b = await store.get_partition("coll_b")
         assert coll_a is not None
         assert coll_b is not None
-        assert coll_a._native_collection_name == coll_b._native_collection_name
+        assert coll_a._collection_name == store._collection_name
+        assert coll_b._collection_name == store._collection_name
 
-        await store.delete_partition(namespace=NAMESPACE, name="coll_a")
-        await store.delete_partition(namespace=NAMESPACE, name="coll_b")
+        await store.delete_partition("coll_a")
+        await store.delete_partition("coll_b")
 
     @pytest.mark.asyncio
     async def test_native_collection_schema(self, store):
         """Each declared property is a typed, nullable, indexed field, a
         datetime with a field for its offset; the collection isolates tenants."""
-        await store.create_partition(
-            namespace=NAMESPACE,
-            name="schema",
-            config=VectorStoreCollectionConfig(
-                vector_dimensions=VECTOR_DIM,
-                indexed_properties_schema={
-                    "name": str,
-                    "age": int,
-                    "score": float,
-                    "active": bool,
-                    "created_at": datetime,
-                },
-            ),
-        )
-        coll = await store.get_partition(namespace=NAMESPACE, name="schema")
+        await store.create_partition("schema")
+        coll = await store.get_partition("schema")
         assert coll is not None
-        native = coll._native_collection_name
+        native = coll._collection_name
 
-        schema = await store._client.describe_collection(native)
+        schema = await store._client.describe_collection(coll._collection_name)
         fields = {field["name"]: field for field in schema["fields"]}
         assert schema["auto_id"] is False
         assert schema["enable_dynamic_field"] is False
@@ -388,18 +393,18 @@ class TestCollectionLifecycle:
             "_p_created_at",
         }
 
-        await store.delete_partition(namespace=NAMESPACE, name="schema")
+        await store.delete_partition("schema")
 
     @pytest.mark.asyncio
     async def test_unsupported_metric_raises(self, store):
         with pytest.raises(ValueError, match="Milvus only supports"):
-            await store.create_partition(
-                namespace=NAMESPACE,
-                name="bad_metric",
-                config=VectorStoreCollectionConfig(
-                    vector_dimensions=VECTOR_DIM,
+            MilvusVectorStore(
+                await _params(
+                    store._client,
+                    store._partition_registry._engine,
+                    vector_store_name="bad_metric",
                     similarity_metric=SimilarityMetric.MANHATTAN,
-                ),
+                )
             )
 
 
@@ -426,7 +431,7 @@ class TestUpsertAndQuery:
         await _settle(collection)
 
         assert captured_kwargs is not None
-        assert captured_kwargs["collection_name"] == collection._native_collection_name
+        assert captured_kwargs["collection_name"] == collection._collection_name
         assert captured_kwargs["data"] == [collection._build_entity(record)]
 
     @pytest.mark.asyncio
@@ -891,23 +896,28 @@ class TestScores:
     async def test_scores_are_the_metric_values(self, store, metric, expected):
         """Scores come from the server: cosine similarity, inner product, and
         Euclidean distance (Milvus returns it squared)."""
-        name = f"scores_{metric.value}"
-        await store.create_partition(
-            namespace=NAMESPACE,
-            name=name,
-            config=VectorStoreCollectionConfig(
-                vector_dimensions=VECTOR_DIM, similarity_metric=metric
-            ),
+        # A store's metric is its collection's, so each metric is its own store.
+        scored = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                vector_store_name=f"scores_{metric.value}",
+                similarity_metric=metric,
+            )
         )
-        collection = await store.get_partition(namespace=NAMESPACE, name=name)
-        assert collection is not None
+        await scored.provision()
+        await scored.startup()
+        await scored.delete_partition("scores")
+        await scored.create_partition("scores")
+        partition = await scored.get_partition("scores")
+        assert partition is not None
         record = _make_record(vector=[1.2, 1.6, 0.0])
-        await collection.upsert(records=[record])
-        await _settle(collection)
+        await partition.upsert(records=[record])
+        await _settle(partition)
 
-        [result] = await collection.query(query_vectors=[[1.0, 0.0, 0.0]], limit=1)
+        [result] = await partition.query(query_vectors=[[1.0, 0.0, 0.0]], limit=1)
         assert result.matches[0].score == pytest.approx(expected, abs=1e-3)
-        await store.delete_partition(namespace=NAMESPACE, name=name)
+        await scored.delete_partition("scores")
 
 
 class TestDelete:
@@ -936,49 +946,48 @@ class TestDelete:
         assert await _stored(collection, [record.uuid]) == {}
 
 
-@dataclass(frozen=True)
-class _CurrentRegistration(Registration):
-    """A registration whose collection is never deleted."""
-
-    @override
-    async def require_current(self) -> None:
-        return None
-
-
 @pytest.mark.asyncio
 async def test_a_delete_milvus_does_not_accept_in_full_raises():
     """A delete Milvus accepts for fewer primary keys than the store sent raises."""
     client = MagicMock(spec=AsyncMilvusClient)
     client.delete = AsyncMock(return_value={"delete_count": 0})
-    collection = MilvusVectorStorePartition(
+    incarnation = uuid4()
+    partition = MilvusVectorStorePartition(
         client=client,
-        native_collection_name="native",
-        registration=_CurrentRegistration(
-            namespace=NAMESPACE,
-            name=NAME,
-            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
-            incarnation=uuid4(),
-        ),
+        collection_name=f"sys_{VECTOR_STORE_NAME}",
+        vector_store_name=VECTOR_STORE_NAME,
+        partition_key=NAME,
+        incarnation=incarnation,
+        vector_dimensions=VECTOR_DIM,
+        similarity_metric=SimilarityMetric.COSINE,
+        indexed_properties={},
         tracker=OperationTracker(None, prefix="test"),
+        get_registered_partition=AsyncMock(
+            return_value=RegisteredPartition(
+                incarnation=incarnation,
+                schema=PartitionSchema(
+                    vector_dimensions=VECTOR_DIM,
+                    similarity_metric=SimilarityMetric.COSINE,
+                    indexed_properties={},
+                ),
+                live=True,
+                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        ),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 
     with pytest.raises(pymilvus.MilvusException, match="accepted the delete of 0 of 2"):
-        await collection.delete(record_uuids=[uuid4(), uuid4()])
+        await partition.delete(record_uuids=[uuid4(), uuid4()])
 
 
 class TestPartitionIsolation:
     @pytest.mark.asyncio
-    async def test_same_uuid_can_exist_in_different_logical_collections(self, store):
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_partition(
-            namespace=NAMESPACE, name="tenant_a", config=config
-        )
-        await store.create_partition(
-            namespace=NAMESPACE, name="tenant_b", config=config
-        )
-        coll_a = await store.get_partition(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.get_partition(namespace=NAMESPACE, name="tenant_b")
+    async def test_same_uuid_can_exist_in_different_partitions(self, store):
+        await store.create_partition("tenant_a")
+        await store.create_partition("tenant_b")
+        coll_a = await store.get_partition("tenant_a")
+        coll_b = await store.get_partition("tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -996,43 +1005,38 @@ class TestPartitionIsolation:
         stored_a = await _stored(coll_a, [record_uuid])
         stored_b = await _stored(coll_b, [record_uuid])
 
-        assert decode_properties(stored_a[record_uuid]["properties"]) == {"name": "a"}
-        assert decode_properties(stored_b[record_uuid]["properties"]) == {"name": "b"}
+        # `name` is declared, so each value is in its typed field.
+        assert stored_a[record_uuid]["_p_name"] == "a"
+        assert stored_b[record_uuid]["_p_name"] == "b"
 
-        await store.delete_partition(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_partition(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition("tenant_a")
+        await store.delete_partition("tenant_b")
 
 
 class TestPurgeBatches:
     @pytest.mark.asyncio
     async def test_a_purge_round_reclaims_at_most_one_batch(self, store):
         store = MilvusVectorStore(
-            MilvusVectorStoreParams(
-                client=store._client,
-                partition_registry=store._partition_registry,
-                request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-                max_varchar_length=MAX_VARCHAR_LENGTH,
-                purge_batch_size=2,
+            await _params(
+                store._client, store._partition_registry._engine, purge_batch_size=2
             )
         )
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_partition(namespace=NAMESPACE, name="batched", config=config)
-        collection = await store.get_partition(namespace=NAMESPACE, name="batched")
-        assert collection is not None
-        await collection.upsert(
+        await store.create_partition("batched")
+        partition = await store.get_partition("batched")
+        assert partition is not None
+        await partition.upsert(
             records=[
                 _make_record(vector=_normalize([1.0, float(i), 0.0])) for i in range(5)
             ]
         )
-        await _settle(collection)
-        incarnation = collection._incarnation
-        await store.delete_partition(namespace=NAMESPACE, name="batched")
-        native = MilvusVectorStore._build_native_collection_name(NAMESPACE, config)
+        await _settle(partition)
+        incarnation = partition._incarnation
+        await store.delete_partition("batched")
 
         async def left_of_the_incarnation() -> int:
             return len(
                 await store._client.query(
-                    collection_name=native,
+                    collection_name=store._collection_name,
                     filter=f'partition_key == "{incarnation}"',
                     output_fields=["id"],
                     limit=16384,
@@ -1042,20 +1046,19 @@ class TestPurgeBatches:
 
         left_after_each_round = []
         while await store.purge_deleted_partitions():
-            await _settle(collection)
+            await _settle(partition)
             left_after_each_round.append(await left_of_the_incarnation())
         # Batches of 2, then a round that finds nothing and removes the tombstone.
         assert left_after_each_round == [3, 1, 0, 0]
 
 
 class TestLifecycleContract(PartitionLifecycleContract):
-    """The collection lifecycle contract, against this store."""
+    """The partition lifecycle contract, against this store."""
 
     @staticmethod
-    async def count_stored(store, namespace: str, config) -> int:
-        native = MilvusVectorStore._build_native_collection_name(namespace, config)
+    async def count_stored(store) -> int:
         rows = await store._client.query(
-            collection_name=native,
+            collection_name=store._collection_name,
             filter='id != ""',
             output_fields=["id"],
             limit=16384,
@@ -1066,10 +1069,10 @@ class TestLifecycleContract(PartitionLifecycleContract):
     settle = staticmethod(_settle)
 
     @staticmethod
-    async def stored_uuids(collection) -> set[UUID]:
-        rows = await collection._client.query(
-            collection_name=collection._native_collection_name,
-            filter=f'partition_key == "{collection._incarnation}"',
+    async def stored_uuids(partition) -> set[UUID]:
+        rows = await partition._client.query(
+            collection_name=partition._collection_name,
+            filter=f'partition_key == "{partition._incarnation}"',
             output_fields=["record_uuid"],
             limit=16384,
             consistency_level="Strong",

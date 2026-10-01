@@ -1,15 +1,13 @@
-"""Collection registry interface and implementations."""
+"""Partition registry interface and implementations."""
 
 from .partition_registry import (
     PurgeClaim,
-    Registration,
-    Reservation,
+    RegisteredPartition,
     VectorStorePartitionRegistry,
 )
 
 __all__ = [
     "PurgeClaim",
-    "Registration",
-    "Reservation",
+    "RegisteredPartition",
     "VectorStorePartitionRegistry",
 ]
