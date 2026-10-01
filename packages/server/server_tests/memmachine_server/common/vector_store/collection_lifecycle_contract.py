@@ -22,6 +22,7 @@ from memmachine_server.common.vector_store import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionHandleStaleError,
     VectorStoreCollectionPendingError,
     registry_backed_vector_store,
@@ -246,22 +247,23 @@ class CollectionLifecycleContract:
 
     @pytest.mark.asyncio
     async def test_a_write_landing_under_a_dead_incarnation_raises_and_is_reclaimed(
-        self, store
+        self, store, monkeypatch
     ):
         collection = await _fresh(store, LIFECYCLE_NAME)
         baseline = await self._drained_count(store)
         records = _records(2)
 
         # The collection dies between the handle's check and its write.
-        get_registered_collection = collection._get_registered_collection
+        registration_type = type(collection._registration)
+        require_current = registration_type.require_current
 
-        async def deleted_once_checked(namespace, name):
-            registered = await get_registered_collection(namespace, name)
-            if registered is not None:
-                await store.delete_collection(namespace=namespace, name=name)
-            return registered
+        async def deleted_once_checked(registration) -> None:
+            await require_current(registration)
+            await store.delete_collection(
+                namespace=registration.namespace, name=registration.name
+            )
 
-        collection._get_registered_collection = deleted_once_checked
+        monkeypatch.setattr(registration_type, "require_current", deleted_once_checked)
 
         with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
             await collection.upsert(records=records)
@@ -289,19 +291,20 @@ class CollectionLifecycleContract:
 
     @pytest.mark.asyncio
     async def test_an_upsert_checks_the_registry_twice_and_a_query_or_delete_once(
-        self, store
+        self, store, monkeypatch
     ):
         collection = await _fresh(store, LIFECYCLE_NAME)
         record = _records(1)[0]
         checks = 0
-        get_registered_collection = collection._get_registered_collection
+        registration_type = type(collection._registration)
+        require_current = registration_type.require_current
 
-        async def counted_get_registered_collection(namespace, name):
+        async def counted(registration) -> None:
             nonlocal checks
             checks += 1
-            return await get_registered_collection(namespace, name)
+            await require_current(registration)
 
-        collection._get_registered_collection = counted_get_registered_collection
+        monkeypatch.setattr(registration_type, "require_current", counted)
 
         await collection.upsert(records=[record])
         assert checks == 2
@@ -368,7 +371,7 @@ class CollectionLifecycleContract:
             return None
 
         monkeypatch.setattr(registry, "register", lost)
-        monkeypatch.setattr(registry, "get", vanished)
+        monkeypatch.setattr(registry, "resolve", vanished)
         monkeypatch.setattr(
             registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
         )
@@ -401,9 +404,9 @@ class CollectionLifecycleContract:
             # lookup and its own registration.
             nonlocal lost_registrations
             lost_registrations += 1
-            incarnation = await register_collection(namespace, name, config)
-            await store._prepare_storage(namespace, config, incarnation)
-            await registry.mark_live(incarnation)
+            pending = await register_collection(namespace, name, config)
+            await store._prepare_storage(namespace, config, pending.incarnation)
+            await pending.mark_live()
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
         monkeypatch.setattr(registry, "register", another_process_wins)
@@ -415,7 +418,7 @@ class CollectionLifecycleContract:
         # It lost once, then found the winner instead of registering again.
         assert lost_registrations == 1
 
-        winner = await registry.get(LIFECYCLE_NAMESPACE, LIFECYCLE_NAME)
+        winner = await registry.resolve(LIFECYCLE_NAMESPACE, LIFECYCLE_NAME)
         assert winner is not None
         assert collection._incarnation == winner.incarnation
         record = _records(1)[0]
@@ -446,8 +449,8 @@ class CollectionLifecycleContract:
         async def another_process_wins(namespace, name, config):
             nonlocal lost_registrations
             lost_registrations += 1
-            incarnation = await register_collection(namespace, name, other_config)
-            await registry.mark_live(incarnation)
+            pending = await register_collection(namespace, name, other_config)
+            await pending.mark_live()
             raise VectorStoreCollectionAlreadyExistsError(namespace, name)
 
         monkeypatch.setattr(registry, "register", another_process_wins)
@@ -529,6 +532,7 @@ class CollectionLifecycleContract:
                 except (
                     VectorStoreCollectionAlreadyExistsError,
                     VectorStoreCollectionConfigMismatchError,
+                    VectorStoreCollectionDeletedError,
                     VectorStoreCollectionPendingError,
                 ):
                     pass
