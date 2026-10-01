@@ -66,7 +66,7 @@ async def _registry(
             tombstone_retention_seconds=tombstone_retention_seconds,
         )
     )
-    await registry.provision()
+    await registry.startup()
     return registry
 
 
@@ -573,7 +573,7 @@ async def test_the_backoff_stops_doubling_at_its_maximum(
             max_purge_retry_backoff_seconds=120,
         )
     )
-    await registry.provision()
+    await registry.startup()
     incarnation = await registry.register("a", SCHEMA)
     await registry.unregister("a")
     await _age_deletion(registry, incarnation)
