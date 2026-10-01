@@ -267,7 +267,7 @@ class PartitionLifecycleContract:
         async def vanished(partition_key) -> None:
             return None
 
-        monkeypatch.setattr(registry, "register", lost)
+        monkeypatch.setattr(registry, "reserve", lost)
         monkeypatch.setattr(registry, "resolve", vanished)
         monkeypatch.setattr(
             registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
@@ -301,31 +301,33 @@ class PartitionLifecycleContract:
     async def test_open_or_create_opens_the_winner_after_losing_the_create(
         self, store, monkeypatch
     ):
-        """A creator whose registration loses to another process's opens
+        """A creator whose reservation loses to another process's opens
         the winner's partition, bound to the winner's life."""
         await store.delete_partition(LIFECYCLE_KEY)
         registry = store._partition_registry
-        register_partition = registry.register
-        lost_registrations = 0
+        reserve = registry.reserve
+        lost_reservations = 0
 
         async def another_process_wins(partition_key, schema):
             # The other process creates the partition between this caller's
-            # lookup and its own registration.
-            nonlocal lost_registrations
-            lost_registrations += 1
-            pending = await register_partition(partition_key, schema)
-            await store._prepare_partition_storage(partition_key, pending.incarnation)
-            await pending.mark_live()
+            # lookup and its own reservation.
+            nonlocal lost_reservations
+            lost_reservations += 1
+            reservation = await reserve(partition_key, schema)
+            await store._prepare_partition_storage(
+                partition_key, reservation.incarnation
+            )
+            await reservation.confirm()
             raise VectorStorePartitionAlreadyExistsError(
                 store.vector_store_name, partition_key
             )
 
-        monkeypatch.setattr(registry, "register", another_process_wins)
+        monkeypatch.setattr(registry, "reserve", another_process_wins)
         partition = await store.open_or_create_partition(LIFECYCLE_KEY)
         monkeypatch.undo()
 
         # It lost once, then found the winner instead of registering again.
-        assert lost_registrations == 1
+        assert lost_reservations == 1
 
         winner = await registry.resolve(LIFECYCLE_KEY)
         assert winner is not None
@@ -345,28 +347,28 @@ class PartitionLifecycleContract:
         gets the mismatch, not a handle to the winner's partition."""
         await store.delete_partition(LIFECYCLE_KEY)
         registry = store._partition_registry
-        register_partition = registry.register
-        lost_registrations = 0
+        reserve = registry.reserve
+        lost_reservations = 0
 
         async def another_process_wins(partition_key, schema):
-            nonlocal lost_registrations
-            lost_registrations += 1
-            pending = await register_partition(
+            nonlocal lost_reservations
+            lost_reservations += 1
+            reservation = await reserve(
                 partition_key,
                 schema.model_copy(
                     update={"vector_dimensions": schema.vector_dimensions + 1}
                 ),
             )
-            await pending.mark_live()
+            await reservation.confirm()
             raise VectorStorePartitionAlreadyExistsError(
                 store.vector_store_name, partition_key
             )
 
-        monkeypatch.setattr(registry, "register", another_process_wins)
+        monkeypatch.setattr(registry, "reserve", another_process_wins)
         with pytest.raises(VectorStorePartitionSchemaMismatchError):
             await store.open_or_create_partition(LIFECYCLE_KEY)
         monkeypatch.undo()
-        assert lost_registrations == 1
+        assert lost_reservations == 1
         await store.delete_partition(LIFECYCLE_KEY)
 
     @pytest.mark.asyncio
@@ -377,7 +379,7 @@ class PartitionLifecycleContract:
         opened is not an error: open-or-create creates the partition again."""
         await store.delete_partition(LIFECYCLE_KEY)
         registry = store._partition_registry
-        register_partition = registry.register
+        reserve = registry.reserve
         lost = False
 
         async def lose_once(partition_key, schema):
@@ -387,9 +389,9 @@ class PartitionLifecycleContract:
                 raise VectorStorePartitionAlreadyExistsError(
                     store.vector_store_name, partition_key
                 )
-            return await register_partition(partition_key, schema)
+            return await reserve(partition_key, schema)
 
-        monkeypatch.setattr(registry, "register", lose_once)
+        monkeypatch.setattr(registry, "reserve", lose_once)
 
         partition = await store.open_or_create_partition(LIFECYCLE_KEY)
 

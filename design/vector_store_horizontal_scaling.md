@@ -44,7 +44,7 @@ Shared: contracts and choices made with every backend in mind.
 
 | Document | What it covers |
 |---|---|
-| [partition registry](vector_store_partition_registry.md) | The SQL catalog that arbitrates which partitions exist, incarnations, registrations, handles and their fencing, creation races. |
+| [partition registry](vector_store_partition_registry.md) | The SQL catalog that arbitrates which partitions exist, incarnations, reservations and registrations, handles and their fencing, creation races. |
 | [purge](vector_store_purge.md) | Tombstones, the retention, the claim, backoff, dead-lettering, the sweeper. |
 | [consistency](vector_store_consistency.md) | What a query sees of earlier writes, as the contract states it; why the contract has no `get`; asynchronous clients; how tests observe state. |
 | [isolation](vector_store_isolation.md) | Isolation between partitions, record UUIDs and their reuse, and whether other vector databases can meet the guarantee. |
@@ -59,12 +59,12 @@ behind its choices.
 
 ## Lifecycle of a partition
 
-1. **Create.** The store inserts a pending registry row under a freshly
-   minted incarnation, prepares the storage the partition needs of its own
-   (on Qdrant and Milvus, none: its records go into the store's one native
-   collection, which startup prepared), and marks the row live. A racing
-   creator loses at the registry's primary key, and a pending partition is not
-   opened.
+1. **Create.** The store reserves the key, inserting a pending registry row
+   under a freshly minted incarnation, prepares the storage the partition
+   needs of its own (on Qdrant and Milvus, none: its records go into the
+   store's one native collection, which startup prepared), and confirms the
+   reservation, which marks the row live. A racing creator loses at the
+   registry's primary key, and a pending partition is not opened.
 2. **Open.** The registry resolves the partition key to the live incarnation;
    the handle is bound to that incarnation.
 3. **Use.** Every record a handle writes carries its incarnation, and every
