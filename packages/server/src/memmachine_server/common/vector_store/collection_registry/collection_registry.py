@@ -6,10 +6,8 @@ logical collections exist, under which incarnation and configuration, and
 which deleted incarnations await purge. Its calls are arbitrated across
 every process sharing it: registration mints an incarnation no registered or
 queued collection carries, unregistration makes the collection unreachable
-when it returns, and a purge claim goes to one purger at a time.
-
-Stores share a registry exactly when their clients connect to the same
-Qdrant, or the same Milvus database.
+when it returns, and a purge claim hands out a due tombstone, possibly to
+two purgers at once.
 """
 
 from abc import ABC, abstractmethod
@@ -101,8 +99,8 @@ class VectorStoreCollectionRegistry(ABC):
                 The (namespace, name) is taken, by a live or a pending
                 collection.
             VectorStoreAttemptsExhaustedError:
-                The registry gave up after repeated inserts were rejected
-                with the (namespace, name) free.
+                The registry gave up after repeated attempts to register
+                the free (namespace, name) failed.
         """
         raise NotImplementedError
 
@@ -178,11 +176,11 @@ class VectorStoreCollectionRegistry(ABC):
         `claim.incarnation`, which `claim.namespace` and `claim.config`
         locate, and sets `claim.any_records_found`. A round that
         found no records removes the tombstone and frees its incarnation. A
-        body that raises is a failed round: the tombstone is claimed again
-        after a backoff that grows with each consecutive failure, and one
-        whose rounds keep failing is dead-lettered and reported. A round must
-        be safe to repeat, since a registry may hand one tombstone to two
-        purgers.
+        body that raises is a failed round, and the tombstone stays for a
+        later claim; a registry may delay a failed tombstone's next claim, or
+        stop claiming one whose rounds keep failing, leaving its records in
+        place. A round must be safe to repeat, since a registry may hand one
+        tombstone to two purgers.
 
         Returns:
             AbstractAsyncContextManager[PurgeClaim | None]:

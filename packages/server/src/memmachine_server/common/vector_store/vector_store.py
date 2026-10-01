@@ -28,11 +28,11 @@ class VectorStoreCollection(ABC):
     UUID names it in this collection only, and the same UUID in another
     collection names another record.
 
-    A handle is bound to one life of the collection: after the collection
-    is deleted, its operations raise VectorStoreCollectionHandleStaleError,
-    and a collection created again under the same (namespace, name) is a
-    new life. A store that cannot detect a stale handle says so in its own
-    contract.
+    A collection created again under a deleted one's (namespace, name)
+    starts empty. Operations through a handle whose collection was deleted
+    may raise VectorStoreCollectionHandleStaleError, or, on an
+    implementation that cannot tell, act on a collection created again
+    under the same (namespace, name).
 
     An `upsert` or `delete` is durable once it returns; queries may not
     reflect it right away. A store that guarantees more states it.
@@ -89,7 +89,7 @@ class VectorStoreCollection(ABC):
         """
         Query for records matching the criteria by query vectors.
 
-        A match answers a record's UUID and score.
+        Each match holds a record's UUID and score.
 
         Args:
             query_vectors (Iterable[Sequence[float]]):
@@ -112,8 +112,9 @@ class VectorStoreCollection(ABC):
         Raises:
             ValueError:
                 If a query vector does not have the collection's dimensions
-                or has a coordinate that is not finite, or the score
-                threshold is not finite.
+                or has a coordinate that is not finite, the score threshold
+                is not finite, or the property filter names an invalid
+                property key.
         """
         raise NotImplementedError
 

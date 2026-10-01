@@ -12,12 +12,7 @@ def require_declared_types(
     properties: Mapping[str, PropertyValue],
     indexed_properties_schema: Mapping[str, type[PropertyValue]],
 ) -> None:
-    """
-    Raise unless every declared property holds a value of its declared type.
-
-    Called before anything is sent, so a declared key never holds a value
-    its field or index would have to coerce.
-    """
+    """Raise unless every declared property holds a value of its declared type."""
     for key, value in properties.items():
         declared_type = indexed_properties_schema.get(key)
         # `bool` is an `int` at runtime and is its own property type here.

@@ -45,9 +45,9 @@ from .vector_store import VectorStore, VectorStoreCollection
 
 logger = logging.getLogger(__name__)
 
-# Attempts before open-or-create gives up, a second apart: a name that stays
-# taken by a collection that never becomes live is one left pending, or
-# something else is wrong.
+# Attempts open-or-create makes, _OPEN_OR_CREATE_RETRY_DELAY_SECONDS apart,
+# before it gives up on a collection that stays pending or a name it keeps
+# losing.
 _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 _OPEN_OR_CREATE_RETRY_DELAY_SECONDS = 1
 
@@ -55,8 +55,9 @@ _OPEN_OR_CREATE_RETRY_DELAY_SECONDS = 1
 class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     """A handle bound to one incarnation of a logical collection.
 
-    Each operation checks its inputs, then that the collection is still live,
-    before the backend call and, for a write, again after it.
+    Each operation checks its inputs and that the collection is still live:
+    `upsert` before and after its backend call, `query` before it, and
+    `delete` after it.
 
     For subclasses: `_incarnation` is the incarnation the handle is bound to,
     and a subclass implements the backend calls `_upsert`, `_query` and
@@ -88,10 +89,9 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
 
         The collection registered under the handle's name carries the
         handle's incarnation until it is deleted; one created again under
-        the name carries another. Called before every operation, and again
-        after a write, so a write that raced the deletion raises instead of
-        reporting success. Such a write may still have landed; the purge
-        reclaims it.
+        the name carries another. A check after a write makes one that raced
+        the deletion raise instead of reporting success; whatever such a
+        write landed, the purge reclaims.
         """
         registered = await self._get_registered_collection(self._namespace, self._name)
         if registered is None or registered.incarnation != self._incarnation:
@@ -162,7 +162,8 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
 
         Called between two liveness checks, with at least one record, each
         already checked against the collection's configuration. A record
-        replaces the one with its UUID.
+        replaces the one with its UUID. The records are durable when it
+        returns; a call that raises may have written some of them.
 
         Args:
             records (list[Record]): The records to write.
@@ -190,7 +191,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.
-            limit (int): The most matches to answer per query vector.
+            limit (int): The most matches to return per query vector.
             score_threshold (float | None):
                 The score a match must reach, or None for any.
             property_filter (FilterExpr | None):
@@ -212,8 +213,9 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
         Delete the handle's incarnation's records with these UUIDs.
 
         Called before a liveness check, with at least one UUID, possibly
-        through a handle whose collection was deleted. A UUID the collection
-        holds no record under is not an error.
+        through a handle whose collection was deleted. A UUID with no record
+        under the incarnation is skipped. The deletions are durable when it
+        returns; a call that raises may have deleted some of the records.
 
         Args:
             record_uuids (list[UUID]): The UUIDs of the records to delete.
@@ -260,9 +262,9 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     Any process connected to the same database, with the same registry, may
     serve any collection. A collection is pending until its storage is
     prepared: meanwhile opening it raises VectorStoreCollectionPendingError,
-    `open_or_create_collection` waits for it, and creating its name raises
-    VectorStoreCollectionAlreadyExistsError. One a crash left pending is
-    deleted like any other.
+    `open_or_create_collection` waits a bounded time for it, and creating its
+    name raises VectorStoreCollectionAlreadyExistsError. A collection a crash
+    left pending stays pending until `delete_collection` deletes it.
 
     For subclasses: `_collection_registry` is the registry and `_tracker` times
     each operation, and a subclass implements `_prepare_storage`,
@@ -276,19 +278,20 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         super().__init__()
         self._collection_registry = params.collection_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
-        # Unregistrations after a failed preparation, referenced until done
-        # so none is collected while its creation, cancelled, no longer
-        # awaits it.
+        # Unregistrations after a failed preparation, held until done so the
+        # garbage collector cannot drop one whose creation was cancelled.
         self._unregistrations: set[asyncio.Task[None]] = set()
 
     @override
     async def startup(self) -> None:
-        # The caller owns the client's and the registry's lifecycles.
+        # The caller owns the registry's lifecycle and that of any client a
+        # subclass is given.
         pass
 
     @override
     async def shutdown(self) -> None:
-        # The caller owns the client's and the registry's lifecycles.
+        # The caller owns the registry's lifecycle and that of any client a
+        # subclass is given.
         pass
 
     @override
@@ -301,9 +304,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     ) -> None:
         require_identifiers(namespace, name)
         async with self._tracker("create_collection"):
-            # The registry's primary key decides a creation race. The
-            # collection stays pending, invisible, until its storage is
-            # prepared; one deleted meanwhile was created, then deleted.
+            # The registry decides a creation race. The collection stays
+            # pending until its storage is prepared; if it is deleted
+            # meanwhile, mark_live finds nothing to mark, and the creation
+            # counts as one followed by a deletion.
             incarnation = await self._collection_registry.register(
                 namespace, name, config
             )
@@ -416,13 +420,13 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         require_identifiers(namespace, name)
         async with self._tracker("delete_collection"):
-            # One registry transaction: the collection is unreachable when
-            # it commits, and its records wait on the queue for the purge.
+            # The collection is unreachable once unregister returns, and its
+            # incarnation awaits the purge.
             await self._collection_registry.unregister(namespace, name)
 
     @override
     async def purge_deleted_collections(self) -> bool:
-        # One purge round per call, on the tombstone that came due first.
+        # One purge round per call, on a due tombstone.
         async with (
             self._tracker("purge_deleted_collections"),
             self._collection_registry.claim_purgeable_incarnation() as claim,
@@ -445,9 +449,8 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         Prepare the storage a newly registered collection needs.
 
         The collection is registered, pending, under the incarnation, and is
-        marked live once this returns. Its storage may be shared with the
-        other collections of its namespace and configuration, such as a
-        native collection they are all stored in, and may be its own. Shared
+        marked live once this returns. Its storage may be its own or shared
+        with the other collections of its namespace and configuration. Shared
         storage is prepared by any number of processes at once, so preparing
         it must be idempotent and safe to race; what serves one namespace and
         configuration serves no other. Whatever a failed or interrupted call
@@ -514,7 +517,8 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         records and return True, to be run again. It may delete storage that
         holds only the incarnation's records, which a failed or interrupted
         preparation may have left part-made. It must be safe to repeat, and
-        to run on two purgers at once. Storage that is gone holds no record.
+        to run on two purgers at once. A round that finds the incarnation's
+        storage missing returns False.
 
         Args:
             namespace (str):
@@ -532,6 +536,6 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         Raises:
             Exception:
                 Whatever the backend raises. The round then counts as
-                failed, and the tombstone is claimed again after a backoff.
+                failed, and the tombstone stays for a later claim.
         """
         raise NotImplementedError
