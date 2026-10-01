@@ -11,6 +11,8 @@ from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from testcontainers.community.milvus import MilvusContainer
+from testcontainers.core.wait_strategies import HttpWaitStrategy
 from testcontainers.core.waiting_utils import wait_container_is_ready
 from testcontainers.neo4j import Neo4jContainer
 from testcontainers.postgres import PostgresContainer
@@ -433,6 +435,21 @@ async def qdrant_grpc_client(new_qdrant_client):
     client = new_qdrant_client(prefer_grpc=True)
     yield client
     await client.close()
+
+
+@pytest.fixture(scope="session")
+def milvus_container():
+    if not is_docker_available():
+        pytest.skip("Docker is not available")
+    # Milvus refuses embedded etcd unless the deploy mode says standalone, and
+    # logs no banner the module's default wait can find; its health endpoint
+    # says when it is ready.
+    container = MilvusContainer(image="milvusdb/milvus:v2.6.24").with_env(
+        "DEPLOY_MODE", "STANDALONE"
+    )
+    container.waiting_for(HttpWaitStrategy(container.healthcheck_port, "/healthz"))
+    with container:
+        yield container
 
 
 @pytest.fixture(
