@@ -41,7 +41,7 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
-from .collection_registry import LiveRegistration
+from .collection_registry import Registration
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -248,11 +248,11 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         *,
         client: AsyncMilvusClient,
         native_collection_name: str,
-        registration: LiveRegistration,
+        registration: Registration,
         tracker: OperationTracker,
         request_timeout_seconds: int,
     ) -> None:
-        """Initialize with a Milvus client and the live registration the handle is bound to."""
+        """Initialize with a Milvus client and the registration the handle is bound to."""
         super().__init__(registration=registration, tracker=tracker)
         self._client = client
         self._native_collection_name = native_collection_name
@@ -478,7 +478,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
 
     @override
     def _build_collection_handle(
-        self, registration: LiveRegistration
+        self, registration: Registration
     ) -> MilvusVectorStoreCollection:
         return MilvusVectorStoreCollection(
             client=self._client,
