@@ -23,20 +23,20 @@ from pydantic import BaseModel, Field, InstanceOf
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
-from .collection_registry import (
-    Registration,
-    Reservation,
-    VectorStoreCollectionRegistry,
-)
 from .data_types import (
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
-    VectorStoreCollectionDeletedError,
-    VectorStoreCollectionPendingError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
+    VectorStorePartitionPendingError,
+)
+from .partition_registry import (
+    Registration,
+    Reservation,
+    VectorStorePartitionRegistry,
 )
 from .utils import (
     require_declared_types,
@@ -47,7 +47,7 @@ from .utils import (
     require_valid_score_threshold,
     validate_filter,
 )
-from .vector_store import VectorStore, VectorStoreCollection
+from .vector_store import VectorStore, VectorStorePartition
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 _OPEN_OR_CREATE_RETRY_DELAY_SECONDS = 1
 
 
-class RegistryBackedVectorStoreCollection(VectorStoreCollection):
+class RegistryBackedVectorStorePartition(VectorStorePartition):
     """A handle bound to one incarnation of a logical collection.
 
     Each operation checks its inputs and that the collection is still live:
@@ -215,7 +215,7 @@ class RegistryBackedVectorStoreParams(BaseModel):
     Parameters for a RegistryBackedVectorStore.
 
     Attributes:
-        collection_registry (VectorStoreCollectionRegistry):
+        partition_registry (VectorStorePartitionRegistry):
             Registry of the store's collections, shared by the stores, in any
             process, whose clients connect to the same database, and by no
             other store. Started by the caller.
@@ -224,7 +224,7 @@ class RegistryBackedVectorStoreParams(BaseModel):
             (default: None).
     """
 
-    collection_registry: InstanceOf[VectorStoreCollectionRegistry] = Field(
+    partition_registry: InstanceOf[VectorStorePartitionRegistry] = Field(
         ...,
         description=(
             "Registry of the store's collections, shared by the stores, in any "
@@ -238,21 +238,21 @@ class RegistryBackedVectorStoreParams(BaseModel):
     )
 
 
-class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection](
+class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     VectorStore
 ):
-    """A vector store whose collections a VectorStoreCollectionRegistry arbitrates.
+    """A vector store whose collections a VectorStorePartitionRegistry arbitrates.
 
     Any process connected to the same database, with the same registry, may
     serve any collection. A collection is pending until its storage is
-    prepared: meanwhile opening it raises VectorStoreCollectionPendingError,
-    `open_or_create_collection` waits a bounded time for it, and creating its
-    name raises VectorStoreCollectionAlreadyExistsError. A collection a crash
+    prepared: meanwhile opening it raises VectorStorePartitionPendingError,
+    `open_or_create_partition` waits a bounded time for it, and creating its
+    name raises VectorStorePartitionAlreadyExistsError. A collection a crash
     left pending stays pending until `delete_collection` deletes it.
 
-    For subclasses: `_collection_registry` is the registry and `_tracker` times
+    For subclasses: `_partition_registry` is the registry and `_tracker` times
     each operation, and a subclass implements `_prepare_storage`,
-    `_build_collection_handle`, and `_purge_round`.
+    `_build_partition_handle`, and `_purge_round`.
     """
 
     def __init__(
@@ -260,7 +260,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     ) -> None:
         """Initialize with the registry and the prefix of the store's metrics."""
         super().__init__()
-        self._collection_registry = params.collection_registry
+        self._partition_registry = params.partition_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
         # Reservations cancelled after a failed preparation, held until done
         # so the garbage collector cannot drop one whose creation was
@@ -280,7 +280,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         pass
 
     @override
-    async def create_collection(
+    async def create_partition(
         self,
         *,
         namespace: str,
@@ -288,44 +288,44 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         config: VectorStoreCollectionConfig,
     ) -> None:
         require_identifiers(namespace, name)
-        async with self._tracker("create_collection"):
+        async with self._tracker("create_partition"):
             # The registry decides a creation race. The collection stays
             # pending until its storage is prepared; if it is deleted
             # meanwhile, confirming the reservation raises.
-            reservation = await self._collection_registry.reserve(
+            reservation = await self._partition_registry.reserve(
                 namespace, name, config
             )
             await self._prepare_and_confirm_or_cancel(reservation)
 
     @override
-    async def open_or_create_collection(
+    async def open_or_create_partition(
         self,
         *,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> CollectionT:
+    ) -> PartitionT:
         require_identifiers(namespace, name)
-        async with self._tracker("open_or_create_collection"):
+        async with self._tracker("open_or_create_partition"):
             # Read-then-create, retried: a pending collection is another
             # creator's (open it once it is live), losing the reservation
             # means another creator took the name meanwhile, and losing the
             # confirmation means a deleter removed this one while its storage
             # was prepared (create again).
-            pending_error: VectorStoreCollectionPendingError | None = None
+            pending_error: VectorStorePartitionPendingError | None = None
             lost_race: (
-                VectorStoreCollectionAlreadyExistsError
-                | VectorStoreCollectionDeletedError
+                VectorStorePartitionAlreadyExistsError
+                | VectorStorePartitionDeletedError
                 | None
             ) = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
                 try:
-                    registration = await self._collection_registry.resolve(
+                    registration = await self._partition_registry.resolve(
                         namespace, name
                     )
-                except VectorStoreCollectionPendingError as err:
+                except VectorStorePartitionPendingError as err:
                     if err.config != config:
                         raise VectorStoreCollectionConfigMismatchError(
                             namespace, name, err.config, config
@@ -338,22 +338,22 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                         raise VectorStoreCollectionConfigMismatchError(
                             namespace, name, registration.config, config
                         )
-                    return self._build_collection_handle(registration)
+                    return self._build_partition_handle(registration)
                 try:
-                    reservation = await self._collection_registry.reserve(
+                    reservation = await self._partition_registry.reserve(
                         namespace, name, config
                     )
-                except VectorStoreCollectionAlreadyExistsError as err:
+                except VectorStorePartitionAlreadyExistsError as err:
                     lost_race = err
                     continue
                 try:
                     registration = await self._prepare_and_confirm_or_cancel(
                         reservation
                     )
-                except VectorStoreCollectionDeletedError as err:
+                except VectorStorePartitionDeletedError as err:
                     lost_race = err
                     continue
-                return self._build_collection_handle(registration)
+                return self._build_partition_handle(registration)
             # The last lookup found the collection pending.
             if pending_error is not None:
                 raise pending_error
@@ -402,27 +402,27 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             raise
 
     @override
-    async def open_collection(self, *, namespace: str, name: str) -> CollectionT | None:
+    async def get_partition(self, *, namespace: str, name: str) -> PartitionT | None:
         require_identifiers(namespace, name)
-        async with self._tracker("open_collection"):
-            registration = await self._collection_registry.resolve(namespace, name)
+        async with self._tracker("get_partition"):
+            registration = await self._partition_registry.resolve(namespace, name)
             if registration is None:
                 return None
-            return self._build_collection_handle(registration)
+            return self._build_partition_handle(registration)
 
     @override
-    async def delete_collection(self, *, namespace: str, name: str) -> None:
+    async def delete_partition(self, *, namespace: str, name: str) -> None:
         require_identifiers(namespace, name)
-        async with self._tracker("delete_collection"):
+        async with self._tracker("delete_partition"):
             # The collection is unreachable once unregister returns, and its
             # incarnation awaits the purge.
-            await self._collection_registry.unregister(namespace, name)
+            await self._partition_registry.unregister(namespace, name)
 
     @override
-    async def purge_deleted_collections(self) -> bool:
+    async def purge_deleted_partitions(self) -> bool:
         # One purge round per call, on a due tombstone.
-        async with self._tracker("purge_deleted_collections"):
-            return await self._collection_registry.run_purge_round(self._purge_round)
+        async with self._tracker("purge_deleted_partitions"):
+            return await self._partition_registry.run_purge_round(self._purge_round)
 
     @abstractmethod
     async def _prepare_storage(
@@ -461,7 +461,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         raise NotImplementedError
 
     @abstractmethod
-    def _build_collection_handle(self, registration: Registration) -> CollectionT:
+    def _build_partition_handle(self, registration: Registration) -> PartitionT:
         """
         Build a handle bound to a live collection's registration.
 
@@ -474,7 +474,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 namespace, name, configuration, and incarnation.
 
         Returns:
-            CollectionT:
+            PartitionT:
                 A handle bound to the registration, whose operations raise
                 once the collection is deleted.
         """

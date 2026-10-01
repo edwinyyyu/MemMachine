@@ -48,17 +48,17 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware
 
-from .collection_registry import Registration
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreCollectionConfig,
 )
+from .partition_registry import Registration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
-    RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
+    RegistryBackedVectorStorePartition,
 )
 
 _ID_FIELD = "id"
@@ -260,7 +260,7 @@ def _incarnation_filter(incarnation: UUID) -> str:
     return f"{_PARTITION_KEY_FIELD} == {_expression_string_literal(str(incarnation))}"
 
 
-class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
+class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
     """A logical collection backed by Milvus."""
 
     @staticmethod
@@ -467,7 +467,7 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
     )
 
 
-class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
+class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
     """Asynchronous Milvus-based implementation of VectorStore.
 
     A logical collection is the entities carrying its incarnation in the
@@ -516,7 +516,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         self._purge_batch_size = params.purge_batch_size
 
     @override
-    async def create_collection(
+    async def create_partition(
         self,
         *,
         namespace: str,
@@ -525,27 +525,27 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
     ) -> None:
         # Refused before the registry reserves the name.
         self._validate_metric(config.similarity_metric)
-        await super().create_collection(namespace=namespace, name=name, config=config)
+        await super().create_partition(namespace=namespace, name=name, config=config)
 
     @override
-    async def open_or_create_collection(
+    async def open_or_create_partition(
         self,
         *,
         namespace: str,
         name: str,
         config: VectorStoreCollectionConfig,
-    ) -> MilvusVectorStoreCollection:
+    ) -> MilvusVectorStorePartition:
         # Refused before the registry reserves the name.
         self._validate_metric(config.similarity_metric)
-        return await super().open_or_create_collection(
+        return await super().open_or_create_partition(
             namespace=namespace, name=name, config=config
         )
 
     @override
-    def _build_collection_handle(
+    def _build_partition_handle(
         self, registration: Registration
-    ) -> MilvusVectorStoreCollection:
-        return MilvusVectorStoreCollection(
+    ) -> MilvusVectorStorePartition:
+        return MilvusVectorStorePartition(
             client=self._client,
             native_collection_name=MilvusVectorStore._build_native_collection_name(
                 registration.namespace, registration.config
