@@ -109,15 +109,16 @@ class VectorStoreCollectionRegistry(ABC):
         """
         Mark the pending collection with the given incarnation as live.
 
-        Called once the collection's storage is prepared.
+        Called once the collection's storage is prepared. If no collection
+        carries the incarnation, or the collection that does is already
+        live, nothing changes.
 
         Args:
             incarnation (UUID): The incarnation `register` returned.
 
         Returns:
             bool:
-                Whether the incarnation's collection was pending and is now
-                live.
+                Whether this call marked a collection live.
         """
         raise NotImplementedError
 
