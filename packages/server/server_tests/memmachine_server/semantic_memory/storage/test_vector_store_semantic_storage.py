@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import numpy as np
 import pytest
+from sqlalchemy import insert
 
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.filter.filter_parser import parse_filter
-from memmachine_server.common.vector_store import VectorStoreCollectionConfig
+from memmachine_server.common.vector_store import Record, VectorStoreCollectionConfig
 from memmachine_server.semantic_memory.storage.storage_base import SemanticStorage
 from memmachine_server.semantic_memory.storage.vector_store_semantic_storage import (
     VectorSemanticFeature,
@@ -241,6 +242,57 @@ async def test_an_update_reads_nothing_back_from_the_vector_store(
             feature_id, embedding=np.array([0.0, 1.0], dtype=float)
         )
         assert vector_collection.records[record_uuid].vector == [0.0, 1.0]
+    finally:
+        await storage.delete_all()
+        await storage.cleanup()
+
+
+# More features than SQLite binds in one statement (32,766 parameters).
+_MANY_FEATURES = 40_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deletion", ["delete_all", "delete_feature_set"])
+async def test_deleting_more_features_than_sqlite_binds_removes_every_vector_record(
+    sqlalchemy_engine,
+    vector_collection: InMemoryVectorStoreCollection,
+    deletion: str,
+):
+    storage = VectorStoreSemanticStorage(sqlalchemy_engine, vector_collection)
+    await storage.startup()
+    try:
+        vector_uuids = [uuid4() for _ in range(_MANY_FEATURES)]
+        async with storage._create_session() as session:
+            await session.execute(
+                insert(VectorSemanticFeature),
+                [
+                    {
+                        "vector_uuid": vector_uuid,
+                        "set_id": "user",
+                        "semantic_category_id": "profile",
+                        "tag_id": "tag",
+                        "feature": "feature",
+                        "value": "value",
+                    }
+                    for vector_uuid in vector_uuids
+                ],
+            )
+            await session.commit()
+        await vector_collection.upsert(
+            records=[
+                Record(uuid=vector_uuid, vector=[1.0, 0.0])
+                for vector_uuid in vector_uuids
+            ]
+        )
+
+        if deletion == "delete_all":
+            await storage.delete_all()
+        else:
+            await storage.delete_feature_set(
+                filter_expr=parse_filter("set_id IN (user)")
+            )
+
+        assert vector_collection.records == {}
     finally:
         await storage.delete_all()
         await storage.cleanup()

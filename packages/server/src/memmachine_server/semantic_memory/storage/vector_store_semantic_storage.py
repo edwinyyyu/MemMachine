@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping, MutableMapping, Sequence
 from datetime import UTC
 from typing import Any, cast
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import numpy as np
 from pydantic import AwareDatetime, InstanceOf, TypeAdapter, ValidationError
@@ -202,12 +202,19 @@ class VectorStoreSemanticStorage(SemanticStorage):
         await self._engine.dispose()
 
     async def delete_all(self) -> None:
-        feature_ids = await self._feature_ids_for_filter(None)
-        vector_uuids = await self._vector_uuids_for_features(feature_ids)
         async with self._create_session() as session:
             await session.execute(delete(vector_citation_association_table))
             await session.execute(delete(VectorSemanticSetIngestedHistory))
-            await session.execute(delete(VectorSemanticFeature))
+            # RETURNING names the vector records of exactly the rows deleted.
+            vector_uuids = list(
+                (
+                    await session.execute(
+                        delete(VectorSemanticFeature).returning(
+                            VectorSemanticFeature.vector_uuid
+                        )
+                    )
+                ).scalars()
+            )
             await session.commit()
         await self._vector_collection.delete(record_uuids=vector_uuids)
 
@@ -362,14 +369,15 @@ class VectorStoreSemanticStorage(SemanticStorage):
         except ValidationError as e:
             raise ResourceNotFoundError(f"Invalid feature IDs: {feature_ids}") from e
 
-        vector_uuids = await self._vector_uuids_for_features(
-            [FeatureIdT(str(fid)) for fid in feature_id_ints]
-        )
         async with self._create_session() as session:
-            await session.execute(
-                delete(VectorSemanticFeature).where(
-                    VectorSemanticFeature.id.in_(feature_id_ints)
-                )
+            vector_uuids = list(
+                (
+                    await session.execute(
+                        delete(VectorSemanticFeature)
+                        .where(VectorSemanticFeature.id.in_(feature_id_ints))
+                        .returning(VectorSemanticFeature.vector_uuid)
+                    )
+                ).scalars()
             )
             await session.commit()
 
@@ -380,12 +388,15 @@ class VectorStoreSemanticStorage(SemanticStorage):
         *,
         filter_expr: FilterExpr | None = None,
     ) -> None:
-        feature_ids = await self._feature_ids_for_filter(filter_expr)
-        vector_uuids = await self._vector_uuids_for_features(feature_ids)
-        stmt = delete(VectorSemanticFeature)
-        stmt = self._apply_feature_filter(stmt, filter_expr=filter_expr)
+        stmt = delete(VectorSemanticFeature).returning(
+            VectorSemanticFeature.vector_uuid
+        )
+        if filter_expr is not None:
+            stmt = stmt.where(
+                compile_sql_filter(filter_expr, self._resolve_feature_field_default)
+            )
         async with self._create_session() as session:
-            await session.execute(stmt)
+            vector_uuids = list((await session.execute(stmt)).scalars())
             await session.commit()
         await self._vector_collection.delete(record_uuids=vector_uuids)
 
@@ -578,24 +589,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
             async for set_id in result.scalars():
                 yield SetIdT(set_id)
 
-    async def _vector_uuids_for_features(
-        self, feature_ids: Sequence[FeatureIdT]
-    ) -> list[UUID]:
-        """Read the UUIDs of these features' vector records.
-
-        Call it before deleting the rows, which hold the mapping.
-        """
-        if not feature_ids:
-            return []
-        feature_id_ints = [self._coerce_feature_id(f) for f in feature_ids]
-        async with self._create_session() as session:
-            result = await session.execute(
-                select(VectorSemanticFeature.vector_uuid).where(
-                    VectorSemanticFeature.id.in_(feature_id_ints)
-                )
-            )
-        return list(result.scalars().all())
-
     async def _vector_search_features(
         self,
         *,
@@ -701,16 +694,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
             row.to_typed_model(citations=citations_map.get(row.id))
             for row in ordered_rows
         ]
-
-    async def _feature_ids_for_filter(
-        self,
-        filter_expr: FilterExpr | None,
-    ) -> list[FeatureIdT]:
-        stmt = select(VectorSemanticFeature.id)
-        stmt = self._apply_feature_filter(stmt, filter_expr=filter_expr)
-        async with self._create_session() as session:
-            result = await session.execute(stmt)
-            return [FeatureIdT(str(feature_id)) for feature_id in result.scalars()]
 
     def _apply_history_filter(
         self,
