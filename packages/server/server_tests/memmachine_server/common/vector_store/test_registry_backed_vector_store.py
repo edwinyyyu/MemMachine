@@ -20,7 +20,7 @@ from memmachine_server.common.vector_store import (
     registry_backed_vector_store,
 )
 from memmachine_server.common.vector_store.partition_registry import (
-    LiveRegistration,
+    Registration,
     sqlalchemy_partition_registry,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
@@ -91,7 +91,7 @@ class _Store(RegistryBackedVectorStore[_Partition]):
         await self.prepare(partition_key, incarnation)
 
     @override
-    def _partition_handle(self, registration: LiveRegistration) -> _Partition:
+    def _partition_handle(self, registration: Registration) -> _Partition:
         return _Partition(
             vector_store_name=self.vector_store_name,
             registration=registration,
@@ -180,20 +180,20 @@ async def test_open_or_create_waits_for_a_pending_partition(store, monkeypatch):
     await started.wait()
     store.prepare = _prepared
     registry = store._partition_registry
-    register_partition = registry.register
-    registrations = 0
+    reserve = registry.reserve
+    reservations = 0
 
     async def counted(partition_key, schema):
-        nonlocal registrations
-        registrations += 1
-        return await register_partition(partition_key, schema)
+        nonlocal reservations
+        reservations += 1
+        return await reserve(partition_key, schema)
 
-    monkeypatch.setattr(registry, "register", counted)
+    monkeypatch.setattr(registry, "reserve", counted)
     opening = asyncio.create_task(store.open_or_create_partition(KEY))
     await asyncio.sleep(0.1)
     assert not opening.done()
-    # It waits on the pending partition instead of trying to register.
-    assert registrations == 0
+    # It waits on the pending partition instead of trying to reserve it.
+    assert reservations == 0
 
     release.set()
     await creating
@@ -273,36 +273,36 @@ async def test_a_cancelled_preparation_frees_the_key_and_queues_its_incarnation(
 
 
 @pytest.mark.asyncio
-async def test_an_unregistration_after_a_cancelled_preparation_survives_another_cancellation(
+async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives_another_cancellation(
     store, monkeypatch
 ):
     started = asyncio.Event()
-    unregistering = asyncio.Event()
+    cancelling = asyncio.Event()
     release = asyncio.Event()
-    pending_registration = sqlalchemy_partition_registry._SQLAlchemyPendingRegistration
-    unregister = pending_registration.unregister
+    reservation_type = sqlalchemy_partition_registry._SQLAlchemyReservation
+    cancel = reservation_type.cancel
 
     async def hangs(partition_key, incarnation) -> None:
         started.set()
         await asyncio.Event().wait()
 
-    async def slow(pending) -> None:
-        unregistering.set()
+    async def slow(reservation) -> None:
+        cancelling.set()
         await release.wait()
-        await unregister(pending)
+        await cancel(reservation)
 
     store.prepare = hangs
-    monkeypatch.setattr(pending_registration, "unregister", slow)
+    monkeypatch.setattr(reservation_type, "cancel", slow)
     creating = asyncio.create_task(store.create_partition(KEY))
     await started.wait()
     creating.cancel()
-    await asyncio.wait_for(unregistering.wait(), 5)
+    await asyncio.wait_for(cancelling.wait(), 5)
     creating.cancel()
     with pytest.raises(asyncio.CancelledError):
         await creating
 
     release.set()
-    await asyncio.wait_for(asyncio.gather(*store._unregistrations), 5)
+    await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
     assert await store.get_partition(KEY) is None
 
 
@@ -317,14 +317,14 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     async def refused(partition_key, incarnation) -> None:
         raise RuntimeError("the backend refused")
 
-    async def unreachable(pending) -> None:
+    async def unreachable(reservation) -> None:
         raise ConnectionError("the registry is unreachable")
 
     store.prepare = refused
     with monkeypatch.context() as unregistration:
         unregistration.setattr(
-            sqlalchemy_partition_registry._SQLAlchemyPendingRegistration,
-            "unregister",
+            sqlalchemy_partition_registry._SQLAlchemyReservation,
+            "cancel",
             unreachable,
         )
         with pytest.raises(RuntimeError, match="refused"):

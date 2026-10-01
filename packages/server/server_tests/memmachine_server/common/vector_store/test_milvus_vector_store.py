@@ -44,7 +44,7 @@ from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStorePartition,
 )
 from memmachine_server.common.vector_store.partition_registry import (
-    LiveRegistration,
+    Registration,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
@@ -945,7 +945,7 @@ class TestDelete:
 
 
 @dataclass(frozen=True)
-class _CurrentRegistration(LiveRegistration):
+class _CurrentRegistration(Registration):
     """A live registration whose partition is never deleted."""
 
     @override
