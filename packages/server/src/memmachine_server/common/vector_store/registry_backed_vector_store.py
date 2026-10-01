@@ -448,7 +448,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         """
         Prepare the storage a newly registered collection needs.
 
-        The collection is registered, pending, under the incarnation, and is
+        The collection is registered as pending under the incarnation, and is
         marked live once this returns. Its storage may be its own or shared
         with the other collections of its namespace and configuration. Shared
         storage is prepared by any number of processes at once, so preparing
