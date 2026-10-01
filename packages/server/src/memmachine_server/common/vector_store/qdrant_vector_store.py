@@ -42,17 +42,17 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.utils import ensure_tz_aware
 
-from .collection_registry import Registration
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreCollectionConfig,
 )
+from .partition_registry import Registration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
-    RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
+    RegistryBackedVectorStorePartition,
 )
 
 # Point payload keys (stored on every Qdrant point).
@@ -85,7 +85,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
     )
 
 
-class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
+class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
     """A collection backed by Qdrant."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
@@ -99,22 +99,22 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
     def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
         """Convert a FilterExpr tree into a Qdrant Filter."""
         if isinstance(expr, FilterComparison):
-            return QdrantVectorStoreCollection._build_qdrant_comparison(expr)
+            return QdrantVectorStorePartition._build_qdrant_comparison(expr)
         if isinstance(expr, FilterIn):
-            return QdrantVectorStoreCollection._in_filter(expr.field, expr.values)
+            return QdrantVectorStorePartition._in_filter(expr.field, expr.values)
         if isinstance(expr, FilterIsNull):
-            return QdrantVectorStoreCollection._null_filter(expr.field, negate=False)
+            return QdrantVectorStorePartition._null_filter(expr.field, negate=False)
         if isinstance(expr, FilterNot):
             return models.Filter(
-                must_not=[QdrantVectorStoreCollection._build_qdrant_filter(expr.expr)]
+                must_not=[QdrantVectorStorePartition._build_qdrant_filter(expr.expr)]
             )
         if isinstance(expr, FilterAnd):
-            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
-            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
+            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
+            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
             return models.Filter(must=[left, right])
         if isinstance(expr, FilterOr):
-            left = QdrantVectorStoreCollection._build_qdrant_filter(expr.left)
-            right = QdrantVectorStoreCollection._build_qdrant_filter(expr.right)
+            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
+            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
             return models.Filter(should=[left, right])
         message = f"Unsupported filter expression type: {type(expr)}"
         raise TypeError(message)
@@ -129,25 +129,23 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         if operator in ("=", "!="):
             negate = operator == "!="
             if isinstance(value, float):
-                return QdrantVectorStoreCollection._float_eq_filter(
+                return QdrantVectorStorePartition._float_eq_filter(
                     field, value, negate=negate
                 )
             if isinstance(value, datetime):
-                return QdrantVectorStoreCollection._datetime_eq_filter(
+                return QdrantVectorStorePartition._datetime_eq_filter(
                     field, value, negate=negate
                 )
-            return QdrantVectorStoreCollection._match_filter(
-                field, value, negate=negate
-            )
-        if operator in QdrantVectorStoreCollection._RANGE_OPERATORS:
+            return QdrantVectorStorePartition._match_filter(field, value, negate=negate)
+        if operator in QdrantVectorStorePartition._RANGE_OPERATORS:
             if not isinstance(value, OrderedValue):
                 message = (
                     f"Range filter on '{field}' requires a numeric or datetime value, "
                     f"got {type(value).__name__}"
                 )
                 raise TypeError(message)
-            return QdrantVectorStoreCollection._range_filter(
-                field, value, QdrantVectorStoreCollection._RANGE_OPERATORS[operator]
+            return QdrantVectorStorePartition._range_filter(
+                field, value, QdrantVectorStorePartition._RANGE_OPERATORS[operator]
             )
 
         message = f"Unsupported filter operator: {operator}"
@@ -318,7 +316,7 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
             qdrant_filter = models.Filter(
                 must=[
                     qdrant_filter,
-                    QdrantVectorStoreCollection._build_qdrant_filter(property_filter),
+                    QdrantVectorStorePartition._build_qdrant_filter(property_filter),
                 ]
             )
 
@@ -396,7 +394,7 @@ class QdrantVectorStoreParams(RegistryBackedVectorStoreParams):
     )
 
 
-class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
+class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
     """Asynchronous Qdrant-based implementation of VectorStore.
 
     A logical collection is the points carrying its incarnation in their
@@ -456,10 +454,10 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
         self._hnsw_m = 16
 
     @override
-    def _build_collection_handle(
+    def _build_partition_handle(
         self, registration: Registration
-    ) -> QdrantVectorStoreCollection:
-        return QdrantVectorStoreCollection(
+    ) -> QdrantVectorStorePartition:
+        return QdrantVectorStorePartition(
             client=self._client,
             native_collection_name=QdrantVectorStore._build_native_collection_name(
                 registration.namespace, registration.config

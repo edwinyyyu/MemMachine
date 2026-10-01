@@ -14,11 +14,11 @@ from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
     VectorStore,
-    VectorStoreCollection,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionDeletedError,
-    VectorStoreCollectionPendingError,
+    VectorStorePartition,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
+    VectorStorePartitionPendingError,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
@@ -100,14 +100,14 @@ def test_partition_key_empty_string_passthrough():
     assert len(key) == PARTITION_KEY_MAX_BYTES
 
 
-_PENDING = VectorStoreCollectionPendingError(
+_PENDING = VectorStorePartitionPendingError(
     _EVENT_BACKEND_NAMESPACE,
     "raced",
     datetime(2026, 1, 1, tzinfo=UTC),
     VectorStoreCollectionConfig(vector_dimensions=3),
 )
-_TAKEN = VectorStoreCollectionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
-_DELETED = VectorStoreCollectionDeletedError(_EVENT_BACKEND_NAMESPACE, "raced")
+_TAKEN = VectorStorePartitionAlreadyExistsError(_EVENT_BACKEND_NAMESPACE, "raced")
+_DELETED = VectorStorePartitionDeletedError(_EVENT_BACKEND_NAMESPACE, "raced")
 
 
 def _resource_manager(vector_store: NonCallableMagicMock) -> CommonResourceManager:
@@ -139,16 +139,16 @@ async def test_event_params_opens_the_collection_a_racing_creator_won(monkeypatc
     config = EventLongTermMemoryConf(
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
-    collection = create_autospec(VectorStoreCollection, instance=True)
+    collection = create_autospec(VectorStorePartition, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.side_effect = [None, _PENDING, _PENDING, collection]
-    vector_store.create_collection.side_effect = _TAKEN
+    vector_store.get_partition.side_effect = [None, _PENDING, _PENDING, collection]
+    vector_store.create_partition.side_effect = _TAKEN
 
     params = await _event_params(config, _resource_manager(vector_store))
 
-    assert params.vector_store_collection is collection
-    vector_store.create_collection.assert_awaited_once()
-    assert vector_store.open_collection.await_count == 4
+    assert params.vector_store_partition is collection
+    vector_store.create_partition.assert_awaited_once()
+    assert vector_store.get_partition.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -161,15 +161,15 @@ async def test_event_params_creates_the_collection_when_the_winners_creation_is_
     config = EventLongTermMemoryConf(
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
-    collection = create_autospec(VectorStoreCollection, instance=True)
+    collection = create_autospec(VectorStorePartition, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.side_effect = [None, None, collection]
-    vector_store.create_collection.side_effect = [_TAKEN, None]
+    vector_store.get_partition.side_effect = [None, None, collection]
+    vector_store.create_partition.side_effect = [_TAKEN, None]
 
     params = await _event_params(config, _resource_manager(vector_store))
 
-    assert params.vector_store_collection is collection
-    assert vector_store.create_collection.await_count == 2
+    assert params.vector_store_partition is collection
+    assert vector_store.create_partition.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -182,15 +182,15 @@ async def test_event_params_creates_again_when_a_deletion_undid_its_creation(
     config = EventLongTermMemoryConf(
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
-    collection = create_autospec(VectorStoreCollection, instance=True)
+    collection = create_autospec(VectorStorePartition, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.side_effect = [None, None, collection]
-    vector_store.create_collection.side_effect = [_DELETED, None]
+    vector_store.get_partition.side_effect = [None, None, collection]
+    vector_store.create_partition.side_effect = [_DELETED, None]
 
     params = await _event_params(config, _resource_manager(vector_store))
 
-    assert params.vector_store_collection is collection
-    assert vector_store.create_collection.await_count == 2
+    assert params.vector_store_partition is collection
+    assert vector_store.create_partition.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -200,14 +200,12 @@ async def test_event_params_gives_up_on_a_collection_that_stays_pending(monkeypa
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
     vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_collection.side_effect = _PENDING
+    vector_store.get_partition.side_effect = _PENDING
 
     with pytest.raises(RuntimeError, match="not live") as gave_up:
         await _event_params(config, _resource_manager(vector_store))
 
     # The pending error says since when, which the log needs.
     assert gave_up.value.__cause__ is _PENDING
-    assert (
-        vector_store.open_collection.await_count == service_locator._MAX_OPEN_ATTEMPTS
-    )
-    vector_store.create_collection.assert_not_awaited()
+    assert vector_store.get_partition.await_count == service_locator._MAX_OPEN_ATTEMPTS
+    vector_store.create_partition.assert_not_awaited()

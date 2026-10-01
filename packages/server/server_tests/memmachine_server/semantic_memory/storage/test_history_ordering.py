@@ -22,8 +22,8 @@ from memmachine_server.semantic_memory.storage.storage_base import SemanticStora
 from memmachine_server.semantic_memory.storage.vector_store_semantic_storage import (
     VectorStoreSemanticStorage,
 )
-from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
-    InMemoryVectorStoreCollection,
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_partition import (
+    InMemoryVectorStorePartition,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -42,7 +42,7 @@ async def sqlite_pgvector_history_storage(sqlalchemy_sqlite_engine: AsyncEngine)
 
 @pytest_asyncio.fixture
 async def sqlite_vector_history_storage(sqlalchemy_sqlite_engine: AsyncEngine):
-    collection = InMemoryVectorStoreCollection(
+    collection = InMemoryVectorStorePartition(
         VectorStoreCollectionConfig(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.COSINE,

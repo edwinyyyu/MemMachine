@@ -276,7 +276,7 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         default=False,
         description="Whether to use HTTPS/TLS for Qdrant communication",
     )
-    collection_registry: str = Field(
+    partition_registry: str = Field(
         ...,
         description=(
             "The relational database, a name under resources.databases, that "
@@ -325,7 +325,7 @@ class MilvusConf(MetricsFactoryIdMixin, YamlSerializableMixin, WithValueFromEnv)
         default="",
         description="Optional Milvus database name.",
     )
-    collection_registry: str = Field(
+    partition_registry: str = Field(
         ...,
         description=(
             "The relational database, a name under resources.databases, that "
