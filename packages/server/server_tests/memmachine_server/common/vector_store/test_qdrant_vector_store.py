@@ -2,7 +2,9 @@
 
 import asyncio
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -24,7 +26,7 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 from memmachine_server.common.vector_store.collection_registry import (
-    RegisteredCollection,
+    LiveRegistration,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -339,26 +341,27 @@ class TestUpsertAndQuery:
         assert len(all_results) == 0
 
 
+@dataclass(frozen=True)
+class _CurrentRegistration(LiveRegistration):
+    """A live registration whose collection is never deleted."""
+
+    @override
+    async def require_current(self) -> None:
+        return None
+
+
 def _collection_on(client: AsyncQdrantClient) -> QdrantVectorStoreCollection:
     """A handle on a given client, bound to a live incarnation."""
-    incarnation = uuid4()
-    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
     return QdrantVectorStoreCollection(
         client=client,
         native_collection_name="native",
-        namespace=NAMESPACE,
-        name=NAME,
-        incarnation=incarnation,
-        config=config,
-        tracker=OperationTracker(None, prefix="test"),
-        get_registered_collection=AsyncMock(
-            return_value=RegisteredCollection(
-                incarnation=incarnation,
-                config=config,
-                live=True,
-                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
-            )
+        registration=_CurrentRegistration(
+            namespace=NAMESPACE,
+            name=NAME,
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+            incarnation=uuid4(),
         ),
+        tracker=OperationTracker(None, prefix="test"),
     )
 
 
