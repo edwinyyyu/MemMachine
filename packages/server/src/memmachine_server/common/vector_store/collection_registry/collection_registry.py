@@ -1,19 +1,20 @@
 """
-Abstract base classes for a collection registry and its registrations.
+Abstract base classes for a collection registry, its reservations and registrations.
 
 The catalog of a vector store whose backend cannot arbitrate one: which
 logical collections exist, under which incarnation and configuration, and
 which deleted incarnations await purge. Its calls are arbitrated across
-every process sharing it: registration mints an incarnation no registered or
-queued collection carries, unregistration makes the collection unreachable
-when it returns, and a purge claim hands out a due tombstone, possibly to
-two purgers at once.
+every process sharing it: a reservation mints an incarnation no registered
+or queued collection carries, unregistration makes the collection
+unreachable when it returns, and a purge claim hands out a due tombstone,
+possibly to two purgers at once.
 
-The registry is addressed by (namespace, name). Registering a collection
-answers a `PendingRegistration`, through which its creator marks it live or
-abandons it; resolving a name answers a `LiveRegistration`, through which a
-handle checks that the collection has not been deleted. Each acts on one life
-of the collection alone.
+The registry is addressed by (namespace, name). Reserving a name answers a
+`Reservation`, which the collection's creator confirms once the collection's
+storage is prepared, or cancels. Confirming it, or resolving a name, answers
+a `Registration`, through which a handle checks that the collection has not
+been deleted. Each acts on one life of the collection alone, and a deletion
+by name voids either.
 """
 
 from abc import ABC, abstractmethod
@@ -27,9 +28,9 @@ from memmachine_server.common.vector_store.data_types import (
 
 
 @dataclass(frozen=True)
-class Registration:
+class _RegistryEntry:
     """
-    One life of a registered collection, from its registration to its deletion.
+    A registry's entry for one life of a collection, from its reservation to its deletion.
 
     Its fields belong to this life and never change: `incarnation` is the
     value its records carry, and `config` the configuration it was created
@@ -43,46 +44,46 @@ class Registration:
 
 
 @dataclass(frozen=True)
-class PendingRegistration(Registration, ABC):
+class Reservation(_RegistryEntry, ABC):
     """
-    A collection's registration while its creator prepares its storage.
+    A collection's hold on its (namespace, name), kept by its creator while it prepares the collection's storage.
 
-    A registry implementation supplies the methods, each of which writes the
-    registry.
+    The collection is pending until the reservation is confirmed. A registry
+    implementation supplies the methods, each of which writes the registry.
     """
 
     @abstractmethod
-    async def mark_live(self) -> "LiveRegistration":
+    async def confirm(self) -> "Registration":
         """
-        Mark this pending collection as live.
+        Confirm this reservation, marking the pending collection live.
 
         Called once, when the collection's storage is prepared. A concurrent
-        deletion of the collection either follows the mark or makes it raise.
+        deletion of the collection either follows the confirmation or makes
+        it raise.
 
         Returns:
-            LiveRegistration: The same life of the collection, live.
+            Registration: The same life of the collection, live.
 
         Raises:
             VectorStoreCollectionDeletedError:
-                If this life is no longer pending: the collection was
-                deleted.
+                If the collection is no longer pending: it was deleted.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def unregister(self) -> None:
+    async def cancel(self) -> None:
         """
-        Unregister this life of the collection and queue its incarnation for purge.
+        Cancel this reservation, unregistering this life of the collection and queuing its incarnation for purge.
 
         The collection is unreachable when this returns, and purge rounds
-        reclaim its records later. A collection registered since under the
-        same (namespace, name) is another life and stays. Idempotent.
+        reclaim its records later. A collection reserved since under the same
+        (namespace, name) is another life and stays. Idempotent.
         """
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class LiveRegistration(Registration, ABC):
+class Registration(_RegistryEntry, ABC):
     """
     A live collection's registration.
 
@@ -140,16 +141,16 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def register(
+    async def reserve(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> PendingRegistration:
+    ) -> Reservation:
         """
-        Register a new pending collection under a freshly minted incarnation.
+        Reserve a (namespace, name) for a new pending collection under a freshly minted incarnation.
 
         The (namespace, name) is arbitrated across processes, and the
         incarnation is one no registered or queued collection carries, so the
         new collection starts empty and no purge reclaims its records. The
-        collection is pending until its registration's `mark_live`, and holds
+        collection is pending until its reservation is confirmed, and holds
         its (namespace, name) meanwhile.
 
         Args:
@@ -159,20 +160,20 @@ class VectorStoreCollectionRegistry(ABC):
                 The configuration the collection is created with.
 
         Returns:
-            PendingRegistration: The new collection's registration.
+            Reservation: The new collection's reservation.
 
         Raises:
             VectorStoreCollectionAlreadyExistsError:
                 The (namespace, name) is taken, by a live or a pending
                 collection.
             VectorStoreAttemptsExhaustedError:
-                The registry gave up after repeated attempts to register
+                The registry gave up after repeated attempts to reserve
                 the free (namespace, name) failed.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def resolve(self, namespace: str, name: str) -> LiveRegistration | None:
+    async def resolve(self, namespace: str, name: str) -> Registration | None:
         """
         Resolve a (namespace, name) to the live collection registered under it.
 
@@ -183,9 +184,9 @@ class VectorStoreCollectionRegistry(ABC):
             name (str): Name of the collection within the namespace.
 
         Returns:
-            LiveRegistration | None:
+            Registration | None:
                 The live collection's registration, or None when no
-                collection is registered under the (namespace, name).
+                collection holds the (namespace, name).
 
         Raises:
             VectorStoreCollectionPendingError:
@@ -200,7 +201,8 @@ class VectorStoreCollectionRegistry(ABC):
         Unregister the collection under a (namespace, name) and queue its incarnation for purge.
 
         The collection, pending or live, is unreachable when this returns,
-        and purge rounds reclaim its records later. Idempotent.
+        which voids its reservation or registration, and purge rounds reclaim
+        its records later. Idempotent.
 
         Args:
             namespace (str): Namespace of the collection.
