@@ -3,7 +3,7 @@
 import hashlib
 import json
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
@@ -41,7 +41,7 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
-from .collection_registry import RegisteredCollection
+from .collection_registry import LiveRegistration
 from .data_types import (
     QueryMatch,
     QueryResult,
@@ -248,25 +248,12 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         *,
         client: AsyncMilvusClient,
         native_collection_name: str,
-        namespace: str,
-        name: str,
-        incarnation: UUID,
-        config: VectorStoreCollectionConfig,
+        registration: LiveRegistration,
         tracker: OperationTracker,
-        get_registered_collection: Callable[
-            [str, str], Awaitable[RegisteredCollection | None]
-        ],
         request_timeout_seconds: int,
     ) -> None:
-        """Initialize with a Milvus client and the incarnation the handle is bound to."""
-        super().__init__(
-            namespace=namespace,
-            name=name,
-            incarnation=incarnation,
-            config=config,
-            tracker=tracker,
-            get_registered_collection=get_registered_collection,
-        )
+        """Initialize with a Milvus client and the live registration the handle is bound to."""
+        super().__init__(registration=registration, tracker=tracker)
         self._client = client
         self._native_collection_name = native_collection_name
         self._request_timeout_seconds = request_timeout_seconds
@@ -491,23 +478,15 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
 
     @override
     def _build_collection_handle(
-        self,
-        namespace: str,
-        name: str,
-        incarnation: UUID,
-        config: VectorStoreCollectionConfig,
+        self, registration: LiveRegistration
     ) -> MilvusVectorStoreCollection:
         return MilvusVectorStoreCollection(
             client=self._client,
             native_collection_name=MilvusVectorStore._build_native_collection_name(
-                namespace, config
+                registration.namespace, registration.config
             ),
-            namespace=namespace,
-            name=name,
-            incarnation=incarnation,
-            config=config,
+            registration=registration,
             tracker=self._tracker,
-            get_registered_collection=self._collection_registry.get,
             request_timeout_seconds=self._request_timeout_seconds,
         )
 
