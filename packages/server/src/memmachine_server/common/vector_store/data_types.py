@@ -95,11 +95,18 @@ class VectorStoreCollectionAlreadyExistsError(Exception):
 class VectorStoreCollectionPendingError(Exception):
     """Raised when opening a collection whose creation has not completed."""
 
-    def __init__(self, namespace: str, name: str, registered_at: datetime) -> None:
-        """Initialize with the namespace, name, and registration time of the pending collection."""
+    def __init__(
+        self,
+        namespace: str,
+        name: str,
+        registered_at: datetime,
+        config: VectorStoreCollectionConfig,
+    ) -> None:
+        """Initialize with the pending collection's namespace, name, registration time and configuration."""
         self.namespace = namespace
         self.name = name
         self.registered_at = registered_at
+        self.config = config
         super().__init__(
             f"Collection ({namespace!r}, {name!r}) has been pending since "
             f"{registered_at.isoformat()}; if its creation was abandoned, "

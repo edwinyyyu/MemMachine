@@ -20,6 +20,10 @@ from memmachine_server.common.vector_store import (
     VectorStoreCollectionPendingError,
     registry_backed_vector_store,
 )
+from memmachine_server.common.vector_store.collection_registry import (
+    LiveRegistration,
+    sqlalchemy_collection_registry,
+)
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
     SQLAlchemyVectorStoreCollectionRegistryParams,
@@ -76,21 +80,8 @@ class _Store(RegistryBackedVectorStore[_Collection]):
         await self.prepare(namespace, config, incarnation)
 
     @override
-    def _build_collection_handle(
-        self,
-        namespace: str,
-        name: str,
-        incarnation: UUID,
-        config: VectorStoreCollectionConfig,
-    ) -> _Collection:
-        return _Collection(
-            namespace=namespace,
-            name=name,
-            incarnation=incarnation,
-            config=config,
-            tracker=self._tracker,
-            get_registered_collection=self._collection_registry.get,
-        )
+    def _build_collection_handle(self, registration: LiveRegistration) -> _Collection:
+        return _Collection(registration=registration, tracker=self._tracker)
 
     @override
     async def _purge_round(
@@ -143,9 +134,10 @@ async def test_a_collection_is_pending_while_its_storage_is_prepared(store):
 
     with pytest.raises(VectorStoreCollectionPendingError) as pending:
         await store.open_collection(namespace=NAMESPACE, name=NAME)
-    registered = await store._collection_registry.get(NAMESPACE, NAME)
-    assert registered is not None
-    assert pending.value.registered_at == registered.registered_at
+    with pytest.raises(VectorStoreCollectionPendingError) as registered:
+        await store._collection_registry.resolve(NAMESPACE, NAME)
+    assert pending.value.registered_at == registered.value.registered_at
+    assert pending.value.config == CONFIG
     with pytest.raises(VectorStoreCollectionAlreadyExistsError):
         await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
@@ -194,7 +186,7 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
     await creating
     opened = await opening
 
-    created = await store._collection_registry.get(NAMESPACE, NAME)
+    created = await store._collection_registry.resolve(NAMESPACE, NAME)
     assert created is not None
     assert opened._incarnation == created.incarnation
 
@@ -281,20 +273,20 @@ async def test_an_unregistration_after_a_cancelled_preparation_survives_another_
     started = asyncio.Event()
     unregistering = asyncio.Event()
     release = asyncio.Event()
-    registry = store._collection_registry
-    unregister_incarnation = registry.unregister_incarnation
+    pending_registration = sqlalchemy_collection_registry._SQLAlchemyPendingRegistration
+    unregister = pending_registration.unregister
 
     async def hangs(namespace, config, incarnation) -> None:
         started.set()
         await asyncio.Event().wait()
 
-    async def slow(incarnation) -> None:
+    async def slow(pending) -> None:
         unregistering.set()
         await release.wait()
-        await unregister_incarnation(incarnation)
+        await unregister(pending)
 
     store.prepare = hangs
-    monkeypatch.setattr(registry, "unregister_incarnation", slow)
+    monkeypatch.setattr(pending_registration, "unregister", slow)
     creating = asyncio.create_task(
         store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
     )
@@ -317,20 +309,22 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     monkeypatch.setattr(
         registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
     )
-    registry = store._collection_registry
 
     async def refused(namespace, config, incarnation) -> None:
         raise RuntimeError("the backend refused")
 
-    async def unreachable(incarnation) -> None:
+    async def unreachable(pending) -> None:
         raise ConnectionError("the registry is unreachable")
 
     store.prepare = refused
-    unregister_incarnation = registry.unregister_incarnation
-    monkeypatch.setattr(registry, "unregister_incarnation", unreachable)
-    with pytest.raises(RuntimeError, match="refused"):
-        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
-    monkeypatch.setattr(registry, "unregister_incarnation", unregister_incarnation)
+    with monkeypatch.context() as unregistration:
+        unregistration.setattr(
+            sqlalchemy_collection_registry._SQLAlchemyPendingRegistration,
+            "unregister",
+            unreachable,
+        )
+        with pytest.raises(RuntimeError, match="refused"):
+            await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
     store.prepare = _prepared
 
     with pytest.raises(VectorStoreCollectionPendingError):
@@ -399,9 +393,9 @@ async def test_calling_the_purge_until_it_returns_false_drains_every_tombstone(
     incarnations = []
     for name in ("a", "b"):
         await store.create_collection(namespace=NAMESPACE, name=name, config=CONFIG)
-        registered = await store._collection_registry.get(NAMESPACE, name)
-        assert registered is not None
-        incarnations.append(registered.incarnation)
+        live = await store._collection_registry.resolve(NAMESPACE, name)
+        assert live is not None
+        incarnations.append(live.incarnation)
         await store.delete_collection(namespace=NAMESPACE, name=name)
 
     assert sorted(await _purged(store)) == sorted(incarnations)

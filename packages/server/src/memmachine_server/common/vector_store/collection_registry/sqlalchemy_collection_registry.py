@@ -5,7 +5,7 @@ A table of registered collections keyed by vector store, namespace and name,
 each with its incarnation and whether it is live (its storage prepared), and
 a queue of deleted incarnations claimed in the order they come due. The
 primary key arbitrates registration across processes, a conditional update
-marks a collection live, unregistration is one transaction, and on
+marks a registration live, unregistration is one transaction, and on
 PostgreSQL a purge claim is a row lock.
 """
 
@@ -13,6 +13,7 @@ import logging
 import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import override
 from uuid import UUID, uuid4
@@ -48,14 +49,17 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionDeletedError,
+    VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
 )
 from memmachine_server.common.vector_store.utils import (
     _IDENTIFIER_MAX_BYTES,
 )
 
 from .collection_registry import (
+    LiveRegistration,
+    PendingRegistration,
     PurgeClaim,
-    RegisteredCollection,
     VectorStoreCollectionRegistry,
 )
 
@@ -251,7 +255,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     @override
     async def register(
         self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> UUID:
+    ) -> PendingRegistration:
         # The primary key arbitrates the (namespace, name) across processes.
         # An insert rejected for another reason, such as a minted incarnation
         # that is registered or awaiting purge, is tried again with a fresh one.
@@ -276,7 +280,14 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         f"progress after {_MAX_MINT_ATTEMPTS} attempts"
                     ) from err
                 continue
-            return incarnation
+            return _SQLAlchemyPendingRegistration(
+                namespace=namespace,
+                name=name,
+                config=config,
+                incarnation=incarnation,
+                engine=self._engine,
+                vector_store_name=self._vector_store_name,
+            )
 
     async def _insert(
         self,
@@ -311,33 +322,24 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 if queued is not None:
                     raise _RegistryInsertRejectedError("the incarnation awaits purge")
         except IntegrityError as err:
-            if await self.get(namespace, name) is not None:
+            async with self._engine.connect() as connection:
+                taken = (
+                    await connection.execute(
+                        select(CollectionRow.incarnation).where(
+                            CollectionRow.vector_store_name == self._vector_store_name,
+                            CollectionRow.namespace == namespace,
+                            CollectionRow.name == name,
+                        )
+                    )
+                ).scalar_one_or_none()
+            if taken is not None:
                 raise VectorStoreCollectionAlreadyExistsError(namespace, name) from err
             raise _RegistryInsertRejectedError(
                 "the insert failed and no row exists under the name"
             ) from err
 
     @override
-    async def mark_live(self, namespace: str, name: str, incarnation: UUID) -> None:
-        # Conditional on the incarnation and on the row being pending, so a
-        # creation marks only the collection it registered.
-        async with self._engine.begin() as connection:
-            result = await connection.execute(
-                update(CollectionRow)
-                .where(
-                    CollectionRow.vector_store_name == self._vector_store_name,
-                    CollectionRow.namespace == namespace,
-                    CollectionRow.name == name,
-                    CollectionRow.incarnation == incarnation,
-                    CollectionRow.live.is_(False),
-                )
-                .values(live=True)
-            )
-        if result.rowcount != 1:
-            raise VectorStoreCollectionDeletedError(namespace, name)
-
-    @override
-    async def get(self, namespace: str, name: str) -> RegisteredCollection | None:
+    async def resolve(self, namespace: str, name: str) -> LiveRegistration | None:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -355,58 +357,28 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             ).one_or_none()
         if row is None:
             return None
-        return RegisteredCollection(
+        config = VectorStoreCollectionConfig.model_validate(row.config)
+        if not row.live:
+            raise VectorStoreCollectionPendingError(
+                namespace, name, ensure_tz_aware(row.registered_at), config
+            )
+        return _SQLAlchemyLiveRegistration(
+            namespace=namespace,
+            name=name,
+            config=config,
             incarnation=row.incarnation,
-            config=VectorStoreCollectionConfig.model_validate(row.config),
-            live=row.live,
-            registered_at=ensure_tz_aware(row.registered_at),
+            engine=self._engine,
+            vector_store_name=self._vector_store_name,
         )
 
     @override
     async def unregister(self, namespace: str, name: str) -> None:
-        await self._unregister_where(
-            CollectionRow.namespace == namespace, CollectionRow.name == name
+        await _unregister_where(
+            self._engine,
+            self._vector_store_name,
+            CollectionRow.namespace == namespace,
+            CollectionRow.name == name,
         )
-
-    @override
-    async def unregister_incarnation(self, incarnation: UUID) -> None:
-        await self._unregister_where(CollectionRow.incarnation == incarnation)
-
-    async def _unregister_where(self, *conditions: ColumnElement[bool]) -> None:
-        """Delete this registry's collection row the conditions select, and queue its tombstone.
-
-        One transaction, so the collection is unreachable once it commits.
-        The DELETE goes first and takes the row's write lock, so racing
-        deleters serialize on it and the loser finds no row and returns.
-        """
-        async with self._engine.begin() as connection:
-            row = (
-                await connection.execute(
-                    delete(CollectionRow)
-                    .where(
-                        CollectionRow.vector_store_name == self._vector_store_name,
-                        *conditions,
-                    )
-                    .returning(
-                        CollectionRow.incarnation,
-                        CollectionRow.namespace,
-                        CollectionRow.name,
-                        CollectionRow.config,
-                    )
-                )
-            ).one_or_none()
-            if row is None:
-                return
-            await connection.execute(
-                insert(PurgeQueueRow).values(
-                    incarnation=row.incarnation,
-                    vector_store_name=self._vector_store_name,
-                    namespace=row.namespace,
-                    name=row.name,
-                    config=row.config,
-                    enqueued_at=func.now(),
-                )
-            )
 
     @override
     @asynccontextmanager
@@ -546,4 +518,108 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             )
         return func.now() - bindparam(
             "retention", self._tombstone_retention, type_=Interval
+        )
+
+
+@dataclass(frozen=True)
+class _SQLAlchemyPendingRegistration(PendingRegistration):
+    """A pending registration whose methods write the registry's tables directly."""
+
+    engine: AsyncEngine = field(repr=False, compare=False)
+    vector_store_name: str = field(repr=False)
+
+    @override
+    async def mark_live(self) -> LiveRegistration:
+        # Conditional on the incarnation and on the row being pending, so a
+        # creation marks only the collection it registered.
+        async with self.engine.begin() as connection:
+            result = await connection.execute(
+                update(CollectionRow)
+                .where(
+                    CollectionRow.vector_store_name == self.vector_store_name,
+                    CollectionRow.namespace == self.namespace,
+                    CollectionRow.name == self.name,
+                    CollectionRow.incarnation == self.incarnation,
+                    CollectionRow.live.is_(False),
+                )
+                .values(live=True)
+            )
+        if result.rowcount != 1:
+            raise VectorStoreCollectionDeletedError(self.namespace, self.name)
+        return _SQLAlchemyLiveRegistration(
+            namespace=self.namespace,
+            name=self.name,
+            config=self.config,
+            incarnation=self.incarnation,
+            engine=self.engine,
+            vector_store_name=self.vector_store_name,
+        )
+
+    @override
+    async def unregister(self) -> None:
+        await _unregister_where(
+            self.engine,
+            self.vector_store_name,
+            CollectionRow.incarnation == self.incarnation,
+        )
+
+
+@dataclass(frozen=True)
+class _SQLAlchemyLiveRegistration(LiveRegistration):
+    """A live registration whose method reads the registry's tables directly."""
+
+    engine: AsyncEngine = field(repr=False, compare=False)
+    vector_store_name: str = field(repr=False)
+
+    @override
+    async def require_current(self) -> None:
+        async with self.engine.connect() as connection:
+            current = (
+                await connection.execute(
+                    select(CollectionRow.incarnation).where(
+                        CollectionRow.vector_store_name == self.vector_store_name,
+                        CollectionRow.namespace == self.namespace,
+                        CollectionRow.name == self.name,
+                    )
+                )
+            ).scalar_one_or_none()
+        if current != self.incarnation:
+            raise VectorStoreCollectionHandleStaleError(self.namespace, self.name)
+
+
+async def _unregister_where(
+    engine: AsyncEngine, vector_store_name: str, *conditions: ColumnElement[bool]
+) -> None:
+    """Delete the collection row of a vector store the conditions select, and queue its tombstone.
+
+    One transaction, so the collection is unreachable once it commits. The
+    DELETE goes first and takes the row's write lock, so racing deleters
+    serialize on it and the loser finds no row and returns.
+    """
+    async with engine.begin() as connection:
+        row = (
+            await connection.execute(
+                delete(CollectionRow)
+                .where(
+                    CollectionRow.vector_store_name == vector_store_name, *conditions
+                )
+                .returning(
+                    CollectionRow.incarnation,
+                    CollectionRow.namespace,
+                    CollectionRow.name,
+                    CollectionRow.config,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return
+        await connection.execute(
+            insert(PurgeQueueRow).values(
+                incarnation=row.incarnation,
+                vector_store_name=vector_store_name,
+                namespace=row.namespace,
+                name=row.name,
+                config=row.config,
+                enqueued_at=func.now(),
+            )
         )
