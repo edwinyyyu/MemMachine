@@ -14,9 +14,14 @@ from memmachine_server.common.vector_store import (
     QueryResult,
     Record,
     VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
     VectorStorePartitionPendingError,
     VectorStorePartitionSchemaMismatchError,
     registry_backed_vector_store,
+)
+from memmachine_server.common.vector_store.partition_registry import (
+    LiveRegistration,
+    sqlalchemy_partition_registry,
 )
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
@@ -86,16 +91,14 @@ class _Store(RegistryBackedVectorStore[_Partition]):
         await self.prepare(partition_key, incarnation)
 
     @override
-    def _partition_handle(self, partition_key: str, incarnation: UUID) -> _Partition:
+    def _partition_handle(self, registration: LiveRegistration) -> _Partition:
         return _Partition(
             vector_store_name=self.vector_store_name,
-            partition_key=partition_key,
-            incarnation=incarnation,
+            registration=registration,
             vector_dimensions=self.vector_dimensions,
             similarity_metric=self.similarity_metric,
             indexed_properties=self.indexed_properties,
             tracker=self._tracker,
-            get_registered_partition=self._partition_registry.get,
         )
 
     @override
@@ -148,9 +151,10 @@ async def test_a_partition_is_pending_while_its_storage_is_prepared(store):
 
     with pytest.raises(VectorStorePartitionPendingError) as pending:
         await store.get_partition(KEY)
-    registered = await store._partition_registry.get(KEY)
-    assert registered is not None
-    assert pending.value.registered_at == registered.registered_at
+    with pytest.raises(VectorStorePartitionPendingError) as registered:
+        await store._partition_registry.resolve(KEY)
+    assert pending.value.registered_at == registered.value.registered_at
+    assert pending.value.schema == store._declared_schema()
     with pytest.raises(VectorStorePartitionAlreadyExistsError):
         await store.create_partition(KEY)
 
@@ -195,7 +199,7 @@ async def test_open_or_create_waits_for_a_pending_partition(store, monkeypatch):
     await creating
     opened = await opening
 
-    created = await store._partition_registry.get(KEY)
+    created = await store._partition_registry.resolve(KEY)
     assert created is not None
     assert opened._incarnation == created.incarnation
 
@@ -275,20 +279,20 @@ async def test_an_unregistration_after_a_cancelled_preparation_survives_another_
     started = asyncio.Event()
     unregistering = asyncio.Event()
     release = asyncio.Event()
-    registry = store._partition_registry
-    unregister_incarnation = registry.unregister_incarnation
+    pending_registration = sqlalchemy_partition_registry._SQLAlchemyPendingRegistration
+    unregister = pending_registration.unregister
 
     async def hangs(partition_key, incarnation) -> None:
         started.set()
         await asyncio.Event().wait()
 
-    async def slow(incarnation) -> None:
+    async def slow(pending) -> None:
         unregistering.set()
         await release.wait()
-        await unregister_incarnation(incarnation)
+        await unregister(pending)
 
     store.prepare = hangs
-    monkeypatch.setattr(registry, "unregister_incarnation", slow)
+    monkeypatch.setattr(pending_registration, "unregister", slow)
     creating = asyncio.create_task(store.create_partition(KEY))
     await started.wait()
     creating.cancel()
@@ -309,20 +313,22 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
     monkeypatch.setattr(
         registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
     )
-    registry = store._partition_registry
 
     async def refused(partition_key, incarnation) -> None:
         raise RuntimeError("the backend refused")
 
-    async def unreachable(incarnation) -> None:
+    async def unreachable(pending) -> None:
         raise ConnectionError("the registry is unreachable")
 
     store.prepare = refused
-    unregister_incarnation = registry.unregister_incarnation
-    monkeypatch.setattr(registry, "unregister_incarnation", unreachable)
-    with pytest.raises(RuntimeError, match="refused"):
-        await store.create_partition(KEY)
-    monkeypatch.setattr(registry, "unregister_incarnation", unregister_incarnation)
+    with monkeypatch.context() as unregistration:
+        unregistration.setattr(
+            sqlalchemy_partition_registry._SQLAlchemyPendingRegistration,
+            "unregister",
+            unreachable,
+        )
+        with pytest.raises(RuntimeError, match="refused"):
+            await store.create_partition(KEY)
     store.prepare = _prepared
 
     with pytest.raises(VectorStorePartitionPendingError):
@@ -341,8 +347,7 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
 async def test_a_partition_deleted_while_its_storage_is_prepared_is_not_marked_live(
     store,
 ):
-    """The creation returns, as one the deletion followed, and the partition
-    stays deleted."""
+    """The creation raises, and the partition stays deleted."""
     incarnations: list[UUID] = []
 
     async def deleted_meanwhile(partition_key, incarnation) -> None:
@@ -350,7 +355,8 @@ async def test_a_partition_deleted_while_its_storage_is_prepared_is_not_marked_l
         await store.delete_partition(KEY)
 
     store.prepare = deleted_meanwhile
-    await store.create_partition(KEY)
+    with pytest.raises(VectorStorePartitionDeletedError):
+        await store.create_partition(KEY)
 
     assert await store.get_partition(KEY) is None
     assert await _purged(store) == incarnations
@@ -387,9 +393,9 @@ async def test_calling_the_purge_until_it_returns_false_drains_every_tombstone(
     incarnations = []
     for partition_key in ("a", "b"):
         await store.create_partition(partition_key)
-        registered = await store._partition_registry.get(partition_key)
-        assert registered is not None
-        incarnations.append(registered.incarnation)
+        live = await store._partition_registry.resolve(partition_key)
+        assert live is not None
+        incarnations.append(live.incarnation)
         await store.delete_partition(partition_key)
 
     assert sorted(await _purged(store)) == sorted(incarnations)
