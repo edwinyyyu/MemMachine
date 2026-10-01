@@ -46,7 +46,7 @@ from .data_types import (
     QueryResult,
     Record,
 )
-from .partition_registry import LiveRegistration
+from .partition_registry import Registration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
     RegistryBackedVectorStoreParams,
@@ -240,13 +240,13 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         *,
         client: AsyncQdrantClient,
         vector_store_name: str,
-        registration: LiveRegistration,
+        registration: Registration,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
     ) -> None:
-        """Initialize with a Qdrant client and the live registration the handle is bound to."""
+        """Initialize with a Qdrant client and the registration the handle is bound to."""
         super().__init__(
             vector_store_name=vector_store_name,
             registration=registration,
@@ -495,7 +495,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
 
     @override
     def _partition_handle(
-        self, registration: LiveRegistration
+        self, registration: Registration
     ) -> QdrantVectorStorePartition:
         return QdrantVectorStorePartition(
             client=self._client,

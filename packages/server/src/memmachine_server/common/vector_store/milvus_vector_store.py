@@ -51,7 +51,7 @@ from .data_types import (
     QueryResult,
     Record,
 )
-from .partition_registry import LiveRegistration
+from .partition_registry import Registration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
     RegistryBackedVectorStoreParams,
@@ -259,14 +259,14 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         client: AsyncMilvusClient,
         collection_name: str,
         vector_store_name: str,
-        registration: LiveRegistration,
+        registration: Registration,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         tracker: OperationTracker,
         request_timeout_seconds: int,
     ) -> None:
-        """Initialize with a Milvus client and the live registration the handle is bound to."""
+        """Initialize with a Milvus client and the registration the handle is bound to."""
         super().__init__(
             vector_store_name=vector_store_name,
             registration=registration,
@@ -633,7 +633,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
 
     @override
     def _partition_handle(
-        self, registration: LiveRegistration
+        self, registration: Registration
     ) -> MilvusVectorStorePartition:
         return MilvusVectorStorePartition(
             client=self._client,
