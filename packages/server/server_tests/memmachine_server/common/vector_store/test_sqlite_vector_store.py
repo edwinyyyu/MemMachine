@@ -21,16 +21,16 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
     Record,
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStorePartitionAlreadyExistsError,
 )
 from memmachine_server.common.vector_store.sqlite_vector_store import (
     IndexLoadError,
     SQLiteVectorStore,
-    SQLiteVectorStoreCollection,
     SQLiteVectorStoreParams,
-    _CollectionRow,
+    SQLiteVectorStorePartition,
+    _PartitionRow,
     _PendingOperationRow,
 )
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
@@ -91,7 +91,7 @@ async def store(tmp_path):
 
 @pytest_asyncio.fixture
 async def collection(store):
-    await store.create_collection(
+    await store.create_partition(
         namespace=NAMESPACE,
         name=NAME,
         config=VectorStoreCollectionConfig(
@@ -106,10 +106,10 @@ async def collection(store):
             },
         ),
     )
-    coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    coll = await store.get_partition(namespace=NAMESPACE, name=NAME)
     assert coll is not None
     yield coll
-    await store.delete_collection(namespace=NAMESPACE, name=NAME)
+    await store.delete_partition(namespace=NAMESPACE, name=NAME)
 
 
 # ── Collection lifecycle ──
@@ -118,24 +118,24 @@ async def collection(store):
 class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_create_open_delete(self, store):
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE,
             name="lifecycle",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
-        coll = await store.open_collection(namespace=NAMESPACE, name="lifecycle")
-        assert isinstance(coll, SQLiteVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="lifecycle")
+        coll = await store.get_partition(namespace=NAMESPACE, name="lifecycle")
+        assert isinstance(coll, SQLiteVectorStorePartition)
+        await store.delete_partition(namespace=NAMESPACE, name="lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_returns_correct_type(self, store, collection):
-        coll = await store.open_collection(namespace=NAMESPACE, name=NAME)
-        assert isinstance(coll, SQLiteVectorStoreCollection)
+        coll = await store.get_partition(namespace=NAMESPACE, name=NAME)
+        assert isinstance(coll, SQLiteVectorStorePartition)
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, collection):
-        with pytest.raises(VectorStoreCollectionAlreadyExistsError):
-            await store.create_collection(
+        with pytest.raises(VectorStorePartitionAlreadyExistsError):
+            await store.create_partition(
                 namespace=NAMESPACE,
                 name=NAME,
                 config=VectorStoreCollectionConfig(
@@ -153,52 +153,52 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_is_idempotent(self, store):
-        await store.delete_collection(namespace=NAMESPACE, name="nonexistent")
+        await store.delete_partition(namespace=NAMESPACE, name="nonexistent")
 
     @pytest.mark.asyncio
     async def test_open_or_create_creates_when_missing(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name="new", config=config
         )
-        assert isinstance(coll, SQLiteVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="new")
+        assert isinstance(coll, SQLiteVectorStorePartition)
+        await store.delete_partition(namespace=NAMESPACE, name="new")
 
     @pytest.mark.asyncio
     async def test_open_or_create_opens_when_exists(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="existing", config=config
         )
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name="existing", config=config
         )
-        assert isinstance(coll, SQLiteVectorStoreCollection)
-        await store.delete_collection(namespace=NAMESPACE, name="existing")
+        assert isinstance(coll, SQLiteVectorStorePartition)
+        await store.delete_partition(namespace=NAMESPACE, name="existing")
 
     @pytest.mark.asyncio
     async def test_open_or_create_raises_on_config_mismatch(self, store):
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE,
             name="mismatch",
             config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
         )
         with pytest.raises(VectorStoreCollectionConfigMismatchError):
-            await store.open_or_create_collection(
+            await store.open_or_create_partition(
                 namespace=NAMESPACE,
                 name="mismatch",
                 config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM + 1),
             )
-        await store.delete_collection(namespace=NAMESPACE, name="mismatch")
+        await store.delete_partition(namespace=NAMESPACE, name="mismatch")
 
     @pytest.mark.asyncio
     async def test_open_nonexistent_returns_none(self, store):
-        assert await store.open_collection(namespace=NAMESPACE, name="nope") is None
+        assert await store.get_partition(namespace=NAMESPACE, name="nope") is None
 
     @pytest.mark.asyncio
     async def test_unsupported_metric_raises(self, store):
         with pytest.raises(ValueError, match="does not support"):
-            await store.create_collection(
+            await store.create_partition(
                 namespace=NAMESPACE,
                 name="bad_metric",
                 config=VectorStoreCollectionConfig(
@@ -210,7 +210,7 @@ class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_invalid_namespace_raises(self, store):
         with pytest.raises(ValueError, match="Namespace 'INVALID' must match"):
-            await store.create_collection(
+            await store.create_partition(
                 namespace="INVALID",
                 name="test",
                 config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
@@ -219,7 +219,7 @@ class TestCollectionLifecycle:
     @pytest.mark.asyncio
     async def test_invalid_name_raises(self, store):
         with pytest.raises(ValueError, match="Name 'INVALID' must match"):
-            await store.create_collection(
+            await store.create_partition(
                 namespace="valid",
                 name="INVALID",
                 config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
@@ -639,14 +639,14 @@ class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_query_only_returns_own_collection(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_partition(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_partition(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -665,20 +665,20 @@ class TestPartitionIsolation:
         assert uuids_a == {r1.uuid}
         assert uuids_b == {r2.uuid}
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_partition(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
     async def test_a_query_returns_only_its_own_collections_records(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_partition(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_partition(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -692,20 +692,20 @@ class TestPartitionIsolation:
         [result] = await coll_a.query(query_vectors=[v1], limit=10)
         assert [match.record_uuid for match in result.matches] == [r1.uuid]
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_partition(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
     async def test_delete_only_affects_own_collection(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="tenant_a", config=config
         )
-        await store.create_collection(
+        await store.create_partition(
             namespace=NAMESPACE, name="tenant_b", config=config
         )
-        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
-        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        coll_a = await store.get_partition(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.get_partition(namespace=NAMESPACE, name="tenant_b")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -720,20 +720,20 @@ class TestPartitionIsolation:
 
         assert set(await _stored(coll_b)) == {r2.uuid}
 
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
-        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+        await store.delete_partition(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_partition(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
     async def test_namespace_isolation(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(
+        await store.create_partition(
             namespace="namespace_a", name="coll", config=config
         )
-        await store.create_collection(
+        await store.create_partition(
             namespace="namespace_b", name="coll", config=config
         )
-        coll_a = await store.open_collection(namespace="namespace_a", name="coll")
-        coll_b = await store.open_collection(namespace="namespace_b", name="coll")
+        coll_a = await store.get_partition(namespace="namespace_a", name="coll")
+        coll_b = await store.get_partition(namespace="namespace_b", name="coll")
         assert coll_a is not None
         assert coll_b is not None
 
@@ -747,17 +747,17 @@ class TestPartitionIsolation:
         results_a = await coll_a.query(query_vectors=[v1], limit=10)
         assert {match.record_uuid for match in results_a[0].matches} == {r1.uuid}
 
-        await store.delete_collection(namespace="namespace_a", name="coll")
-        await store.delete_collection(namespace="namespace_b", name="coll")
+        await store.delete_partition(namespace="namespace_a", name="coll")
+        await store.delete_partition(namespace="namespace_b", name="coll")
 
     @pytest.mark.asyncio
-    async def test_delete_collection_does_not_affect_sibling(self, store):
+    async def test_delete_partition_does_not_affect_sibling(self, store):
         """Deleting one collection doesn't break a sibling sharing tables."""
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        coll_a = await store.open_or_create_collection(
+        coll_a = await store.open_or_create_partition(
             namespace=NAMESPACE, name="sibling_a", config=config
         )
-        coll_b = await store.open_or_create_collection(
+        coll_b = await store.open_or_create_partition(
             namespace=NAMESPACE, name="sibling_b", config=config
         )
 
@@ -767,13 +767,13 @@ class TestPartitionIsolation:
         await coll_a.upsert(records=[r1])
         await coll_b.upsert(records=[r2])
 
-        await store.delete_collection(namespace=NAMESPACE, name="sibling_a")
+        await store.delete_partition(namespace=NAMESPACE, name="sibling_a")
 
         results = await coll_b.query(query_vectors=[v1], limit=10)
         assert len(results[0].matches) == 1
         assert results[0].matches[0].record_uuid == r2.uuid
 
-        await store.delete_collection(namespace=NAMESPACE, name="sibling_b")
+        await store.delete_partition(namespace=NAMESPACE, name="sibling_b")
 
 
 # ── Euclidean metric ──
@@ -786,7 +786,7 @@ class TestEuclideanMetric:
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.EUCLIDEAN,
         )
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name="euclidean", config=config
         )
         r1 = _make_record(vector=[0.0, 0.0])
@@ -797,7 +797,7 @@ class TestEuclideanMetric:
         # Euclidean: lower distance = better match; best match is first
         assert results[0].matches[0].score < results[0].matches[1].score
 
-        await store.delete_collection(namespace=NAMESPACE, name="euclidean")
+        await store.delete_partition(namespace=NAMESPACE, name="euclidean")
 
 
 # ── No-properties collection ──
@@ -807,7 +807,7 @@ class TestNoProperties:
     @pytest.mark.asyncio
     async def test_collection_without_properties(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=2)
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name="no_props", config=config
         )
         r1 = _make_record(vector=[1.0, 0.0])
@@ -816,7 +816,7 @@ class TestNoProperties:
         results = await coll.query(query_vectors=[[1.0, 0.0]], limit=1)
         assert len(results[0].matches) == 1
 
-        await store.delete_collection(namespace=NAMESPACE, name="no_props")
+        await store.delete_partition(namespace=NAMESPACE, name="no_props")
 
 
 # ── USearch-specific: dot product metric ──
@@ -830,7 +830,7 @@ class TestDotProductMetric:
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.DOT,
         )
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name="dot", config=config
         )
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -842,7 +842,7 @@ class TestDotProductMetric:
         results = await coll.query(query_vectors=[v1], limit=2)
         assert len(results[0].matches) == 2
 
-        await store.delete_collection(namespace=NAMESPACE, name="dot")
+        await store.delete_partition(namespace=NAMESPACE, name="dot")
 
 
 # ── Input validation ──
@@ -944,7 +944,7 @@ class TestScoreSemantics:
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.EUCLIDEAN,
         )
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name="euclidean_score", config=config
         )
         r1 = _make_record(vector=[0.0, 0.0])
@@ -957,7 +957,7 @@ class TestScoreSemantics:
         assert scores[0] == pytest.approx(0.0, abs=0.01)
         assert scores[1] == pytest.approx(5.0, abs=0.01)
 
-        await store.delete_collection(namespace=NAMESPACE, name="euclidean_score")
+        await store.delete_partition(namespace=NAMESPACE, name="euclidean_score")
 
 
 # ── Upsert behavior ──
@@ -1096,7 +1096,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         records = [
@@ -1110,7 +1110,7 @@ class TestCrashRecovery:
 
         # Restart with fresh in-memory engines.
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1127,7 +1127,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         records = [
@@ -1143,7 +1143,7 @@ class TestCrashRecovery:
 
         # Restart: replay should re-apply unapplied ops to the engine.
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1160,7 +1160,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
@@ -1172,7 +1172,7 @@ class TestCrashRecovery:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1191,7 +1191,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         r1 = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
@@ -1204,7 +1204,7 @@ class TestCrashRecovery:
         await engine1.dispose()
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(
@@ -1223,7 +1223,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=2)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
 
@@ -1246,7 +1246,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         records = [
@@ -1256,7 +1256,7 @@ class TestCrashRecovery:
         await coll.upsert(records=records)
         assert await _pending_operation_count(engine1) == 2
 
-        await store1.delete_collection(namespace=NAMESPACE, name=NAME)
+        await store1.delete_partition(namespace=NAMESPACE, name=NAME)
         assert await _pending_operation_count(engine1) == 0
 
         await store1.shutdown()
@@ -1275,13 +1275,13 @@ class TestCrashRecovery:
         )
 
         with pytest.raises(RuntimeError, match="startup"):
-            await store.open_collection(namespace=NAMESPACE, name=NAME)
+            await store.get_partition(namespace=NAMESPACE, name=NAME)
 
         with pytest.raises(RuntimeError, match="startup"):
-            await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+            await store.create_partition(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
         with pytest.raises(RuntimeError, match="startup"):
-            await store.delete_collection(namespace=NAMESPACE, name=NAME)
+            await store.delete_partition(namespace=NAMESPACE, name=NAME)
 
         await engine.dispose()
 
@@ -1294,9 +1294,9 @@ async def _get_index_saved(engine, namespace, name) -> bool | None:
     async with session_factory() as session:
         return (
             await session.execute(
-                select(_CollectionRow.index_saved).where(
-                    _CollectionRow.namespace == namespace,
-                    _CollectionRow.name == name,
+                select(_PartitionRow.index_saved).where(
+                    _PartitionRow.namespace == namespace,
+                    _PartitionRow.name == name,
                 )
             )
         ).scalar_one_or_none()
@@ -1310,7 +1310,7 @@ class TestIndexFileDurability:
         """A freshly created collection has index_saved=False."""
         db_path = tmp_path / "test.db"
         store, engine = await _fresh_store(db_path, tmp_path)
-        await store.open_or_create_collection(
+        await store.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
 
@@ -1325,7 +1325,7 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1)
 
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
@@ -1341,7 +1341,7 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store, engine = await _fresh_store(db_path, tmp_path, save_threshold=1000)
 
-        coll = await store.open_or_create_collection(
+        coll = await store.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
@@ -1360,7 +1360,7 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
@@ -1373,11 +1373,11 @@ class TestIndexFileDurability:
         assert len(idx_files) == 1
         idx_files[0].unlink()
 
-        # Restart: open_collection must surface the failure, not return an
+        # Restart: get_partition must surface the failure, not return an
         # engine silently rebuilt empty.
         store2, engine2 = await _fresh_store(db_path, tmp_path)
         with pytest.raises(IndexLoadError) as exc_info:
-            await store2.open_collection(namespace=NAMESPACE, name=NAME)
+            await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert exc_info.value.namespace == NAMESPACE
         assert exc_info.value.name == NAME
         assert exc_info.value.__cause__ is not None
@@ -1391,7 +1391,7 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
@@ -1405,7 +1405,7 @@ class TestIndexFileDurability:
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
         with pytest.raises(IndexLoadError) as exc_info:
-            await store2.open_collection(namespace=NAMESPACE, name=NAME)
+            await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert exc_info.value.namespace == NAMESPACE
         assert exc_info.value.name == NAME
         assert exc_info.value.__cause__ is not None
@@ -1419,7 +1419,7 @@ class TestIndexFileDurability:
         db_path = tmp_path / "test.db"
         store1, engine1 = await _fresh_store(db_path, tmp_path, save_threshold=1000)
 
-        coll = await store1.open_or_create_collection(
+        coll = await store1.open_or_create_partition(
             namespace=NAMESPACE, name=NAME, config=CONFIG
         )
         await coll.upsert(
@@ -1436,7 +1436,7 @@ class TestIndexFileDurability:
         )
 
         store2, engine2 = await _fresh_store(db_path, tmp_path)
-        coll2 = await store2.open_collection(namespace=NAMESPACE, name=NAME)
+        coll2 = await store2.get_partition(namespace=NAMESPACE, name=NAME)
         assert coll2 is not None
 
         results = await coll2.query(

@@ -19,10 +19,10 @@ from memmachine_server.common.configuration.episodic_config import (
 )
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
-    VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
-    VectorStoreCollectionDeletedError,
-    VectorStoreCollectionPendingError,
+    VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
+    VectorStorePartitionPendingError,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
@@ -121,12 +121,12 @@ async def _event_params(
         if attempt:
             await asyncio.sleep(_OPEN_RETRY_DELAY_SECONDS)
         try:
-            collection = await vector_store.open_collection(
+            collection = await vector_store.get_partition(
                 namespace=_EVENT_BACKEND_NAMESPACE,
                 name=partition_key,
             )
             if collection is None:
-                await vector_store.create_collection(
+                await vector_store.create_partition(
                     namespace=_EVENT_BACKEND_NAMESPACE,
                     name=partition_key,
                     config=VectorStoreCollectionConfig(
@@ -138,14 +138,14 @@ async def _event_params(
                         },
                     ),
                 )
-                collection = await vector_store.open_collection(
+                collection = await vector_store.get_partition(
                     namespace=_EVENT_BACKEND_NAMESPACE,
                     name=partition_key,
                 )
         except (
-            VectorStoreCollectionAlreadyExistsError,
-            VectorStoreCollectionDeletedError,
-            VectorStoreCollectionPendingError,
+            VectorStorePartitionAlreadyExistsError,
+            VectorStorePartitionDeletedError,
+            VectorStorePartitionPendingError,
         ) as error:
             last_error = error
             continue
@@ -168,7 +168,7 @@ async def _event_params(
     return EventBackendParams(
         session_id=config.session_id,
         vector_store=vector_store,
-        vector_store_collection=collection,
+        vector_store_partition=collection,
         vector_store_collection_namespace=_EVENT_BACKEND_NAMESPACE,
         segment_store=segment_store,
         segment_store_partition=partition,
