@@ -20,6 +20,7 @@ from memmachine_server.common.vector_store import (
     Record,
     VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionDeletedError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
     VectorStorePartitionSchemaMismatchError,
@@ -190,22 +191,21 @@ class PartitionLifecycleContract:
 
     @pytest.mark.asyncio
     async def test_a_write_landing_under_a_dead_incarnation_raises_and_is_reclaimed(
-        self, store
+        self, store, monkeypatch
     ):
         collection = await _fresh(store, LIFECYCLE_KEY)
         baseline = await self._drained_count(store)
         records = _records(2)
 
         # The collection dies between the handle's check and its write.
-        get_registered_partition = collection._get_registered_partition
+        registration_type = type(collection._registration)
+        require_current = registration_type.require_current
 
-        async def deleted_once_checked(partition_key):
-            registered = await get_registered_partition(partition_key)
-            if registered is not None:
-                await store.delete_partition(partition_key)
-            return registered
+        async def deleted_once_checked(registration) -> None:
+            await require_current(registration)
+            await store.delete_partition(registration.partition_key)
 
-        collection._get_registered_partition = deleted_once_checked
+        monkeypatch.setattr(registration_type, "require_current", deleted_once_checked)
 
         with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_KEY):
             await collection.upsert(records=records)
@@ -224,19 +224,20 @@ class PartitionLifecycleContract:
 
     @pytest.mark.asyncio
     async def test_an_upsert_checks_the_registry_twice_and_a_query_or_delete_once(
-        self, store
+        self, store, monkeypatch
     ):
         partition = await _fresh(store, LIFECYCLE_KEY)
         record = _records(1)[0]
         checks = 0
-        get_registered_partition = partition._get_registered_partition
+        registration_type = type(partition._registration)
+        require_current = registration_type.require_current
 
-        async def counted_get_registered_partition(partition_key):
+        async def counted(registration) -> None:
             nonlocal checks
             checks += 1
-            return await get_registered_partition(partition_key)
+            await require_current(registration)
 
-        partition._get_registered_partition = counted_get_registered_partition
+        monkeypatch.setattr(registration_type, "require_current", counted)
 
         await partition.upsert(records=[record])
         assert checks == 2
@@ -267,7 +268,7 @@ class PartitionLifecycleContract:
             return None
 
         monkeypatch.setattr(registry, "register", lost)
-        monkeypatch.setattr(registry, "get", vanished)
+        monkeypatch.setattr(registry, "resolve", vanished)
         monkeypatch.setattr(
             registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
         )
@@ -312,9 +313,9 @@ class PartitionLifecycleContract:
             # lookup and its own registration.
             nonlocal lost_registrations
             lost_registrations += 1
-            incarnation = await register_partition(partition_key, schema)
-            await store._prepare_partition_storage(partition_key, incarnation)
-            await registry.mark_live(incarnation)
+            pending = await register_partition(partition_key, schema)
+            await store._prepare_partition_storage(partition_key, pending.incarnation)
+            await pending.mark_live()
             raise VectorStorePartitionAlreadyExistsError(
                 store.vector_store_name, partition_key
             )
@@ -326,7 +327,7 @@ class PartitionLifecycleContract:
         # It lost once, then found the winner instead of registering again.
         assert lost_registrations == 1
 
-        winner = await registry.get(LIFECYCLE_KEY)
+        winner = await registry.resolve(LIFECYCLE_KEY)
         assert winner is not None
         assert partition._incarnation == winner.incarnation
         record = _records(1)[0]
@@ -350,13 +351,13 @@ class PartitionLifecycleContract:
         async def another_process_wins(partition_key, schema):
             nonlocal lost_registrations
             lost_registrations += 1
-            incarnation = await register_partition(
+            pending = await register_partition(
                 partition_key,
                 schema.model_copy(
                     update={"vector_dimensions": schema.vector_dimensions + 1}
                 ),
             )
-            await registry.mark_live(incarnation)
+            await pending.mark_live()
             raise VectorStorePartitionAlreadyExistsError(
                 store.vector_store_name, partition_key
             )
@@ -420,6 +421,7 @@ class PartitionLifecycleContract:
                 except (
                     VectorStoreAttemptsExhaustedError,
                     VectorStorePartitionAlreadyExistsError,
+                    VectorStorePartitionDeletedError,
                     VectorStorePartitionPendingError,
                 ):
                     pass
