@@ -41,17 +41,17 @@ from memmachine_server.common.properties_json import (
 )
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
-from .collection_registry import LiveRegistration
 from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
     VectorStoreCollectionConfig,
 )
+from .partition_registry import LiveRegistration
 from .registry_backed_vector_store import (
     RegistryBackedVectorStore,
-    RegistryBackedVectorStoreCollection,
     RegistryBackedVectorStoreParams,
+    RegistryBackedVectorStorePartition,
 )
 
 _ID_FIELD = "id"
@@ -228,7 +228,7 @@ def _incarnation_filter(incarnation: UUID) -> str:
     return f"{_PARTITION_KEY_FIELD} == {_expr_string(str(incarnation))}"
 
 
-class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
+class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
     """A logical collection backed by Milvus."""
 
     @staticmethod
@@ -422,7 +422,7 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
     )
 
 
-class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
+class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
     """Asynchronous Milvus-based implementation of VectorStore.
 
     A logical collection is the entities carrying its incarnation in the
@@ -477,10 +477,10 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         self._purge_batch_size = params.purge_batch_size
 
     @override
-    def _build_collection_handle(
+    def _build_partition_handle(
         self, registration: LiveRegistration
-    ) -> MilvusVectorStoreCollection:
-        return MilvusVectorStoreCollection(
+    ) -> MilvusVectorStorePartition:
+        return MilvusVectorStorePartition(
             client=self._client,
             native_collection_name=MilvusVectorStore._build_native_collection_name(
                 registration.namespace, registration.config

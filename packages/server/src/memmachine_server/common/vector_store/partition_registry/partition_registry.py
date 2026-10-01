@@ -63,7 +63,7 @@ class PendingRegistration(Registration, ABC):
             LiveRegistration: The same life of the collection, live.
 
         Raises:
-            VectorStoreCollectionDeletedError:
+            VectorStorePartitionDeletedError:
                 If this life is no longer pending: the collection was
                 deleted.
         """
@@ -98,7 +98,7 @@ class LiveRegistration(Registration, ABC):
         it raise, and one committed after does not.
 
         Raises:
-            VectorStoreCollectionHandleStaleError:
+            VectorStorePartitionHandleStaleError:
                 If the collection was deleted, whether or not another was
                 registered under the (namespace, name) since.
         """
@@ -122,7 +122,7 @@ class PurgeClaim:
     any_records_found: bool | None = None
 
 
-class VectorStoreCollectionRegistry(ABC):
+class VectorStorePartitionRegistry(ABC):
     """
     The collection registry of one vector store.
 
@@ -162,7 +162,7 @@ class VectorStoreCollectionRegistry(ABC):
             PendingRegistration: The new collection's registration.
 
         Raises:
-            VectorStoreCollectionAlreadyExistsError:
+            VectorStorePartitionAlreadyExistsError:
                 The (namespace, name) is taken, by a live or a pending
                 collection.
             VectorStoreAttemptsExhaustedError:
@@ -188,7 +188,7 @@ class VectorStoreCollectionRegistry(ABC):
                 collection is registered under the (namespace, name).
 
         Raises:
-            VectorStoreCollectionPendingError:
+            VectorStorePartitionPendingError:
                 If the collection registered under the (namespace, name) is
                 pending.
         """
