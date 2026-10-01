@@ -1,11 +1,11 @@
 """
-A collection registry in a relational database, through SQLAlchemy.
+A partition registry in a relational database, through SQLAlchemy.
 
-A table of registered collections keyed by vector store, namespace and name,
+A table of registered partitions keyed by vector store and partition key,
 each with its incarnation and whether it is live (its storage prepared), and
 a queue of deleted incarnations claimed in the order they come due. The
 primary key arbitrates registration across processes, a conditional update
-marks a registration live, unregistration is one transaction, and on
+marks a partition live, unregistration is one transaction, and on
 PostgreSQL a purge claim is a row lock.
 """
 
@@ -13,7 +13,6 @@ import logging
 import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import override
 from uuid import UUID, uuid4
@@ -45,29 +44,24 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 
 from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store.data_types import (
+    PartitionSchema,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionConfig,
     VectorStorePartitionAlreadyExistsError,
-    VectorStorePartitionDeletedError,
-    VectorStorePartitionHandleStaleError,
-    VectorStorePartitionPendingError,
 )
 from memmachine_server.common.vector_store.utils import (
     _IDENTIFIER_MAX_BYTES,
+    validate_identifier,
 )
 
 from .partition_registry import (
-    LiveRegistration,
-    PendingRegistration,
     PurgeClaim,
+    RegisteredPartition,
     VectorStorePartitionRegistry,
 )
 
 logger = logging.getLogger(__name__)
 
 _MAX_MINT_ATTEMPTS = 10
-
-_VECTOR_STORE_NAME_MAX_LENGTH = 255
 
 # The first SQLite with RETURNING, which the registry uses.
 _MIN_SQLITE_VERSION = (3, 35)
@@ -79,29 +73,28 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 
 
 class BasePartitionRegistry(DeclarativeBase):
-    """Base class for collection registry tables."""
+    """Base class for partition registry tables."""
 
 
 class PartitionRow(BasePartitionRegistry):
-    """A registered collection of a vector store, pending or live."""
+    """A registered partition of a vector store, pending or live."""
 
-    __tablename__ = "partition_registry_ct"
+    __tablename__ = "partition_registry_pt"
 
     vector_store_name: MappedColumn[str] = mapped_column(
-        String(_VECTOR_STORE_NAME_MAX_LENGTH), primary_key=True
-    )
-    namespace: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
-    name: MappedColumn[str] = mapped_column(
+    partition_key: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
-    # The configuration the collection was created with.
-    config: MappedColumn[dict[str, JsonValue]] = mapped_column(
+    # The dimensions, metric and declared schema the partition was created
+    # under, so a store built with others fails loudly instead of filtering
+    # on indexes that are not there.
+    schema: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO, nullable=False
     )
-    # Whether the collection's storage is prepared; it is pending until then.
+    # Whether the partition's storage is prepared; it is pending until then.
     live: MappedColumn[bool] = mapped_column(Boolean, nullable=False)
     registered_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -109,24 +102,17 @@ class PartitionRow(BasePartitionRegistry):
 
 
 class PurgeQueueRow(BasePartitionRegistry):
-    """A deleted collection's tombstone: its incarnation awaiting purge."""
+    """A deleted partition's tombstone: its incarnation awaiting purge."""
 
     __tablename__ = "partition_registry_gc"
 
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, primary_key=True)
     vector_store_name: MappedColumn[str] = mapped_column(
-        String(_VECTOR_STORE_NAME_MAX_LENGTH), nullable=False
-    )
-    namespace: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), nullable=False
     )
-    # The collection's name, kept for inspection.
-    name: MappedColumn[str] = mapped_column(
+    # The partition's key, kept for inspection.
+    partition_key: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), nullable=False
-    )
-    # With the namespace, the configuration locates the records in the store.
-    config: MappedColumn[dict[str, JsonValue]] = mapped_column(
-        _JSON_AUTO, nullable=False
     )
     enqueued_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -144,7 +130,7 @@ class PurgeQueueRow(BasePartitionRegistry):
 
 
 class _RegistryInsertRejectedError(Exception):
-    """A registry insert was rejected for a reason other than the name being taken."""
+    """A registry insert was rejected for a reason other than the key being taken."""
 
 
 class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
@@ -155,10 +141,13 @@ class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
         engine (AsyncEngine):
             Async SQLAlchemy engine, on PostgreSQL or SQLite.
         vector_store_name (str):
-            The name the registry's rows are kept under: registry objects with
-            the same name on the same database are one registry.
+            The name of the store the registry serves, under which its rows are
+            kept: registry objects with the same name on the same database are
+            one registry, so a name identifies one store among all the stores
+            whose registries share the database. It must match [a-z0-9_]+ and
+            be at most 32 bytes.
         tombstone_retention_seconds (int):
-            Seconds a deleted collection's records are kept before its purge
+            Seconds a deleted partition's records are kept before its purge
             starts, on the database clock. It must exceed, by orders of
             magnitude, the longest a write to the backend can be in flight and
             the delay before the store's reads reflect a write.
@@ -175,15 +164,18 @@ class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
     vector_store_name: str = Field(
         ...,
         description=(
-            "The name the registry's rows are kept under: registry objects with "
-            "the same name on the same database are one registry"
+            "The name of the store the registry serves, under which its rows are "
+            "kept: registry objects with the same name on the same database are "
+            "one registry, so a name identifies one store among all the stores "
+            "whose registries share the database. It must match [a-z0-9_]+ and "
+            "be at most 32 bytes"
         ),
     )
     tombstone_retention_seconds: int = Field(
         ...,
         ge=0,
         description=(
-            "Seconds a deleted collection's records are kept before its purge "
+            "Seconds a deleted partition's records are kept before its purge "
             "starts, on the database clock. It must exceed, by orders of "
             "magnitude, the longest a write to the backend can be in flight and "
             "the delay before the store's reads reflect a write"
@@ -220,10 +212,20 @@ class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
             )
         return engine
 
+    @field_validator("vector_store_name")
+    @classmethod
+    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
+        if not validate_identifier(vector_store_name):
+            raise ValueError(
+                f"Vector store name {vector_store_name!r} must match [a-z0-9_]+ "
+                "and be at most 32 bytes"
+            )
+        return vector_store_name
+
 
 class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
     """
-    The registry of one vector store's collections.
+    The registry of one vector store's partitions.
 
     Registries of different vector stores share the tables, keyed by vector
     store name. After `_MAX_FAILED_PURGE_ROUNDS` consecutive failed rounds, a
@@ -248,53 +250,39 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
         )
 
     @override
-    async def startup(self) -> None:
+    async def provision(self) -> None:
         async with self._engine.begin() as connection:
             await connection.run_sync(BasePartitionRegistry.metadata.create_all)
 
     @override
-    async def register(
-        self, namespace: str, name: str, config: VectorStoreCollectionConfig
-    ) -> PendingRegistration:
-        # The primary key arbitrates the (namespace, name) across processes.
+    async def register(self, partition_key: str, schema: PartitionSchema) -> UUID:
+        # The primary key arbitrates the partition key across processes.
         # An insert rejected for another reason, such as a minted incarnation
         # that is registered or awaiting purge, is tried again with a fresh one.
         attempts = 0
         while True:
             incarnation = uuid4()
             try:
-                await self._insert(namespace, name, incarnation, config)
+                await self._insert(partition_key, incarnation, schema)
             except _RegistryInsertRejectedError as err:
                 logger.warning(
-                    "Registering collection (%r, %r) under incarnation %s was "
-                    "rejected: %s; minting another",
-                    namespace,
-                    name,
+                    "Registering partition %r under incarnation %s was rejected: "
+                    "%s; minting another",
+                    partition_key,
                     incarnation,
                     err,
                 )
                 attempts += 1
                 if attempts >= _MAX_MINT_ATTEMPTS:
                     raise VectorStoreAttemptsExhaustedError(
-                        f"Creating collection ({namespace!r}, {name!r}) made no "
-                        f"progress after {_MAX_MINT_ATTEMPTS} attempts"
+                        f"Creating partition {partition_key!r} made no progress "
+                        f"after {_MAX_MINT_ATTEMPTS} attempts"
                     ) from err
                 continue
-            return _SQLAlchemyPendingRegistration(
-                namespace=namespace,
-                name=name,
-                config=config,
-                incarnation=incarnation,
-                engine=self._engine,
-                vector_store_name=self._vector_store_name,
-            )
+            return incarnation
 
     async def _insert(
-        self,
-        namespace: str,
-        name: str,
-        incarnation: UUID,
-        config: VectorStoreCollectionConfig,
+        self, partition_key: str, incarnation: UUID, schema: PartitionSchema
     ) -> None:
         # The queue check runs after the insert, so a concurrent deletion
         # queuing a colliding incarnation, which the insert waited on, is
@@ -304,10 +292,9 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                 await connection.execute(
                     insert(PartitionRow).values(
                         vector_store_name=self._vector_store_name,
-                        namespace=namespace,
-                        name=name,
+                        partition_key=partition_key,
                         incarnation=incarnation,
-                        config=config.model_dump(mode="json"),
+                        schema=schema.model_dump(mode="json"),
                         live=False,
                         registered_at=func.now(),
                     )
@@ -322,63 +309,91 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                 if queued is not None:
                     raise _RegistryInsertRejectedError("the incarnation awaits purge")
         except IntegrityError as err:
-            async with self._engine.connect() as connection:
-                taken = (
-                    await connection.execute(
-                        select(PartitionRow.incarnation).where(
-                            PartitionRow.vector_store_name == self._vector_store_name,
-                            PartitionRow.namespace == namespace,
-                            PartitionRow.name == name,
-                        )
-                    )
-                ).scalar_one_or_none()
-            if taken is not None:
-                raise VectorStorePartitionAlreadyExistsError(namespace, name) from err
+            if await self.get(partition_key) is not None:
+                raise VectorStorePartitionAlreadyExistsError(
+                    self._vector_store_name, partition_key
+                ) from err
             raise _RegistryInsertRejectedError(
-                "the insert failed and no row exists under the name"
+                "the insert failed and no row exists under the key"
             ) from err
 
     @override
-    async def resolve(self, namespace: str, name: str) -> LiveRegistration | None:
+    async def mark_live(self, incarnation: UUID) -> bool:
+        # Conditional on the incarnation and on the row being pending, so a
+        # creation marks only the partition it registered.
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(PartitionRow)
+                .where(
+                    PartitionRow.vector_store_name == self._vector_store_name,
+                    PartitionRow.incarnation == incarnation,
+                    PartitionRow.live.is_(False),
+                )
+                .values(live=True)
+            )
+        return result.rowcount == 1
+
+    @override
+    async def get(self, partition_key: str) -> RegisteredPartition | None:
         async with self._engine.connect() as connection:
             row = (
                 await connection.execute(
                     select(
                         PartitionRow.incarnation,
-                        PartitionRow.config,
+                        PartitionRow.schema,
                         PartitionRow.live,
                         PartitionRow.registered_at,
                     ).where(
                         PartitionRow.vector_store_name == self._vector_store_name,
-                        PartitionRow.namespace == namespace,
-                        PartitionRow.name == name,
+                        PartitionRow.partition_key == partition_key,
                     )
                 )
             ).one_or_none()
         if row is None:
             return None
-        config = VectorStoreCollectionConfig.model_validate(row.config)
-        if not row.live:
-            raise VectorStorePartitionPendingError(
-                namespace, name, ensure_tz_aware(row.registered_at), config
-            )
-        return _SQLAlchemyLiveRegistration(
-            namespace=namespace,
-            name=name,
-            config=config,
+        return RegisteredPartition(
             incarnation=row.incarnation,
-            engine=self._engine,
-            vector_store_name=self._vector_store_name,
+            schema=PartitionSchema.model_validate(row.schema),
+            live=row.live,
+            registered_at=ensure_tz_aware(row.registered_at),
         )
 
     @override
-    async def unregister(self, namespace: str, name: str) -> None:
-        await _unregister_where(
-            self._engine,
-            self._vector_store_name,
-            PartitionRow.namespace == namespace,
-            PartitionRow.name == name,
-        )
+    async def unregister(self, partition_key: str) -> None:
+        await self._unregister_where(PartitionRow.partition_key == partition_key)
+
+    @override
+    async def unregister_incarnation(self, incarnation: UUID) -> None:
+        await self._unregister_where(PartitionRow.incarnation == incarnation)
+
+    async def _unregister_where(self, condition: ColumnElement[bool]) -> None:
+        """Delete this registry's partition row the condition selects, and queue its tombstone.
+
+        One transaction, so the partition is unreachable once it commits.
+        The DELETE goes first and takes the row's write lock, so racing
+        deleters serialize on it and the loser finds no row and returns.
+        """
+        async with self._engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    delete(PartitionRow)
+                    .where(
+                        PartitionRow.vector_store_name == self._vector_store_name,
+                        condition,
+                    )
+                    .returning(PartitionRow.incarnation, PartitionRow.partition_key)
+                )
+            ).one_or_none()
+            if row is None:
+                return
+            await connection.execute(
+                insert(PurgeQueueRow).values(
+                    incarnation=row.incarnation,
+                    vector_store_name=self._vector_store_name,
+                    partition_key=row.partition_key,
+                    enqueued_at=func.now(),
+                )
+            )
 
     @override
     @asynccontextmanager
@@ -396,12 +411,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
             async with self._engine.begin() as connection:
                 row = (
                     await connection.execute(
-                        select(
-                            PurgeQueueRow.incarnation,
-                            PurgeQueueRow.namespace,
-                            PurgeQueueRow.config,
-                            PurgeQueueRow.failed_rounds,
-                        )
+                        select(PurgeQueueRow.incarnation, PurgeQueueRow.failed_rounds)
                         .where(
                             PurgeQueueRow.vector_store_name == self._vector_store_name,
                             PurgeQueueRow.enqueued_at <= self._retention_cutoff(),
@@ -420,11 +430,7 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                     yield None
                     return
                 claimed = row.incarnation
-                claim = PurgeClaim(
-                    incarnation=row.incarnation,
-                    namespace=row.namespace,
-                    config=VectorStoreCollectionConfig.model_validate(row.config),
-                )
+                claim = PurgeClaim(incarnation=row.incarnation)
                 yield claim
                 await self._record_round(connection, claim, row.failed_rounds)
         except Exception as error:
@@ -518,106 +524,4 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
             )
         return func.now() - bindparam(
             "retention", self._tombstone_retention, type_=Interval
-        )
-
-
-@dataclass(frozen=True)
-class _SQLAlchemyPendingRegistration(PendingRegistration):
-    """A pending registration whose methods write the registry's tables directly."""
-
-    engine: AsyncEngine = field(repr=False, compare=False)
-    vector_store_name: str = field(repr=False)
-
-    @override
-    async def mark_live(self) -> LiveRegistration:
-        # Conditional on the incarnation and on the row being pending, so a
-        # creation marks only the collection it registered.
-        async with self.engine.begin() as connection:
-            result = await connection.execute(
-                update(PartitionRow)
-                .where(
-                    PartitionRow.vector_store_name == self.vector_store_name,
-                    PartitionRow.namespace == self.namespace,
-                    PartitionRow.name == self.name,
-                    PartitionRow.incarnation == self.incarnation,
-                    PartitionRow.live.is_(False),
-                )
-                .values(live=True)
-            )
-        if result.rowcount != 1:
-            raise VectorStorePartitionDeletedError(self.namespace, self.name)
-        return _SQLAlchemyLiveRegistration(
-            namespace=self.namespace,
-            name=self.name,
-            config=self.config,
-            incarnation=self.incarnation,
-            engine=self.engine,
-            vector_store_name=self.vector_store_name,
-        )
-
-    @override
-    async def unregister(self) -> None:
-        await _unregister_where(
-            self.engine,
-            self.vector_store_name,
-            PartitionRow.incarnation == self.incarnation,
-        )
-
-
-@dataclass(frozen=True)
-class _SQLAlchemyLiveRegistration(LiveRegistration):
-    """A live registration whose method reads the registry's tables directly."""
-
-    engine: AsyncEngine = field(repr=False, compare=False)
-    vector_store_name: str = field(repr=False)
-
-    @override
-    async def require_current(self) -> None:
-        async with self.engine.connect() as connection:
-            current = (
-                await connection.execute(
-                    select(PartitionRow.incarnation).where(
-                        PartitionRow.vector_store_name == self.vector_store_name,
-                        PartitionRow.namespace == self.namespace,
-                        PartitionRow.name == self.name,
-                    )
-                )
-            ).scalar_one_or_none()
-        if current != self.incarnation:
-            raise VectorStorePartitionHandleStaleError(self.namespace, self.name)
-
-
-async def _unregister_where(
-    engine: AsyncEngine, vector_store_name: str, *conditions: ColumnElement[bool]
-) -> None:
-    """Delete the collection row of a vector store the conditions select, and queue its tombstone.
-
-    One transaction, so the collection is unreachable once it commits. The
-    DELETE goes first and takes the row's write lock, so racing deleters
-    serialize on it and the loser finds no row and returns.
-    """
-    async with engine.begin() as connection:
-        row = (
-            await connection.execute(
-                delete(PartitionRow)
-                .where(PartitionRow.vector_store_name == vector_store_name, *conditions)
-                .returning(
-                    PartitionRow.incarnation,
-                    PartitionRow.namespace,
-                    PartitionRow.name,
-                    PartitionRow.config,
-                )
-            )
-        ).one_or_none()
-        if row is None:
-            return
-        await connection.execute(
-            insert(PurgeQueueRow).values(
-                incarnation=row.incarnation,
-                vector_store_name=vector_store_name,
-                namespace=row.namespace,
-                name=row.name,
-                config=row.config,
-                enqueued_at=func.now(),
-            )
         )

@@ -1,46 +1,46 @@
 """
-Base classes for a vector store whose collections a collection registry arbitrates.
+Base classes for a vector store whose partitions a partition registry arbitrates.
 
-The registry mints each collection's incarnation and arbitrates creation,
-deletion and reclamation across processes. A collection is registered
-pending, its storage is prepared, and it is marked live; only a live
-collection is opened. The backend holds records, each carrying its
-collection's incarnation, and a subclass decides how: it prepares a new
-collection's storage, builds a handle for one collection, and purges a
-deleted incarnation's records.
+The registry mints each partition's incarnation and arbitrates creation,
+deletion and reclamation across processes. A partition is registered pending,
+its storage is prepared, and it is marked live; only a live partition is
+opened. The backend holds records, each carrying its partition's incarnation,
+and a subclass decides how: it prepares the storage the store's partitions
+share and the storage a new partition needs of its own, builds a handle for
+one partition, and purges a deleted incarnation's records.
 """
 
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import override
 from uuid import UUID
 
-from pydantic import BaseModel, Field, InstanceOf
+from pydantic import BaseModel, Field, InstanceOf, field_validator
 
+from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
 from .data_types import (
+    IndexedProperties,
+    PartitionSchema,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
-    VectorStoreCollectionConfig,
-    VectorStoreCollectionConfigMismatchError,
     VectorStorePartitionAlreadyExistsError,
-    VectorStorePartitionDeletedError,
+    VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
+    VectorStorePartitionSchemaMismatchError,
+    indexed_property_names,
+    validate_vector_store_name,
 )
 from .declared_properties import require_declared_types
-from .partition_registry import (
-    LiveRegistration,
-    PendingRegistration,
-    VectorStorePartitionRegistry,
-)
+from .partition_registry import RegisteredPartition, VectorStorePartitionRegistry
 from .utils import (
     require_dimensions,
-    require_identifiers,
+    require_partition_key,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
@@ -50,56 +50,90 @@ from .vector_store import VectorStore, VectorStorePartition
 logger = logging.getLogger(__name__)
 
 # Attempts open-or-create makes, _OPEN_OR_CREATE_RETRY_DELAY_SECONDS apart,
-# before it gives up on a collection that stays pending or a name it keeps
+# before it gives up on a partition that stays pending or a key it keeps
 # losing.
 _MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 _OPEN_OR_CREATE_RETRY_DELAY_SECONDS = 1
 
 
 class RegistryBackedVectorStorePartition(VectorStorePartition):
-    """A handle bound to one incarnation of a logical collection.
+    """A handle bound to one incarnation of a partition.
 
-    Each operation checks its inputs and that the collection is still live:
+    Each operation checks its inputs and that the partition is still live:
     `upsert` before and after its backend call, `query` before it, and
     `delete` after it.
 
-    A check after a write makes one that raced the collection's deletion
-    raise instead of reporting success; whatever such a write landed, the
-    purge reclaims.
-
-    For subclasses: `_incarnation` is the incarnation the handle is bound to,
-    and a subclass implements the backend calls `_upsert`, `_query` and
-    `_delete`.
+    For subclasses: `_vector_store_name` is the store's name and
+    `_incarnation` the incarnation the handle is bound to, and a subclass
+    implements the backend calls `_upsert`, `_query` and `_delete`.
     """
 
     def __init__(
-        self, *, registration: LiveRegistration, tracker: OperationTracker
+        self,
+        *,
+        vector_store_name: str,
+        partition_key: str,
+        incarnation: UUID,
+        vector_dimensions: int,
+        similarity_metric: SimilarityMetric,
+        indexed_properties: Mapping[str, PropertyType],
+        tracker: OperationTracker,
+        get_registered_partition: Callable[
+            [str], Awaitable[RegisteredPartition | None]
+        ],
     ) -> None:
-        """Initialize with the live registration the handle is bound to."""
-        self._registration = registration
-        self._incarnation = registration.incarnation
-        self._config = registration.config
+        """Initialize with the incarnation the handle is bound to, and the registry's lookup."""
+        self._vector_store_name = vector_store_name
+        self._partition_key = partition_key
+        self._incarnation = incarnation
+        self._vector_dimensions = vector_dimensions
+        self._similarity_metric = similarity_metric
+        self._indexed_properties = dict(indexed_properties)
         self._tracker = tracker
+        self._get_registered_partition = get_registered_partition
+
+    async def _fence(self) -> None:
+        """Raise if this handle's partition has been deleted.
+
+        The partition registered under the handle's key carries the handle's
+        incarnation until it is deleted; one created again under the key
+        carries another. A check after a write makes one that raced the
+        deletion raise instead of reporting success; whatever such a write
+        landed, the purge reclaims.
+        """
+        registered = await self._get_registered_partition(self._partition_key)
+        if registered is None or registered.incarnation != self._incarnation:
+            raise VectorStorePartitionHandleStaleError(
+                self._vector_store_name, self._partition_key
+            )
 
     @property
     @override
-    def config(self) -> VectorStoreCollectionConfig:
-        return self._config
+    def partition_key(self) -> str:
+        return self._partition_key
+
+    @property
+    @override
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
+
+    @property
+    @override
+    def indexed_properties(self) -> Mapping[str, PropertyType]:
+        return self._indexed_properties
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         async with self._tracker("upsert"):
             records = list(records)
             for record in records:
-                require_declared_types(
-                    record.properties, self._config.indexed_properties_schema
-                )
-                require_dimensions(record.vector, self._config.vector_dimensions)
-            await self._registration.require_current()
+                require_declared_types(record.properties, self._indexed_properties)
+                require_dimensions(record.vector, self._vector_dimensions)
+            await self._fence()
             if not records:
                 return
             await self._upsert(records)
-            await self._registration.require_current()
+            await self._fence()
 
     @override
     async def query(
@@ -113,11 +147,11 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             for query_vector in query_vectors:
-                require_valid_query_vector(query_vector, self._config.vector_dimensions)
+                require_valid_query_vector(query_vector, self._vector_dimensions)
             require_valid_score_threshold(score_threshold)
             if property_filter is not None and not validate_filter(property_filter):
                 raise ValueError("Filter contains an invalid property key")
-            await self._registration.require_current()
+            await self._fence()
             if not query_vectors:
                 return []
             if limit <= 0:
@@ -137,7 +171,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
             record_uuids = list(record_uuids)
             if record_uuids:
                 await self._delete(record_uuids)
-            await self._registration.require_current()
+            await self._fence()
 
     @abstractmethod
     async def _upsert(self, records: list[Record]) -> None:
@@ -145,9 +179,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Write records to the backend under the handle's incarnation.
 
         Called between two liveness checks, with at least one record, each
-        already checked against the collection's configuration. A record
-        replaces the one with its UUID. The records are durable when it
-        returns; a call that raises may have written some of them.
+        already checked against the store's declared schema and dimensions.
+        A record replaces the one with its UUID. The records are durable when
+        it returns; a call that raises may have written some of them.
 
         Args:
             records (list[Record]): The records to write.
@@ -197,7 +231,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Delete the handle's incarnation's records with these UUIDs.
 
         Called before a liveness check, with at least one UUID, possibly
-        through a handle whose collection was deleted. A UUID with no record
+        through a handle whose partition was deleted. A UUID with no record
         under the incarnation is skipped. The deletions are durable when it
         returns; a call that raises may have deleted some of the records.
 
@@ -216,9 +250,19 @@ class RegistryBackedVectorStoreParams(BaseModel):
 
     Attributes:
         partition_registry (VectorStorePartitionRegistry):
-            Registry of the store's collections, shared by the stores, in any
-            process, whose clients connect to the same database, and by no
-            other store. Started by the caller.
+            Registry of the store's partitions, shared by every process
+            serving this store, and by no other store. Provisioned by the
+            caller.
+        vector_store_name (str):
+            The name of this store, which names its storage, so stores of
+            different names may share a client.
+        vector_dimensions (int):
+            Dimensionality of every vector in the store.
+        similarity_metric (SimilarityMetric):
+            The metric every query of the store scores by (default: cosine).
+        indexed_properties (IndexedProperties):
+            The declared schema every partition of this store carries: each
+            key is indexed by its declared type, which a search filters on.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -227,9 +271,29 @@ class RegistryBackedVectorStoreParams(BaseModel):
     partition_registry: InstanceOf[VectorStorePartitionRegistry] = Field(
         ...,
         description=(
-            "Registry of the store's collections, shared by the stores, in any "
-            "process, whose clients connect to the same database, and by no "
-            "other store. Started by the caller"
+            "Registry of the store's partitions, shared by every process serving "
+            "this store, and by no other store. Provisioned by the caller"
+        ),
+    )
+    vector_store_name: str = Field(
+        ...,
+        description=(
+            "The name of this store, which names its storage, so stores of "
+            "different names may share a client"
+        ),
+    )
+    vector_dimensions: int = Field(
+        ..., gt=0, description="Dimensionality of every vector in the store"
+    )
+    similarity_metric: SimilarityMetric = Field(
+        SimilarityMetric.COSINE,
+        description="The metric every query of the store scores by",
+    )
+    indexed_properties: IndexedProperties = Field(
+        ...,
+        description=(
+            "The declared schema every partition of this store carries: each key "
+            "is indexed by its declared type, which a search filters on"
         ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
@@ -237,34 +301,69 @@ class RegistryBackedVectorStoreParams(BaseModel):
         description="An instance of MetricsFactory for collecting usage metrics",
     )
 
+    @field_validator("vector_store_name")
+    @classmethod
+    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
+        validate_vector_store_name(vector_store_name)
+        return vector_store_name
+
 
 class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     VectorStore
 ):
-    """A vector store whose collections a VectorStorePartitionRegistry arbitrates.
+    """A vector store whose partitions a VectorStorePartitionRegistry arbitrates.
 
-    Any process connected to the same database, with the same registry, may
-    serve any collection. A collection is pending until its storage is
-    prepared: meanwhile opening it raises VectorStorePartitionPendingError,
-    `open_or_create_partition` waits a bounded time for it, and creating its
-    name raises VectorStorePartitionAlreadyExistsError. A collection a crash
-    left pending stays pending until `delete_collection` deletes it.
+    Any process sharing the backend and the registry may serve any partition.
+    A partition is pending until its storage is prepared: meanwhile opening it
+    raises VectorStorePartitionPendingError, `open_or_create_partition` waits
+    a bounded time for it, and creating its key raises
+    VectorStorePartitionAlreadyExistsError. A partition a crash left pending
+    stays pending until `delete_partition` deletes it.
 
     For subclasses: `_partition_registry` is the registry and `_tracker` times
     each operation, and a subclass implements `_prepare_storage`,
-    `_build_partition_handle` and `_purge_round`.
+    `_prepare_partition_storage`, `_partition_handle` and `_purge_round`.
     """
 
     def __init__(
         self, params: RegistryBackedVectorStoreParams, *, metrics_prefix: str
     ) -> None:
-        """Initialize with the registry and the prefix of the store's metrics."""
+        """Initialize with the store's schema and registry, and the prefix of its metrics."""
         super().__init__()
+        self._vector_store_name = params.vector_store_name
+        self._vector_dimensions = params.vector_dimensions
+        self._similarity_metric = params.similarity_metric
+        self._indexed_properties = params.indexed_properties
         self._partition_registry = params.partition_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
         # Unregistrations after a failed preparation, held until done so the
         # garbage collector cannot drop one whose creation was cancelled.
         self._unregistrations: set[asyncio.Task[None]] = set()
+
+    @property
+    @override
+    def vector_store_name(self) -> str:
+        return self._vector_store_name
+
+    @property
+    @override
+    def vector_dimensions(self) -> int:
+        return self._vector_dimensions
+
+    @property
+    @override
+    def similarity_metric(self) -> SimilarityMetric:
+        return self._similarity_metric
+
+    @property
+    @override
+    def indexed_properties(self) -> Mapping[str, PropertyType]:
+        return self._indexed_properties
+
+    @override
+    async def provision(self) -> None:
+        async with self._tracker("provision"):
+            await self._prepare_storage()
 
     @override
     async def startup(self) -> None:
@@ -279,121 +378,138 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         pass
 
     @override
-    async def create_partition(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> None:
-        require_identifiers(namespace, name)
+    async def create_partition(self, partition_key: str) -> None:
+        require_partition_key(partition_key)
         async with self._tracker("create_partition"):
-            # The registry decides a creation race. The collection stays
+            # The registry decides a creation race. The partition stays
             # pending until its storage is prepared; if it is deleted
-            # meanwhile, mark_live raises.
-            pending = await self._partition_registry.register(namespace, name, config)
-            await self._prepare_storage_or_unregister(pending)
-            await pending.mark_live()
+            # meanwhile, mark_live finds nothing to mark, and the creation
+            # counts as one followed by a deletion.
+            try:
+                incarnation = await self._partition_registry.register(
+                    partition_key, self._declared_schema()
+                )
+            except VectorStorePartitionAlreadyExistsError:
+                # A key taken under another schema is reported as such.
+                await self._checked_entry(partition_key)
+                raise
+            await self._prepare_partition_storage_or_unregister(
+                partition_key, incarnation
+            )
+            await self._partition_registry.mark_live(incarnation)
 
     @override
-    async def open_or_create_partition(
-        self,
-        *,
-        namespace: str,
-        name: str,
-        config: VectorStoreCollectionConfig,
-    ) -> PartitionT:
-        require_identifiers(namespace, name)
+    async def open_or_create_partition(self, partition_key: str) -> PartitionT:
+        require_partition_key(partition_key)
         async with self._tracker("open_or_create_partition"):
-            # Read-then-create, retried: a pending collection is another
+            # Read-then-create, retried: a pending partition is another
             # creator's (open it once it is live), losing the create means
-            # another creator took the name meanwhile, and losing the mark
+            # another creator took the key meanwhile, and losing the mark
             # means a deleter removed this one while its storage was prepared
             # (create again).
-            pending_error: VectorStorePartitionPendingError | None = None
+            registered: RegisteredPartition | None = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
-                try:
-                    live = await self._partition_registry.resolve(namespace, name)
-                except VectorStorePartitionPendingError as err:
-                    if err.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, err.config, config
-                        ) from err
-                    pending_error = err
-                    continue
-                pending_error = None
-                if live is not None:
-                    if live.config != config:
-                        raise VectorStoreCollectionConfigMismatchError(
-                            namespace, name, live.config, config
+                registered = await self._checked_entry(partition_key)
+                if registered is not None:
+                    if registered.live:
+                        return self._partition_handle(
+                            partition_key, registered.incarnation
                         )
-                    return self._build_partition_handle(live)
+                    continue
                 try:
-                    pending = await self._partition_registry.register(
-                        namespace, name, config
+                    incarnation = await self._partition_registry.register(
+                        partition_key, self._declared_schema()
                     )
                 except VectorStorePartitionAlreadyExistsError:
                     continue
-                await self._prepare_storage_or_unregister(pending)
-                try:
-                    live = await pending.mark_live()
-                except VectorStorePartitionDeletedError:
-                    continue
-                return self._build_partition_handle(live)
-            # The last lookup found the collection pending.
-            if pending_error is not None:
-                raise pending_error
+                await self._prepare_partition_storage_or_unregister(
+                    partition_key, incarnation
+                )
+                if await self._partition_registry.mark_live(incarnation):
+                    return self._partition_handle(partition_key, incarnation)
+            # The last lookup found the partition pending.
+            if registered is not None:
+                raise VectorStorePartitionPendingError(
+                    self._vector_store_name, partition_key, registered.registered_at
+                )
             raise VectorStoreAttemptsExhaustedError(
-                f"Opening or creating collection ({namespace!r}, {name!r}) made "
-                f"no progress after {_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
+                f"Opening or creating partition {partition_key!r} of vector store "
+                f"{self._vector_store_name!r} made no progress after "
+                f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
             )
 
-    async def _prepare_storage_or_unregister(
-        self, pending: PendingRegistration
+    async def _prepare_partition_storage_or_unregister(
+        self, partition_key: str, incarnation: UUID
     ) -> None:
-        """Prepare a pending collection's storage, unregistering it if that raises or is cancelled.
+        """Prepare a pending partition's storage, unregistering it if that raises or is cancelled.
 
-        A collection the registry cannot unregister then stays pending until
+        A partition the registry cannot unregister then stays pending until
         it is deleted.
         """
         try:
-            await self._prepare_storage(
-                pending.namespace, pending.config, pending.incarnation
-            )
+            await self._prepare_partition_storage(partition_key, incarnation)
         except BaseException:
-            # Shielded, so a cancelled creation still frees the name.
-            unregistration = asyncio.create_task(pending.unregister())
+            # Shielded, so a cancelled creation still frees the key.
+            unregistration = asyncio.create_task(
+                self._partition_registry.unregister_incarnation(incarnation)
+            )
             self._unregistrations.add(unregistration)
             unregistration.add_done_callback(self._unregistrations.discard)
             try:
                 await asyncio.shield(unregistration)
             except Exception:
                 logger.exception(
-                    "Could not unregister collection (%r, %r) after its "
-                    "storage preparation failed; it stays pending until "
+                    "Could not unregister partition %r of vector store %r after "
+                    "its storage preparation failed; it stays pending until "
                     "deleted",
-                    pending.namespace,
-                    pending.name,
+                    partition_key,
+                    self._vector_store_name,
                 )
             raise
 
     @override
-    async def get_partition(self, *, namespace: str, name: str) -> PartitionT | None:
-        require_identifiers(namespace, name)
-        live = await self._partition_registry.resolve(namespace, name)
-        if live is None:
+    async def get_partition(self, partition_key: str) -> PartitionT | None:
+        require_partition_key(partition_key)
+        registered = await self._checked_entry(partition_key)
+        if registered is None:
             return None
-        return self._build_partition_handle(live)
+        if not registered.live:
+            raise VectorStorePartitionPendingError(
+                self._vector_store_name, partition_key, registered.registered_at
+            )
+        return self._partition_handle(partition_key, registered.incarnation)
+
+    async def _checked_entry(self, partition_key: str) -> RegisteredPartition | None:
+        """The partition under the key, pending or live, or None; raises if its schema is not this store's."""
+        registered = await self._partition_registry.get(partition_key)
+        if registered is None:
+            return None
+        declared_schema = self._declared_schema()
+        if registered.schema != declared_schema:
+            raise VectorStorePartitionSchemaMismatchError(
+                self._vector_store_name,
+                partition_key,
+                registered.schema,
+                declared_schema,
+            )
+        return registered
+
+    def _declared_schema(self) -> PartitionSchema:
+        return PartitionSchema(
+            vector_dimensions=self._vector_dimensions,
+            similarity_metric=self._similarity_metric,
+            indexed_properties=indexed_property_names(self._indexed_properties),
+        )
 
     @override
-    async def delete_partition(self, *, namespace: str, name: str) -> None:
-        require_identifiers(namespace, name)
+    async def delete_partition(self, partition_key: str) -> None:
+        require_partition_key(partition_key)
         async with self._tracker("delete_partition"):
-            # The collection is unreachable once unregister returns, and its
+            # The partition is unreachable once unregister returns, and its
             # incarnation awaits the purge.
-            await self._partition_registry.unregister(namespace, name)
+            await self._partition_registry.unregister(partition_key)
 
     @override
     async def purge_deleted_partitions(self) -> bool:
@@ -404,70 +520,81 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         ):
             if claim is None:
                 return False
-            claim.any_records_found = await self._purge_round(
-                claim.namespace, claim.config, claim.incarnation
-            )
+            claim.any_records_found = await self._purge_round(claim.incarnation)
             return True
 
     @abstractmethod
-    async def _prepare_storage(
-        self,
-        namespace: str,
-        config: VectorStoreCollectionConfig,
-        incarnation: UUID,
-    ) -> None:
+    async def _prepare_storage(self) -> None:
         """
-        Prepare the storage a newly registered collection needs.
+        Prepare the storage the store's partitions share.
 
-        The collection is registered as pending under the incarnation, and is
-        marked live once this returns. Its storage may be its own or shared
-        with the other collections of its namespace and configuration. Shared
-        storage is prepared by any number of processes at once, so preparing
-        it must be idempotent and safe to race; what serves one namespace and
-        configuration serves no other. Whatever a failed or interrupted call
-        leaves must be recoverable: completed by a later call for the same
-        namespace and configuration, or reclaimed by the purge rounds of the
-        incarnation once its pending collection is deleted.
-
-        Args:
-            namespace (str):
-                Namespace of the collection being created.
-            config (VectorStoreCollectionConfig):
-                Configuration of the collection being created.
-            incarnation (UUID):
-                The incarnation the collection's records will carry.
+        That is whatever a partition needs besides its incarnation and its
+        own storage: a native collection they all live in, a container of
+        per-partition units, or nothing. Storage of one partition's own is
+        prepared when it registers, by `_prepare_partition_storage`. What is
+        prepared for one store serves no other. It runs when the store is provisioned, by any number of
+        processes at once, so it must be idempotent and safe to race, and must
+        complete what a failed call left part-made.
 
         Raises:
             Exception:
-                Whatever the backend raises. The collection is then
+                Whatever the backend raises. Provisioning then fails, and the
+                next provisioning completes what this call left.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def _prepare_partition_storage(
+        self, partition_key: str, incarnation: UUID
+    ) -> None:
+        """
+        Prepare the storage a newly registered partition needs of its own.
+
+        The partition is registered, pending, under the incarnation, and is
+        marked live once this returns. The storage the store's partitions
+        share was prepared by provisioning; this prepares
+        what the partition keeps of its own, such as a unit named by its
+        incarnation, or nothing. Whatever a failed or interrupted call leaves
+        must be recoverable: reclaimed by the purge rounds of the incarnation
+        once its pending partition is deleted.
+
+        Args:
+            partition_key (str):
+                Key of the partition being created.
+            incarnation (UUID):
+                The incarnation the partition's records will carry.
+
+        Raises:
+            Exception:
+                Whatever the backend raises. The partition is then
                 unregistered, or, if the registry cannot unregister it, stays
                 pending until it is deleted.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def _build_partition_handle(self, registration: LiveRegistration) -> PartitionT:
+    def _partition_handle(self, partition_key: str, incarnation: UUID) -> PartitionT:
         """
-        Build a handle bound to a live collection's registration.
+        Build a handle bound to a live partition's incarnation.
 
-        The collection's storage was prepared before it was marked live.
+        The storage the store's partitions share was prepared by provisioning,
+        and the partition's own before it was marked live.
 
         Args:
-            registration (LiveRegistration):
-                The live collection's registration, which carries its
-                namespace, name, configuration and incarnation.
+            partition_key (str):
+                Key of the partition.
+            incarnation (UUID):
+                The incarnation the partition's registry row holds.
 
         Returns:
             PartitionT:
-                A handle bound to the registration, whose operations raise
-                once the collection is deleted.
+                A handle bound to the incarnation, whose operations raise
+                once the partition is deleted.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def _purge_round(
-        self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
-    ) -> bool:
+    async def _purge_round(self, incarnation: UUID) -> bool:
         """
         Delete records carrying a deleted incarnation, and return whether it found any.
 
@@ -481,13 +608,8 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         storage missing returns False.
 
         Args:
-            namespace (str):
-                Namespace of the deleted collection.
-            config (VectorStoreCollectionConfig):
-                Configuration of the deleted collection; with the namespace,
-                it locates the collection's records.
             incarnation (UUID):
-                The incarnation the deleted collection's records carry.
+                The incarnation the deleted partition's records carry.
 
         Returns:
             bool:
