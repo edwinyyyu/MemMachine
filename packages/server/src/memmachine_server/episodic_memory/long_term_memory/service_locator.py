@@ -25,6 +25,7 @@ from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionPendingError,
 )
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
@@ -116,8 +117,9 @@ async def _event_params(
 
     # Open the existing collection if any (preserves the original schema). Only
     # create with our merged schema if the partition does not yet exist. A
-    # create that loses a race to another caller, or an open of a collection
-    # another caller is still creating, is retried until the collection opens.
+    # create that loses a race to another caller or to a deletion, or an open
+    # of a collection another caller is still creating, is retried until the
+    # collection opens.
     for attempt in range(_MAX_OPEN_ATTEMPTS):
         if attempt:
             await asyncio.sleep(_OPEN_RETRY_DELAY_SECONDS)
@@ -147,6 +149,7 @@ async def _event_params(
                 )
         except (
             VectorStoreCollectionAlreadyExistsError,
+            VectorStoreCollectionDeletedError,
             VectorStoreCollectionPendingError,
         ):
             continue

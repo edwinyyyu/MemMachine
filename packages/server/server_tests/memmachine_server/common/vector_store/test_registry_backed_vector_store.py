@@ -16,6 +16,7 @@ from memmachine_server.common.vector_store import (
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionPendingError,
     registry_backed_vector_store,
 )
@@ -350,8 +351,7 @@ async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until
 async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_marked_live(
     store,
 ):
-    """The creation returns, as one the deletion followed, and the collection
-    stays deleted."""
+    """The creation raises, and the collection stays deleted."""
     incarnations: list[UUID] = []
 
     async def deleted_meanwhile(namespace, config, incarnation) -> None:
@@ -359,7 +359,8 @@ async def test_a_collection_deleted_while_its_storage_is_prepared_is_not_marked_
         await store.delete_collection(namespace=NAMESPACE, name=NAME)
 
     store.prepare = deleted_meanwhile
-    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    with pytest.raises(VectorStoreCollectionDeletedError):
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
 
     assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
     assert await _purged(store) == incarnations
