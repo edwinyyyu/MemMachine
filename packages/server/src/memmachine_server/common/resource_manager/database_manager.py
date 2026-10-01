@@ -640,7 +640,7 @@ class DatabaseManager:
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
-        # The registry first, so a failed lookup or provisioning leaves no
+        # The registry first, so a failed lookup or startup leaves no
         # client open.
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
@@ -649,7 +649,7 @@ class DatabaseManager:
                 tombstone_retention_seconds=conf.tombstone_retention_seconds,
             )
         )
-        await partition_registry.provision()
+        await partition_registry.startup()
         client = await self.async_get_qdrant_client(backend, validate=True)
 
         from memmachine_server.common.vector_store.qdrant_vector_store import (
@@ -747,7 +747,7 @@ class DatabaseManager:
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
-        # The registry first, so a failed lookup or provisioning leaves no
+        # The registry first, so a failed lookup or startup leaves no
         # client open.
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
@@ -756,7 +756,7 @@ class DatabaseManager:
                 tombstone_retention_seconds=conf.tombstone_retention_seconds,
             )
         )
-        await partition_registry.provision()
+        await partition_registry.startup()
         client = await self.async_get_milvus_client(backend, validate=True)
 
         from memmachine_server.common.vector_store.milvus_vector_store import (
@@ -1038,9 +1038,6 @@ class DatabaseManager:
                         similarity_metric,
                         indexed_properties,
                     )
-            # Provisioning is the schema command's once it exists; until then
-            # the composition root provisions the store it builds.
-            await store.provision()
             await store.startup()
         except Exception as e:
             await self._release_unused_vector_store_sql_engine(backend)

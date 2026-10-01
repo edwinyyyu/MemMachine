@@ -116,7 +116,7 @@ async def registry(tmp_path):
             engine=engine, vector_store_name="store", tombstone_retention_seconds=0
         )
     )
-    await registry.provision()
+    await registry.startup()
     yield registry
     await engine.dispose()
 
