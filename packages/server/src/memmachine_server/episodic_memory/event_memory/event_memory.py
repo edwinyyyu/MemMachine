@@ -120,9 +120,9 @@ class EventMemory:
         """
         Return the vector store collection schema EventMemory requires.
 
-        A vector record carries only the properties its collection declares,
-        so the vector search can filter only on those; a condition on any
-        other property applies to the seeds the search returns.
+        A vector record carries only the properties the vector store
+        declares, so the vector search can filter only on those; a condition
+        on any other property applies to the seeds the search returns.
         """
         return {
             cls._TIMESTAMP_FIELD_NAME: cast(type[PropertyValue], datetime.datetime),
@@ -150,7 +150,7 @@ class EventMemory:
         )
 
         self._schema_fields = frozenset(
-            params.vector_store_partition.config.indexed_properties_schema
+            params.vector_store_partition.indexed_properties
         )
 
         missing_base_fields = (
@@ -158,7 +158,7 @@ class EventMemory:
         )
         if missing_base_fields:
             raise ValueError(
-                f"Collection schema missing fields required by EventMemory: "
+                f"Vector store schema missing fields required by EventMemory: "
                 f"{', '.join(sorted(missing_base_fields))}"
             )
 
@@ -323,7 +323,7 @@ class EventMemory:
         """Build a vector record from a derivative and its embedding.
 
         The record carries the reserved timestamp and the properties the
-        vector store collection declares. Every other property stays on the
+        vector store declares. Every other property stays on the
         segment: the segment store holds them all and evaluates the whole
         filter (see `query`).
         """
@@ -422,7 +422,7 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # A vector record carries the properties the collection declares, so
+        # A vector record carries the properties the vector store declares, so
         # a condition naming any other field has nothing to match there. The
         # vector store gets the part of the filter on declared fields, which
         # only ever widens its search; the segment store, which holds every
@@ -505,7 +505,7 @@ class EventMemory:
         # Embedding scores depend on the similarity metric.
         higher_is_better = (
             self._reranker is not None
-            or self._vector_store_partition.config.similarity_metric.higher_is_better
+            or self._vector_store_partition.similarity_metric.higher_is_better
         )
 
         # Return scored contexts ordered by score.
