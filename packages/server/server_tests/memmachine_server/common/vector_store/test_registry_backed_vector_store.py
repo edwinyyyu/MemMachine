@@ -51,7 +51,7 @@ class _Partition(RegistryBackedVectorStorePartition):
         query_vectors: list[list[float]],
         *,
         limit: int,
-        score_threshold: float | None,
+        min_cosine_similarity: float | None,
         property_filter: FilterExpr | None,
     ) -> list[QueryResult]:
         raise NotImplementedError
@@ -97,7 +97,6 @@ class _Store(RegistryBackedVectorStore[_Partition]):
             vector_store_name=self.vector_store_name,
             registration=registration,
             vector_dimensions=self.vector_dimensions,
-            similarity_metric=self.similarity_metric,
             indexed_properties=self.indexed_properties,
             tracker=self._tracker,
         )
