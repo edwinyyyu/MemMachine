@@ -3,7 +3,9 @@
 # ruff: noqa: E402
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -31,7 +33,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.collection_registry import (
-    RegisteredCollection,
+    LiveRegistration,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -928,29 +930,30 @@ class TestDelete:
         assert await _stored(collection, [record.uuid]) == {}
 
 
+@dataclass(frozen=True)
+class _CurrentRegistration(LiveRegistration):
+    """A live registration whose collection is never deleted."""
+
+    @override
+    async def require_current(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_a_delete_milvus_does_not_accept_in_full_raises():
     """A delete Milvus accepts for fewer primary keys than the store sent raises."""
     client = MagicMock(spec=AsyncMilvusClient)
     client.delete = AsyncMock(return_value={"delete_count": 0})
-    incarnation = uuid4()
-    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
     collection = MilvusVectorStoreCollection(
         client=client,
         native_collection_name="native",
-        namespace=NAMESPACE,
-        name=NAME,
-        incarnation=incarnation,
-        config=config,
-        tracker=OperationTracker(None, prefix="test"),
-        get_registered_collection=AsyncMock(
-            return_value=RegisteredCollection(
-                incarnation=incarnation,
-                config=config,
-                live=True,
-                registered_at=datetime(2026, 1, 1, tzinfo=UTC),
-            )
+        registration=_CurrentRegistration(
+            namespace=NAMESPACE,
+            name=NAME,
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+            incarnation=uuid4(),
         ),
+        tracker=OperationTracker(None, prefix="test"),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 
