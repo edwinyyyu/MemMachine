@@ -597,6 +597,10 @@ class SQLiteVectorStore(VectorStore):
     Vector store backed by SQLite + a pluggable vector search engine.
 
     Each logical collection gets its own records table and engine instance.
+    The engine and its index file live in the process that opened the
+    collection, so one process at a time may use a collection. A handle used
+    after its collection is deleted acts on a collection created again under
+    its (namespace, name).
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:
@@ -886,6 +890,11 @@ class SQLiteVectorStore(VectorStore):
         if index_path is not None and index_path.exists():
             index_path.unlink()
         self._search_engines.pop((namespace, name), None)
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection drops the tables and the index file itself.
+        return False
 
     # Helpers.
 
