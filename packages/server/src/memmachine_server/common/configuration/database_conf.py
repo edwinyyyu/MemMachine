@@ -259,6 +259,11 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
             "is set to match so all replicas confirm writes."
         ),
     )
+    request_timeout_seconds: int = Field(
+        default=30,
+        gt=0,
+        description="Seconds a request to Qdrant may take before the client gives up.",
+    )
 
 
 class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
