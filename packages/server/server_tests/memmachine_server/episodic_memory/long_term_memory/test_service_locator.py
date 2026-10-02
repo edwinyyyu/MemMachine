@@ -225,9 +225,11 @@ async def test_event_params_gives_up_on_a_collection_that_stays_pending(monkeypa
     vector_store = create_autospec(VectorStore, instance=True)
     vector_store.open_collection.side_effect = _PENDING
 
-    with pytest.raises(RuntimeError, match="not live"):
+    with pytest.raises(RuntimeError, match="not live") as gave_up:
         await _event_params(config, _resource_manager(vector_store))
 
+    # The pending error says since when, which the log needs.
+    assert gave_up.value.__cause__ is _PENDING
     assert (
         vector_store.open_collection.await_count == service_locator._MAX_OPEN_ATTEMPTS
     )
