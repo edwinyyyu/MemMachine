@@ -73,7 +73,7 @@ nothing is due, so a caller drains the queue by calling it until `False`. On
 Qdrant and Milvus a call is one round on the tombstone that came due first;
 both SQLite stores, whose deletion reclaims physically, return `False`.
 
-A round runs inside `claim_purgeable_incarnation()`:
+`run_purge_round()` runs one round:
 
 1. **Claim.** One range on the `enqueued_at` index: the oldest due tombstone
    that is neither backing off nor dead-lettered, `LIMIT 1`, under `FOR UPDATE
@@ -83,9 +83,10 @@ A round runs inside `claim_purgeable_incarnation()`:
    tombstone; that costs a repeated round and nothing more, since by the time
    any round runs no write can land, so a round finding nothing still proves
    the incarnation empty.
-2. **Round.** The store looks for records under the incarnation where the
-   tombstone's `namespace` and `config` locate them, deletes what it finds
-   (per backend, below), and reports whether it found any.
+2. **Round.** The registry calls the store's round with the tombstone's
+   namespace, configuration and incarnation. The round looks for records under
+   the incarnation where the namespace and configuration locate them, deletes
+   what it finds (per backend, below), and returns whether it found any.
 3. **Record.** In the claim's transaction: a round that found nothing removes
    the tombstone, which frees the incarnation; a round that found records keeps
    it due and clears its failed rounds.

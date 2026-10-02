@@ -6,8 +6,8 @@ logical collections exist, under which incarnation and configuration, and
 which deleted incarnations await purge. Its calls are arbitrated across
 every process sharing it: a reservation mints an incarnation no registered
 or queued collection carries, unregistration makes the collection
-unreachable when it returns, and a purge claim hands out a due tombstone,
-possibly to two purgers at once.
+unreachable when it returns, and a purge round runs on a due tombstone,
+possibly on two purgers at once.
 
 The registry is addressed by (namespace, name). Reserving a name answers a
 `Reservation`, which the collection's creator confirms once the collection's
@@ -18,7 +18,7 @@ by name voids either.
 """
 
 from abc import ABC, abstractmethod
-from contextlib import AbstractAsyncContextManager
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -108,21 +108,8 @@ class Registration(_RegistryEntry, ABC):
         raise NotImplementedError
 
 
-@dataclass
-class PurgeClaim:
-    """
-    One purge round's claim on a tombstone.
-
-    The registry fills in `incarnation`, the value the deleted collection's
-    records carry, and `namespace` and `config`, the deleted collection's,
-    which locate its records in the store. The round sets `any_records_found`
-    before the claim ends: whether it found records under the incarnation.
-    """
-
-    incarnation: UUID
-    namespace: str
-    config: VectorStoreCollectionConfig
-    any_records_found: bool | None = None
+type PurgeRound = Callable[[str, VectorStoreCollectionConfig, UUID], Awaitable[bool]]
+"""A purge round: deletes the records under an incarnation, which the namespace and configuration locate, and returns whether it found any."""
 
 
 class VectorStoreCollectionRegistry(ABC):
@@ -213,25 +200,29 @@ class VectorStoreCollectionRegistry(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def claim_purgeable_incarnation(
-        self,
-    ) -> AbstractAsyncContextManager[PurgeClaim | None]:
+    async def run_purge_round(self, purge_round: PurgeRound) -> bool:
         """
-        Claim a due tombstone for one purge round, run in the body of the context.
+        Run one purge round on the tombstone that came due first, and return whether one was due.
 
-        A tombstone is due once the retention has passed since its
-        deletion. In the body, the caller deletes records under
-        `claim.incarnation`, which `claim.namespace` and `claim.config`
-        locate, and sets `claim.any_records_found`. A round that
-        found no records removes the tombstone and frees its incarnation. A
-        body that raises is a failed round, and the tombstone stays for a
-        later claim; a registry may delay a failed tombstone's next claim, or
-        stop claiming one whose rounds keep failing, leaving its records in
-        place. A round must be safe to repeat, since a registry may hand one
-        tombstone to two purgers.
+        A tombstone is due once the retention has passed since its deletion.
+        The registry claims it, calls `purge_round` with its namespace,
+        configuration and incarnation, and records the outcome under the claim:
+        a round that returns False found no records, which removes the tombstone
+        and frees its incarnation; one that returns True keeps the tombstone due.
+        A round that raises is a failed round and its error propagates: the
+        tombstone stays for a later call, and a registry may delay a failed
+        tombstone's next round, or stop running one whose rounds keep failing,
+        leaving its records in place. A round must be safe to repeat, since a
+        registry may run one tombstone's round on two purgers at once.
+
+        Args:
+            purge_round (PurgeRound):
+                Deletes the records under the incarnation it is given, which the
+                namespace and configuration locate, and returns whether it found
+                any.
 
         Returns:
-            AbstractAsyncContextManager[PurgeClaim | None]:
-                The claim, or None when no tombstone is due.
+            bool:
+                Whether a tombstone was due.
         """
         raise NotImplementedError
