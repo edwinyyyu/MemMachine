@@ -1,9 +1,9 @@
 """Cohere reranker implementation."""
 
 import logging
-from typing import Any
 
-from pydantic import BaseModel, Field
+import cohere
+from pydantic import BaseModel, Field, InstanceOf
 
 from memmachine_server.common.data_types import ExternalServiceAPIError
 
@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class CohereRerankerParams(BaseModel):
     """Configuration parameters for CohereReranker."""
 
-    client: Any = Field(
+    client: InstanceOf[cohere.AsyncClientV2] = Field(
         ...,
-        description="Async Cohere client instance for making API calls",
+        description="AsyncClientV2 to use for making API calls.",
     )
     model: str = Field(
         "rerank-english-v3.0",
