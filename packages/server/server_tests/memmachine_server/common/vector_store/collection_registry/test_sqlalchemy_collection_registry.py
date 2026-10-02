@@ -161,29 +161,35 @@ async def _age_last_failure(
 
 
 async def _failing_round(registry: SQLAlchemyVectorStoreCollectionRegistry) -> UUID:
-    """One purge round whose body raises; the incarnation it claimed."""
-    claimed: list[UUID] = []
+    """One purge round that raises; the incarnation it ran on."""
+    ran: list[UUID] = []
 
-    async def refused_reclamation() -> None:
-        async with registry.claim_purgeable_incarnation() as claim:
-            assert claim is not None
-            claimed.append(claim.incarnation)
-            raise RuntimeError("the backend refused")
+    async def refused(
+        namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        ran.append(incarnation)
+        raise RuntimeError("the backend refused")
 
     with pytest.raises(RuntimeError, match="the backend refused"):
-        await refused_reclamation()
-    return claimed[0]
+        await registry.run_purge_round(refused)
+    return ran[0]
 
 
 async def _round(
     registry: SQLAlchemyVectorStoreCollectionRegistry, any_records_found: bool
 ) -> UUID | None:
     """One purge round on the oldest due tombstone, reporting `any_records_found`; its incarnation, or None."""
-    async with registry.claim_purgeable_incarnation() as claim:
-        if claim is None:
-            return None
-        claim.any_records_found = any_records_found
-        return claim.incarnation
+    ran: list[UUID] = []
+
+    async def purge_round(
+        namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        ran.append(incarnation)
+        return any_records_found
+
+    if not await registry.run_purge_round(purge_round):
+        return None
+    return ran[0]
 
 
 @pytest.mark.asyncio
@@ -440,21 +446,24 @@ async def test_a_recreated_name_gets_a_new_incarnation(
 
 
 @pytest.mark.asyncio
-async def test_a_claim_names_where_the_records_are(
+async def test_a_round_is_given_where_the_records_are(
     sqlalchemy_engine, vector_store_name
 ):
-    """The claim carries what a purge round needs to find the records: incarnation, namespace, configuration."""
+    """The round is given what it needs to find the records: namespace, configuration, incarnation."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = (await registry.reserve(NAMESPACE, "c", OTHER_CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "c")
     await _age_deletion(registry, incarnation)
+    given: list[tuple[str, VectorStoreCollectionConfig, UUID]] = []
 
-    async with registry.claim_purgeable_incarnation() as claim:
-        assert claim is not None
-        assert claim.incarnation == incarnation
-        assert claim.namespace == NAMESPACE
-        assert claim.config == OTHER_CONFIG
-        claim.any_records_found = False
+    async def purge_round(
+        namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        given.append((namespace, config, incarnation))
+        return False
+
+    assert await registry.run_purge_round(purge_round)
+    assert given == [(NAMESPACE, OTHER_CONFIG, incarnation)]
 
 
 @pytest.mark.asyncio
@@ -534,7 +543,7 @@ async def test_a_changed_retention_applies_to_tombstones_already_queued(
 
 
 @pytest.mark.asyncio
-async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_failure(
+async def test_a_round_that_raises_keeps_the_tombstone_and_counts_the_failure(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
@@ -542,15 +551,14 @@ async def test_a_round_whose_body_raises_keeps_the_tombstone_and_counts_the_fail
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
-    async def refused_reclamation() -> None:
-        async with registry.claim_purgeable_incarnation() as claim:
-            assert claim is not None
-            assert claim.incarnation == incarnation
-            claim.any_records_found = False
-            raise RuntimeError("the backend refused")
+    async def refused(
+        namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
+    ) -> bool:
+        assert claimed == incarnation
+        raise RuntimeError("the backend refused")
 
     with pytest.raises(RuntimeError):
-        await refused_reclamation()
+        await registry.run_purge_round(refused)
 
     assert await _queued(registry) == [incarnation]
     assert await _failed_rounds(registry, incarnation) == 1
@@ -712,9 +720,13 @@ async def test_a_stored_configuration_that_no_longer_validates_counts_as_a_faile
             .values(config={"vector_dimensions": "not a number"})
         )
 
+    async def never_run(
+        namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
+    ) -> bool:
+        raise AssertionError("the round ran on a configuration that does not validate")
+
     with pytest.raises(ValueError, match="vector_dimensions"):
-        async with registry.claim_purgeable_incarnation():
-            pass
+        await registry.run_purge_round(never_run)
     assert await _failed_rounds(registry, incarnation) == 1
 
 
@@ -727,29 +739,14 @@ async def test_a_cancelled_round_is_not_a_failed_round(
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
-    async def cancelled_round() -> None:
-        async with registry.claim_purgeable_incarnation() as claim:
-            assert claim is not None
-            raise asyncio.CancelledError
+    async def cancelled(
+        namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
+    ) -> bool:
+        raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
-        await cancelled_round()
+        await registry.run_purge_round(cancelled)
     assert await _failed_rounds(registry, incarnation) == 0
-
-
-@pytest.mark.asyncio
-async def test_a_round_that_reports_nothing_is_an_error(
-    sqlalchemy_engine, vector_store_name
-):
-    registry = await _registry(sqlalchemy_engine, vector_store_name)
-    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
-    await registry.unregister(NAMESPACE, "a")
-    await _age_deletion(registry, incarnation)
-
-    with pytest.raises(RuntimeError, match="without setting any_records_found"):
-        async with registry.claim_purgeable_incarnation():
-            pass
-    assert await _queued(registry) == [incarnation]
 
 
 @pytest.mark.asyncio

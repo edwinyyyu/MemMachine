@@ -37,7 +37,7 @@ wrote it.
 
 - `VectorStoreCollectionRegistry` (`common/vector_store/collection_registry/`)
   is the ABC, addressed by (namespace, name). Its operations are `startup`,
-  `reserve`, `resolve`, `unregister` and `claim_purgeable_incarnation`.
+  `reserve`, `resolve`, `unregister` and `run_purge_round`.
 - `Reservation` and `Registration` are handles on one life of a collection
   (see [Reservations and registrations](#reservations-and-registrations)).
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
@@ -78,7 +78,7 @@ reservation, or a registration.
 
 | Object | Operations | Answered by |
 |---|---|---|
-| `VectorStoreCollectionRegistry` | `reserve`, `resolve`, `unregister` (by name), `claim_purgeable_incarnation` | |
+| `VectorStoreCollectionRegistry` | `reserve`, `resolve`, `unregister` (by name), `run_purge_round` | |
 | `Reservation` | `confirm`, `cancel` | `reserve` |
 | `Registration` | `require_current` | `resolve`, `confirm` |
 
@@ -212,7 +212,7 @@ was lost. Racing deleters serialize on the row's write lock and the loser
 deletes nothing, on PostgreSQL and SQLite alike, so a deletion is idempotent
 and queues one tombstone.
 
-**`claim_purgeable_incarnation()`** is described in
+**`run_purge_round()`** is described in
 [purge](vector_store_purge.md).
 
 ### Creation

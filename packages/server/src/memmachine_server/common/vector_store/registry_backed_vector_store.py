@@ -407,16 +407,8 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     @override
     async def purge_deleted_collections(self) -> bool:
         # One purge round per call, on a due tombstone.
-        async with (
-            self._tracker("purge_deleted_collections"),
-            self._collection_registry.claim_purgeable_incarnation() as claim,
-        ):
-            if claim is None:
-                return False
-            claim.any_records_found = await self._purge_round(
-                claim.namespace, claim.config, claim.incarnation
-            )
-            return True
+        async with self._tracker("purge_deleted_collections"):
+            return await self._collection_registry.run_purge_round(self._purge_round)
 
     @abstractmethod
     async def _prepare_storage(

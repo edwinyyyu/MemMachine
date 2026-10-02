@@ -11,8 +11,6 @@ PostgreSQL a purge claim is a row lock.
 
 import logging
 import sqlite3
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import override
@@ -58,7 +56,7 @@ from memmachine_server.common.vector_store.utils import (
 )
 
 from .collection_registry import (
-    PurgeClaim,
+    PurgeRound,
     Registration,
     Reservation,
     VectorStoreCollectionRegistry,
@@ -382,13 +380,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         )
 
     @override
-    @asynccontextmanager
-    async def claim_purgeable_incarnation(
-        self,
-    ) -> AsyncGenerator[PurgeClaim | None, None]:
+    async def run_purge_round(self, purge_round: PurgeRound) -> bool:
         # The retention is applied when a claim is decided, on the database
         # clock, so a changed retention applies to every tombstone. On
-        # PostgreSQL the claim is a row lock held for the body, which a
+        # PostgreSQL the claim is a row lock held for the round, which a
         # concurrent purger skips; on SQLite two purgers may run the same
         # round. A round that raises rolls back, then counts against
         # the tombstone in a transaction of its own.
@@ -418,44 +413,42 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     )
                 ).one_or_none()
                 if row is None:
-                    yield None
-                    return
+                    return False
                 claimed = row.incarnation
-                claim = PurgeClaim(
-                    incarnation=row.incarnation,
-                    namespace=row.namespace,
-                    config=VectorStoreCollectionConfig.model_validate(row.config),
+                any_records_found = await purge_round(
+                    row.namespace,
+                    VectorStoreCollectionConfig.model_validate(row.config),
+                    row.incarnation,
                 )
-                yield claim
-                await self._record_round(connection, claim, row.failed_rounds)
+                await self._record_round(
+                    connection, row.incarnation, row.failed_rounds, any_records_found
+                )
+                return True
         except Exception as error:
             if claimed is not None:
                 await self._count_failed_round(claimed, error)
             raise
 
     async def _record_round(
-        self, connection: AsyncConnection, claim: PurgeClaim, failed_rounds: int
+        self,
+        connection: AsyncConnection,
+        incarnation: UUID,
+        failed_rounds: int,
+        any_records_found: bool,
     ) -> None:
         """Record a purge round's outcome, in the claim's transaction.
 
         A round that found no records removes the tombstone; one that found
         records resets its count of failed rounds.
         """
-        if claim.any_records_found is None:
-            raise RuntimeError(
-                f"Purge round for incarnation {claim.incarnation} ended "
-                "without setting any_records_found"
-            )
-        if not claim.any_records_found:
+        if not any_records_found:
             await connection.execute(
-                delete(PurgeQueueRow).where(
-                    PurgeQueueRow.incarnation == claim.incarnation
-                )
+                delete(PurgeQueueRow).where(PurgeQueueRow.incarnation == incarnation)
             )
         elif failed_rounds:
             await connection.execute(
                 update(PurgeQueueRow)
-                .where(PurgeQueueRow.incarnation == claim.incarnation)
+                .where(PurgeQueueRow.incarnation == incarnation)
                 .values(failed_rounds=0)
             )
 
