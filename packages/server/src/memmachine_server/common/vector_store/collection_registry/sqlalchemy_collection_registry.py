@@ -473,7 +473,9 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     .returning(PurgeQueueRow.failed_rounds)
                 )
             ).scalar_one_or_none()
-        if failed_rounds == _MAX_FAILED_PURGE_ROUNDS:
+        # The claim takes only tombstones under the bound, so this one is now
+        # dead-lettered.
+        if failed_rounds is not None and failed_rounds >= _MAX_FAILED_PURGE_ROUNDS:
             logger.error(
                 "Purge of incarnation %s failed %d rounds in a row and is "
                 "dead-lettered: its records stay and it is no longer claimed. "

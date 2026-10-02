@@ -655,6 +655,33 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
 
 
 @pytest.mark.asyncio
+async def test_a_failure_counted_past_the_dead_letter_bound_is_reported(
+    sqlalchemy_engine, vector_store_name, caplog
+):
+    """A count already at the bound, as when two purgers failed one tombstone at
+    once, still reports the dead-lettering."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+    await registry.unregister(NAMESPACE, "a")
+    async with registry._engine.begin() as connection:
+        await connection.execute(
+            update(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == incarnation)
+            .values(failed_rounds=_MAX_FAILED_PURGE_ROUNDS)
+        )
+
+    with caplog.at_level(logging.ERROR):
+        await registry._count_failed_round(incarnation, RuntimeError("refused"))
+
+    assert await _failed_rounds(registry, incarnation) == _MAX_FAILED_PURGE_ROUNDS + 1
+    assert [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR and str(incarnation) in r.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_round_that_finds_points_clears_the_failed_rounds(
     sqlalchemy_engine, vector_store_name
 ):
