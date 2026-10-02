@@ -393,6 +393,11 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
             # confirmation means a deleter removed this one while its storage
             # was prepared (create again).
             pending_error: VectorStorePartitionPendingError | None = None
+            lost_race: (
+                VectorStorePartitionAlreadyExistsError
+                | VectorStorePartitionDeletedError
+                | None
+            ) = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
@@ -408,12 +413,14 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                     reservation = await self._partition_registry.reserve(
                         partition_key, self._declared_schema()
                     )
-                except VectorStorePartitionAlreadyExistsError:
+                except VectorStorePartitionAlreadyExistsError as err:
+                    lost_race = err
                     continue
                 await self._prepare_partition_storage_or_cancel(reservation)
                 try:
                     registration = await reservation.confirm()
-                except VectorStorePartitionDeletedError:
+                except VectorStorePartitionDeletedError as err:
+                    lost_race = err
                     continue
                 return self._partition_handle(registration)
             # The last lookup found the partition pending.
@@ -423,7 +430,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                 f"Opening or creating partition {partition_key!r} of vector store "
                 f"{self._vector_store_name!r} made no progress after "
                 f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
-            )
+            ) from lost_race
 
     async def _prepare_partition_storage_or_cancel(
         self, reservation: Reservation

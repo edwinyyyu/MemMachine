@@ -205,11 +205,13 @@ carries the registration's incarnation. It is how a handle is fenced (below).
 partition's row, pending or live, then insert its tombstone with
 `enqueued_at = now()`. The partition is unreachable when it commits.
 **`Reservation.cancel()`** does the same for the row carrying the
-reservation's incarnation: a creation whose storage preparation raised takes
-back its own reservation that way, never one made under the key since.
-Racing deleters serialize on the row's write lock and the loser deletes
-nothing, on PostgreSQL and SQLite alike, so a deletion is idempotent and
-queues one tombstone.
+reservation's incarnation while it is pending: a creation whose storage
+preparation raised takes back its own reservation that way, never one made
+under the key since, and never its partition once confirmed, which only a
+deletion by key ends, even when the confirmation committed but its answer
+was lost. Racing deleters serialize on the row's write lock and the loser
+deletes nothing, on PostgreSQL and SQLite alike, so a deletion is idempotent
+and queues one tombstone.
 
 **`claim_purgeable_incarnation()`** is described in
 [purge](vector_store_purge.md).
