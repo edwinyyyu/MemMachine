@@ -73,10 +73,12 @@ class Reservation(_RegistryEntry, ABC):
     @abstractmethod
     async def cancel(self) -> None:
         """
-        Cancel this reservation, unregistering this life of the collection and queuing its incarnation for purge.
+        Cancel this reservation, unregistering this life of the collection while it is pending and queuing its incarnation for purge.
 
-        The collection is unreachable when this returns, and purge rounds
-        reclaim its records later. A collection reserved since under the same
+        The pending collection is unreachable when this returns, and purge
+        rounds reclaim its records later. Once the reservation is confirmed,
+        cancelling it does nothing: only a deletion by (namespace, name) ends
+        a live collection. A collection reserved since under the same
         (namespace, name) is another life and stays. Idempotent.
         """
         raise NotImplementedError
