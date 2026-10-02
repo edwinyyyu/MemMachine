@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping, MutableMapping, Sequence
 from datetime import UTC
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import numpy as np
 from pydantic import AwareDatetime, InstanceOf, TypeAdapter, ValidationError
@@ -609,25 +609,8 @@ class VectorStoreSemanticStorage(SemanticStorage):
             score_threshold=vector_search_opts.min_distance,
         )
         matched_uuids = [match.record_uuid for match in query_result.matches]
-        # Resolve hits through the column that owns the mapping, keeping the
-        # order the search returned them in. A hit whose feature is gone is
-        # dropped: its vector outlived the row.
-        async with self._create_session() as session:
-            rows = (
-                await session.execute(
-                    select(
-                        VectorSemanticFeature.vector_uuid, VectorSemanticFeature.id
-                    ).where(VectorSemanticFeature.vector_uuid.in_(matched_uuids))
-                )
-            ).all()
-        feature_id_by_uuid = {row.vector_uuid: row.id for row in rows}
-        ordered_ids = [
-            FeatureIdT(str(feature_id_by_uuid[matched_uuid]))
-            for matched_uuid in matched_uuids
-            if matched_uuid in feature_id_by_uuid
-        ]
-        features = await self._features_by_ids(
-            ordered_ids,
+        features = await self._features_by_vector_uuids(
+            matched_uuids,
             filter_expr=filter_expr,
             load_citations=load_citations,
         )
@@ -661,25 +644,29 @@ class VectorStoreSemanticStorage(SemanticStorage):
                 )
         return [row.to_typed_model(citations=citations_map.get(row.id)) for row in rows]
 
-    async def _features_by_ids(
+    async def _features_by_vector_uuids(
         self,
-        feature_ids: Sequence[FeatureIdT],
+        vector_uuids: Sequence[UUID],
         *,
         filter_expr: FilterExpr | None,
         load_citations: bool,
     ) -> list[SemanticFeature]:
-        if not feature_ids:
+        # Resolves search hits through the column that owns the mapping, in
+        # the order given. A hit whose feature is gone is dropped: its vector
+        # outlived the row.
+        if not vector_uuids:
             return []
-        int_ids = [self._coerce_feature_id(feature_id) for feature_id in feature_ids]
         stmt = select(VectorSemanticFeature).where(
-            VectorSemanticFeature.id.in_(int_ids)
+            VectorSemanticFeature.vector_uuid.in_(vector_uuids)
         )
         stmt = self._apply_feature_filter(stmt, filter_expr=filter_expr)
         async with self._create_session() as session:
             result = await session.execute(stmt)
-            rows_by_id = {row.id: row for row in result.scalars()}
+            rows_by_vector_uuid = {row.vector_uuid: row for row in result.scalars()}
             ordered_rows = [
-                rows_by_id[row_id] for row_id in int_ids if row_id in rows_by_id
+                rows_by_vector_uuid[vector_uuid]
+                for vector_uuid in vector_uuids
+                if vector_uuid in rows_by_vector_uuid
             ]
             citations_map: Mapping[int, Sequence[EpisodeIdT]] = {}
             if load_citations and ordered_rows:
