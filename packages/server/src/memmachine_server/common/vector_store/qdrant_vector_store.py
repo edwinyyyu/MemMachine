@@ -266,8 +266,6 @@ class QdrantVectorStoreCollection(VectorStoreCollection):
             _PAYLOAD_PARTITION_KEY: self._partition_key,
         }
         for key, value in properties.items():
-            if value is None:
-                continue
             if isinstance(value, datetime):
                 payload[key] = ensure_tz_aware(value)
             else:

@@ -30,7 +30,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, aliased, mapped_column
-from sqlalchemy.sql import Delete, Select, func
+from sqlalchemy.sql import Select, func
 
 from memmachine_server.common.episode_store.episode_model import EpisodeIdT
 from memmachine_server.common.errors import InvalidArgumentError, ResourceNotFoundError
@@ -647,10 +647,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
             VectorSemanticFeature.created_at.asc(),
             VectorSemanticFeature.id.asc(),
         )
-        stmt = cast(
-            Select[Any],
-            self._apply_feature_filter(stmt, filter_expr=filter_expr),
-        )
+        stmt = self._apply_feature_filter(stmt, filter_expr=filter_expr)
         if page_size is not None:
             stmt = stmt.limit(page_size).offset(page_size * (page_num or 0))
         async with self._create_session() as session:
@@ -713,10 +710,10 @@ class VectorStoreSemanticStorage(SemanticStorage):
 
     def _apply_feature_filter(
         self,
-        stmt: Select[Any] | Delete,
+        stmt: Select[Any],
         *,
         filter_expr: FilterExpr | None = None,
-    ) -> Select[Any] | Delete:
+    ) -> Select[Any]:
         if filter_expr is None:
             return stmt
         clause = compile_sql_filter(filter_expr, self._resolve_feature_field_default)
