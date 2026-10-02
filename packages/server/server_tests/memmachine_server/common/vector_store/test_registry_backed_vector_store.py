@@ -13,6 +13,7 @@ from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.vector_store import (
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionDeletedError,
     VectorStorePartitionPendingError,
@@ -202,6 +203,25 @@ async def test_open_or_create_waits_for_a_pending_partition(store, monkeypatch):
     created = await store._partition_registry.resolve(KEY)
     assert created is not None
     assert opened._incarnation == created.incarnation
+
+
+@pytest.mark.asyncio
+async def test_open_or_create_gives_up_from_the_race_it_last_lost(store, monkeypatch):
+    monkeypatch.setattr(
+        registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
+    )
+    lost = VectorStorePartitionAlreadyExistsError(store.vector_store_name, KEY)
+
+    async def taken(partition_key, schema):
+        raise lost
+
+    monkeypatch.setattr(store._partition_registry, "reserve", taken)
+
+    with pytest.raises(
+        VectorStoreAttemptsExhaustedError, match="no progress"
+    ) as gave_up:
+        await store.open_or_create_partition(KEY)
+    assert gave_up.value.__cause__ is lost
 
 
 @pytest.mark.asyncio
