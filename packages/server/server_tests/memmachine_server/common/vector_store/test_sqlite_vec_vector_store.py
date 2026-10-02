@@ -589,57 +589,8 @@ class TestFilters:
         assert r2.uuid in uuids
         assert len(uuids) == 2
 
-    # ── Delete ──
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("key", "value"),
-        [("age", "old"), ("age", 30.5), ("age", True), ("score", 3), ("score", "high")],
-    )
-    async def test_a_declared_property_of_another_type_is_refused(
-        self, collection, key, value
-    ):
-        with pytest.raises(ValueError, match=f"{key!r} is declared"):
-            await collection.upsert(
-                records=[
-                    _make_record(
-                        vector=_normalize([1.0, 0.0, 0.0]), properties={key: value}
-                    )
-                ]
-            )
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "dimensions", [VECTOR_DIM - 1, VECTOR_DIM + 1], ids=["too_short", "too_long"]
-    )
-    async def test_a_vector_of_another_width_is_refused(self, collection, dimensions):
-        vector = [1.0] * dimensions
-        with pytest.raises(ValueError, match="dimensions"):
-            await collection.upsert(records=[_make_record(vector=vector)])
-        with pytest.raises(ValueError, match="dimensions"):
-            await collection.query(query_vectors=[vector], limit=1)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
-    async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
-        self, collection, coordinate
-    ):
-        with pytest.raises(ValueError, match="not finite"):
-            await collection.query(
-                query_vectors=[[coordinate] + [1.0] * (VECTOR_DIM - 1)], limit=1
-            )
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
-    async def test_a_score_threshold_that_is_not_finite_is_refused(
-        self, collection, threshold
-    ):
-        with pytest.raises(ValueError, match="not finite"):
-            await collection.query(
-                query_vectors=[_normalize([1.0, 0.0, 0.0])],
-                limit=1,
-                score_threshold=threshold,
-            )
+# ── Delete ──
 
 
 class TestDelete:
@@ -878,6 +829,56 @@ class TestInputValidation:
         record = Record(uuid=uuid4(), vector=_normalize([1.0, 0.0, 0.0]))
         await collection.upsert(records=[record])
         assert await _stored(collection) == {record.uuid: {}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("age", "old"), ("age", 30.5), ("age", True), ("score", 3), ("score", "high")],
+    )
+    async def test_a_declared_property_of_another_type_is_refused(
+        self, collection, key, value
+    ):
+        with pytest.raises(ValueError, match=f"{key!r} is declared"):
+            await collection.upsert(
+                records=[
+                    _make_record(
+                        vector=_normalize([1.0, 0.0, 0.0]), properties={key: value}
+                    )
+                ]
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "dimensions", [VECTOR_DIM - 1, VECTOR_DIM + 1], ids=["too_short", "too_long"]
+    )
+    async def test_a_vector_of_another_width_is_refused(self, collection, dimensions):
+        vector = [1.0] * dimensions
+        with pytest.raises(ValueError, match="dimensions"):
+            await collection.upsert(records=[_make_record(vector=vector)])
+        with pytest.raises(ValueError, match="dimensions"):
+            await collection.query(query_vectors=[vector], limit=1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
+    async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
+        self, collection, coordinate
+    ):
+        with pytest.raises(ValueError, match="not finite"):
+            await collection.query(
+                query_vectors=[[coordinate] + [1.0] * (VECTOR_DIM - 1)], limit=1
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("threshold", [math.nan, math.inf, -math.inf])
+    async def test_a_score_threshold_that_is_not_finite_is_refused(
+        self, collection, threshold
+    ):
+        with pytest.raises(ValueError, match="not finite"):
+            await collection.query(
+                query_vectors=[_normalize([1.0, 0.0, 0.0])],
+                limit=1,
+                score_threshold=threshold,
+            )
 
 
 # ── Score semantics ──

@@ -247,7 +247,8 @@ async def test_an_update_reads_nothing_back_from_the_vector_store(
         await storage.cleanup()
 
 
-# More features than SQLite binds in one statement (32,766 parameters).
+# More features than SQLite binds in one statement (32,766 parameters): the
+# feature store's deletions must not bind every feature they delete.
 _MANY_FEATURES = 40_000
 
 

@@ -218,10 +218,7 @@ class TestEncodeEvents:
         config = VectorStoreCollectionConfig(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties_schema={
-                "_segment_uuid": str,
-                "_timestamp": datetime.datetime,
-            },
+            indexed_properties_schema={"_timestamp": datetime.datetime},
         )
         collection = InMemoryVectorStoreCollection(config)
         partition = InMemorySegmentStorePartition()
@@ -248,9 +245,6 @@ class TestEncodeEvents:
         config = VectorStoreCollectionConfig(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties_schema={
-                "_segment_uuid": str,
-            },
         )
         collection = InMemoryVectorStoreCollection(config)
         partition = InMemorySegmentStorePartition()
