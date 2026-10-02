@@ -59,11 +59,11 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_identifiers,
     require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
-    validate_identifier,
 )
 from .vector_search_engine import VectorSearchEngine
 from .vector_store import VectorStore, VectorStoreCollection
@@ -745,8 +745,7 @@ class SQLiteVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         self._require_started()
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
 
         async with self._create_session() as session, session.begin():
             existing_config = await self._get_stored_config(session, namespace, name)
@@ -772,8 +771,7 @@ class SQLiteVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> VectorStoreCollection:
         self._require_started()
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
 
         index_path = self._index_path(namespace, name)
 
@@ -831,8 +829,7 @@ class SQLiteVectorStore(VectorStore):
         name: str,
     ) -> VectorStoreCollection | None:
         self._require_started()
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
 
         async with self._create_session() as session:
             existing = await self._get_stored_config(session, namespace, name)
@@ -860,8 +857,7 @@ class SQLiteVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         self._require_started()
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
 
         async with self._create_session() as session:
             existing = await self._get_stored_config(session, namespace, name)

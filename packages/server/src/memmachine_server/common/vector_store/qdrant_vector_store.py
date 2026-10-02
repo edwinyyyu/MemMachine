@@ -55,11 +55,11 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_identifiers,
     require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
-    validate_identifier,
 )
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -718,14 +718,7 @@ class QdrantVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         """Create a logical collection in the Qdrant vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         async with (
             self._client_name_locks[(namespace, name)],
             self._tracker("create_collection"),
@@ -745,14 +738,7 @@ class QdrantVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> QdrantVectorStoreCollection:
         """Open the collection if it exists, or create and return it."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         async with (
             self._client_name_locks[(namespace, name)],
             self._tracker("open_or_create_collection"),
@@ -776,14 +762,7 @@ class QdrantVectorStore(VectorStore):
         self, *, namespace: str, name: str
     ) -> QdrantVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         entry = await self._get_registry_entry(namespace, name)
         if entry is None:
             return None
@@ -794,14 +773,7 @@ class QdrantVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """Delete a logical collection from the Qdrant vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         async with (
             self._client_name_locks[(namespace, name)],
             self._tracker("delete_collection"),
