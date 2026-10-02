@@ -399,3 +399,17 @@ async def test_calling_the_purge_until_it_returns_false_drains_every_tombstone(
         await store.delete_collection(namespace=NAMESPACE, name=name)
 
     assert sorted(await _purged(store)) == sorted(incarnations)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query_vectors", [[], [[1.0, 0.0, 0.0]]])
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_a_query_limit_that_is_not_positive_is_refused(
+    store, query_vectors, limit
+):
+    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    collection = await store.open_collection(namespace=NAMESPACE, name=NAME)
+    assert collection is not None
+
+    with pytest.raises(ValueError, match="not positive"):
+        await collection.query(query_vectors=query_vectors, limit=limit)
