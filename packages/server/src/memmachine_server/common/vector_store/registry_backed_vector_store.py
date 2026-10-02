@@ -41,6 +41,7 @@ from .utils import (
     require_declared_types,
     require_dimensions,
     require_identifiers,
+    require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
@@ -115,13 +116,12 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
             for query_vector in query_vectors:
                 require_valid_query_vector(query_vector, self._config.vector_dimensions)
             require_valid_score_threshold(score_threshold)
+            require_valid_limit(limit)
             if property_filter is not None and not validate_filter(property_filter):
                 raise ValueError("Filter contains an invalid property key")
             await self._registration.require_current()
             if not query_vectors:
                 return []
-            if limit <= 0:
-                return [QueryResult(matches=[]) for _ in query_vectors]
             return await self._query(
                 query_vectors,
                 limit=limit,
@@ -170,8 +170,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
         Search the handle's incarnation's records for each query vector.
 
         Called after a liveness check, with at least one query vector and a
-        limit of at least 1, the vectors, threshold and filter already
-        checked.
+        positive limit, the vectors, threshold and filter already checked.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.
