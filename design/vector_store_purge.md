@@ -90,6 +90,16 @@ A round runs inside `claim_purgeable_incarnation()`:
    the tombstone, which frees the incarnation; a round that found records keeps
    it due and clears its failed rounds.
 
+The claim's transaction stays open for the whole round, holding the
+tombstone's row lock, and sits idle on PostgreSQL while the backend deletes. A
+deployment that sets PostgreSQL's `idle_in_transaction_session_timeout` (off by
+default) must set it above a round's duration. A shorter one ends the claim's
+session mid-round: the round fails, though its deletions in the backend stand,
+and a tombstone whose rounds keep outlasting the timeout is dead-lettered after
+10. The measured rounds take about 100 ms per Milvus batch and, on Qdrant,
+whose single filter-delete makes the longest round, about 1.3 s per million
+points (see the per-backend documents).
+
 ### Failed rounds: backoff and dead-lettering
 
 A round that raises rolls back, then counts against its tombstone in a
