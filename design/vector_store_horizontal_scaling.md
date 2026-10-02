@@ -94,7 +94,11 @@ plus 300 seconds (see [purge](vector_store_purge.md)).
 
 ## Deployment consequences
 
-- Existing Qdrant and Milvus data is orphaned, and an existing native Milvus
-  collection has to be dropped. No migration; pre-GA.
+- Existing Qdrant and Milvus data is not carried over: drop the native
+  collections before upgrading. Their names are unchanged, so a Qdrant
+  collection kept through the upgrade holds its old points, invisible to every
+  search and never purged, beside the new data, and dropping it afterwards
+  drops both; an existing Milvus collection has the earlier schema, which the
+  store cannot prepare. No migration; pre-GA.
 - Milvus Lite is not supported; the Milvus store needs a Milvus server.
 - Every Qdrant or Milvus store needs a relational database for its registry.
