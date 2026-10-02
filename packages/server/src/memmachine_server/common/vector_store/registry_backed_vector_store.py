@@ -313,6 +313,11 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             # confirmation means a deleter removed this one while its storage
             # was prepared (create again).
             pending_error: VectorStoreCollectionPendingError | None = None
+            lost_race: (
+                VectorStoreCollectionAlreadyExistsError
+                | VectorStoreCollectionDeletedError
+                | None
+            ) = None
             for attempt in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
                 if attempt:
                     await asyncio.sleep(_OPEN_OR_CREATE_RETRY_DELAY_SECONDS)
@@ -338,12 +343,14 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                     reservation = await self._collection_registry.reserve(
                         namespace, name, config
                     )
-                except VectorStoreCollectionAlreadyExistsError:
+                except VectorStoreCollectionAlreadyExistsError as err:
+                    lost_race = err
                     continue
                 await self._prepare_storage_or_cancel(reservation)
                 try:
                     registration = await reservation.confirm()
-                except VectorStoreCollectionDeletedError:
+                except VectorStoreCollectionDeletedError as err:
+                    lost_race = err
                     continue
                 return self._build_collection_handle(registration)
             # The last lookup found the collection pending.
@@ -352,7 +359,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             raise VectorStoreAttemptsExhaustedError(
                 f"Opening or creating collection ({namespace!r}, {name!r}) made "
                 f"no progress after {_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
-            )
+            ) from lost_race
 
     async def _prepare_storage_or_cancel(self, reservation: Reservation) -> None:
         """Prepare a reserved collection's storage, cancelling the reservation if that raises or the creation is cancelled.

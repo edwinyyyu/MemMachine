@@ -13,6 +13,7 @@ from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.vector_store import (
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
@@ -189,6 +190,27 @@ async def test_open_or_create_waits_for_a_pending_collection(store, monkeypatch)
     created = await store._collection_registry.resolve(NAMESPACE, NAME)
     assert created is not None
     assert opened._incarnation == created.incarnation
+
+
+@pytest.mark.asyncio
+async def test_open_or_create_gives_up_from_the_race_it_last_lost(store, monkeypatch):
+    monkeypatch.setattr(
+        registry_backed_vector_store, "_OPEN_OR_CREATE_RETRY_DELAY_SECONDS", 0
+    )
+    lost = VectorStoreCollectionAlreadyExistsError(NAMESPACE, NAME)
+
+    async def taken(namespace, name, config):
+        raise lost
+
+    monkeypatch.setattr(store._collection_registry, "reserve", taken)
+
+    with pytest.raises(
+        VectorStoreAttemptsExhaustedError, match="no progress"
+    ) as gave_up:
+        await store.open_or_create_collection(
+            namespace=NAMESPACE, name=NAME, config=CONFIG
+        )
+    assert gave_up.value.__cause__ is lost
 
 
 @pytest.mark.asyncio
