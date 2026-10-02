@@ -47,8 +47,8 @@ from .data_types import (
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
 )
-from .declared_properties import require_declared_types
 from .utils import (
+    require_declared_types,
     require_dimensions,
     require_valid_query_vector,
     require_valid_score_threshold,
