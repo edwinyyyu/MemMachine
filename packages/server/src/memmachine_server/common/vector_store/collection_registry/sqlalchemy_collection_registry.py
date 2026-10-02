@@ -384,34 +384,54 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         # The retention is applied when a claim is decided, on the database
         # clock, so a changed retention applies to every tombstone. On
         # PostgreSQL the claim is a row lock held for the round, which a
-        # concurrent purger skips; on SQLite two purgers may run the same
-        # round. A round that raises rolls back, then counts against
-        # the tombstone in a transaction of its own.
+        # concurrent purger skips; on SQLite it is a write, so purgers
+        # serialize at the claim and SQLite's write lock is held for the
+        # round. A round that raises rolls back, then counts against the
+        # tombstone in a transaction of its own.
+        eligible = (
+            PurgeQueueRow.vector_store_name == self._vector_store_name,
+            PurgeQueueRow.enqueued_at <= self._retention_cutoff(),
+            PurgeQueueRow.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
+            or_(
+                PurgeQueueRow.failed_rounds == 0,
+                PurgeQueueRow.last_failed_at <= self._backoff_cutoff(),
+            ),
+        )
+        claimed_columns = (
+            PurgeQueueRow.incarnation,
+            PurgeQueueRow.namespace,
+            PurgeQueueRow.config,
+            PurgeQueueRow.failed_rounds,
+        )
+        if self._is_sqlite:
+            # As the segment store's purge claim: the row UPDATE opens the
+            # write transaction, so a racing purger waits here until this
+            # round ends. RETURNING resolves the claim in the same round trip.
+            oldest_due = (
+                select(PurgeQueueRow.incarnation)
+                .where(*eligible)
+                .order_by(PurgeQueueRow.enqueued_at)
+                .limit(1)
+                .scalar_subquery()
+            )
+            claim = (
+                update(PurgeQueueRow)
+                .where(PurgeQueueRow.incarnation == oldest_due)
+                .values(incarnation=PurgeQueueRow.incarnation)
+                .returning(*claimed_columns)
+            )
+        else:
+            claim = (
+                select(*claimed_columns)
+                .where(*eligible)
+                .order_by(PurgeQueueRow.enqueued_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
         claimed: UUID | None = None
         try:
             async with self._engine.begin() as connection:
-                row = (
-                    await connection.execute(
-                        select(
-                            PurgeQueueRow.incarnation,
-                            PurgeQueueRow.namespace,
-                            PurgeQueueRow.config,
-                            PurgeQueueRow.failed_rounds,
-                        )
-                        .where(
-                            PurgeQueueRow.vector_store_name == self._vector_store_name,
-                            PurgeQueueRow.enqueued_at <= self._retention_cutoff(),
-                            PurgeQueueRow.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
-                            or_(
-                                PurgeQueueRow.failed_rounds == 0,
-                                PurgeQueueRow.last_failed_at <= self._backoff_cutoff(),
-                            ),
-                        )
-                        .order_by(PurgeQueueRow.enqueued_at)
-                        .limit(1)
-                        .with_for_update(skip_locked=True)
-                    )
-                ).one_or_none()
+                row = (await connection.execute(claim)).one_or_none()
                 if row is None:
                     return False
                 claimed = row.incarnation

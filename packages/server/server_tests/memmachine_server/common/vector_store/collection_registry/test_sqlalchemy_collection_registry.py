@@ -871,6 +871,58 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_purge_rounds_run_one_at_a_time(tmp_path, vector_store_name):
+    """On SQLite the claim is a write: a second purger waits for the round under
+    way, then claims the next tombstone, never the same one."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
+    # A busy timeout far past the held round, so the waiting purger never
+    # gives up on the lock, however slow the machine.
+    engines = [create_async_engine(url, connect_args={"timeout": 60}) for _ in range(2)]
+    try:
+        first, second = [
+            await _registry(engine, vector_store_name) for engine in engines
+        ]
+        older = (await first.reserve(NAMESPACE, "older", CONFIG)).incarnation
+        newer = (await first.reserve(NAMESPACE, "newer", CONFIG)).incarnation
+        await first.unregister(NAMESPACE, "older")
+        await first.unregister(NAMESPACE, "newer")
+        await _age_deletion(first, older, extra=timedelta(minutes=1))
+        await _age_deletion(first, newer)
+        running = asyncio.Event()
+        release = asyncio.Event()
+        ran: list[UUID] = []
+
+        async def held_round(
+            namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+        ) -> bool:
+            ran.append(incarnation)
+            running.set()
+            await release.wait()
+            return False
+
+        async def quick_round(
+            namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+        ) -> bool:
+            ran.append(incarnation)
+            return False
+
+        holding = asyncio.create_task(first.run_purge_round(held_round))
+        await running.wait()
+        waiting = asyncio.create_task(second.run_purge_round(quick_round))
+        await asyncio.sleep(0.5)
+        assert not waiting.done(), "the second purger claimed during the first's round"
+
+        release.set()
+        assert await asyncio.wait_for(holding, 30)
+        assert await asyncio.wait_for(waiting, 30)
+        assert ran == [older, newer]
+        assert await _queued(first) == []
+    finally:
+        for engine in engines:
+            await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_racing_deletions_of_a_collection_queue_one_tombstone(
     sqlalchemy_engine, vector_store_name
 ):

@@ -75,14 +75,17 @@ both SQLite stores, whose deletion reclaims physically, return `False`.
 
 `run_purge_round()` runs one round:
 
-1. **Claim.** One range on the `enqueued_at` index: the oldest due tombstone
-   that is neither backing off nor dead-lettered, `LIMIT 1`, under `FOR UPDATE
-   SKIP LOCKED`. On PostgreSQL a concurrent purger skips a locked tombstone
-   and takes the next, so purgers on every process split a backlog without
-   coordinating. SQLite holds no row lock, so two purgers can claim one
-   tombstone; that costs a repeated round and nothing more, since by the time
-   any round runs no write can land, so a round finding nothing still proves
-   the incarnation empty.
+1. **Claim.** One range on the `(vector_store_name, enqueued_at)` index: the
+   oldest due tombstone that is neither backing off nor dead-lettered,
+   `LIMIT 1`. On PostgreSQL it is selected `FOR UPDATE SKIP LOCKED`: a
+   concurrent purger skips a locked tombstone and takes the next, so purgers
+   on every process split a backlog without coordinating. SQLite has no row
+   locks, so there the claim is an `UPDATE` of the tombstone's row, which
+   opens SQLite's write transaction: purgers serialize at the claim, and
+   rounds run one at a time. SQLite's single write lock is then held across
+   the round's remote deletion, so the registry's other writers wait for it,
+   and past the driver's busy timeout they fail with a locked-database
+   error.
 2. **Round.** The registry calls the store's round with the tombstone's
    namespace, configuration and incarnation. The round looks for records under
    the incarnation where the namespace and configuration locate them, deletes
