@@ -326,6 +326,31 @@ async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives
 
 
 @pytest.mark.asyncio
+async def test_every_lifecycle_call_is_tracked(store, monkeypatch):
+    tracked: list[str] = []
+    tracker = store._tracker
+
+    def recording(operation: str):
+        tracked.append(operation)
+        return tracker(operation)
+
+    monkeypatch.setattr(store, "_tracker", recording)
+    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    await store.open_collection(namespace=NAMESPACE, name=NAME)
+    await store.open_or_create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    await store.delete_collection(namespace=NAMESPACE, name=NAME)
+    await store.purge_deleted_collections()
+
+    assert tracked == [
+        "create_collection",
+        "open_collection",
+        "open_or_create_collection",
+        "delete_collection",
+        "purge_deleted_collections",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_that_fails_after_its_creation_stopped_waiting_is_still_reported(
     store, monkeypatch, caplog
 ):
