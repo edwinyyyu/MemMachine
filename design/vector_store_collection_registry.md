@@ -274,7 +274,7 @@ the same name is a new life the old handle cannot reach.
 
 - An upsert or query calls its registration's `require_current` once its
   inputs are checked and before its remote call; one with nothing to send (no
-  records, no query vectors, a limit of 0) checks too.
+  records, no query vectors) checks too.
 - An upsert checks again after the remote call, so an upsert that completed
   under an incarnation that died meanwhile raises instead of reporting
   success. A delete checks once, after its remote call: it adds nothing a
