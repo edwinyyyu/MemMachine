@@ -1,7 +1,7 @@
 """OperationTracker: async context manager for timing operations."""
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from .metrics_factory import MetricsFactory
@@ -38,7 +38,7 @@ class OperationTracker:
         return self._track(operation)
 
     @asynccontextmanager
-    async def _track(self, operation: str) -> AsyncIterator[None]:
+    async def _track(self, operation: str) -> AsyncGenerator[None, None]:
         start = time.monotonic()
         status = "ok"
         try:

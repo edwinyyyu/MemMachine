@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from pydantic import BaseModel, Field, InstanceOf, JsonValue
@@ -116,7 +116,7 @@ class EpisodicMemoryManager:
     async def open_episodic_memory(
         self,
         session_key: str,
-    ) -> AsyncIterator[EpisodicMemory]:
+    ) -> AsyncGenerator[EpisodicMemory, None]:
         """
         Provide a SemanticMemory instance for a given session key.
 
@@ -183,7 +183,7 @@ class EpisodicMemoryManager:
         description: str,
         metadata: dict[str, JsonValue],
         config: dict[str, JsonValue] | None = None,
-    ) -> AsyncIterator[EpisodicMemory]:
+    ) -> AsyncGenerator[EpisodicMemory, None]:
         """
         Create or reuse an episodic memory instance with matching session data.
 
@@ -231,7 +231,7 @@ class EpisodicMemoryManager:
         description: str,
         metadata: dict[str, JsonValue],
         config: dict[str, JsonValue] | None = None,
-    ) -> AsyncIterator[EpisodicMemory]:
+    ) -> AsyncGenerator[EpisodicMemory, None]:
         """
         Create a new episodic memory instance and store its configuration if it doesn't exist. If the session already exists, it will be opened and returned.
 

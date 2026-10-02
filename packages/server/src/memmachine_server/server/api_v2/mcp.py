@@ -4,7 +4,7 @@ import contextvars
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -362,7 +362,7 @@ async def initialize_resource() -> MemMachine:
 
 
 @asynccontextmanager
-async def global_memory_lifespan() -> AsyncIterator[None]:
+async def global_memory_lifespan() -> AsyncGenerator[None, None]:
     """
     Handle application startup and shutdown events.
 
@@ -391,7 +391,7 @@ async def shutdown_global_memory() -> None:
 
 
 @asynccontextmanager
-async def mcp_http_lifespan(application: FastAPI) -> AsyncIterator[None]:
+async def mcp_http_lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     """
     Manage the combined lifespan of the main app and the MCP app.
 

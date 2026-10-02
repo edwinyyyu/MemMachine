@@ -237,12 +237,7 @@ class SessionDataManagerSQL(SessionDataManager):
         metadata: dict[str, JsonValue],
     ) -> None:
         """Create a session, or accept an existing one with matching data."""
-        if hasattr(param, "model_dump"):
-            param_data = param.model_dump(mode="json")
-        elif hasattr(param, "dict"):
-            param_data = param.dict()
-        else:
-            param_data = param.__dict__
+        param_data = param.model_dump(mode="json")
 
         async with self._async_session() as dbsession:
             # Query for an existing session with the same ID
