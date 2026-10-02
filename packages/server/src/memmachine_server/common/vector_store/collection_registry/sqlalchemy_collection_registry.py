@@ -30,6 +30,7 @@ from sqlalchemy import (
     String,
     Uuid,
     bindparam,
+    case,
     delete,
     func,
     insert,
@@ -485,8 +486,15 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     def _backoff_cutoff(self) -> ColumnElement:
         """The database clock's now, less each queue row's backoff, computed by the database."""
-        # 1 << (f - 1) is 2 ** (f - 1) on both dialects.
-        doublings = literal(1, Integer).op("<<")(PurgeQueueRow.failed_rounds - 1)
+        # 1 << (f - 1) is 2 ** (f - 1) on both dialects. The claim evaluates
+        # it for rows at 0 failures too, so the count is clamped at 0: a
+        # shift by a negative count is undefined on PostgreSQL.
+        doublings = literal(1, Integer).op("<<")(
+            case(
+                (PurgeQueueRow.failed_rounds > 0, PurgeQueueRow.failed_rounds - 1),
+                else_=0,
+            )
+        )
         if self._is_sqlite:
             seconds = func.min(
                 int(self._purge_retry_backoff.total_seconds()) * doublings,
