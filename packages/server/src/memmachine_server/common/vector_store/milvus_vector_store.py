@@ -53,6 +53,7 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
@@ -256,12 +257,11 @@ class MilvusVectorStoreCollection(VectorStoreCollection):
             for query_vector in query_vectors:
                 require_valid_query_vector(query_vector, self._config.vector_dimensions)
             require_valid_score_threshold(score_threshold)
+            require_valid_limit(limit)
             if property_filter is not None and not validate_filter(property_filter):
                 raise ValueError("Filter contains an invalid property key")
             if not query_vectors:
                 return []
-            if limit <= 0:
-                return [QueryResult(matches=[]) for _ in query_vectors]
 
             filter_expr = self._partition_filter()
             if property_filter is not None:

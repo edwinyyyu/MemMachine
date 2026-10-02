@@ -50,6 +50,7 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
@@ -200,15 +201,13 @@ class SQLiteVecVectorStoreCollection(VectorStoreCollection):
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
+        require_valid_limit(limit)
         query_vectors = list(query_vectors)
         if not query_vectors:
             return []
         for query_vector in query_vectors:
             require_valid_query_vector(query_vector, self._config.vector_dimensions)
         require_valid_score_threshold(score_threshold)
-
-        if limit <= 0:
-            return [QueryResult(matches=[]) for _ in query_vectors]
 
         if property_filter is not None and not validate_filter(property_filter):
             raise ValueError("Filter contains invalid field names")

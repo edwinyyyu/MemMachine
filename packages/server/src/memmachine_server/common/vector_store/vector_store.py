@@ -87,7 +87,8 @@ class VectorStoreCollection(ABC):
             query_vectors (Iterable[Sequence[float]]):
                 The vectors to compare against.
             limit (int):
-                Maximum number of matching records to return per query vector.
+                Maximum number of matching records to return per query vector;
+                positive.
             score_threshold (float | None):
                 Score threshold to consider a match
                 (default: None).
@@ -103,10 +104,10 @@ class VectorStoreCollection(ABC):
 
         Raises:
             ValueError:
-                If a query vector does not have the collection's dimensions
-                or has a coordinate that is not finite, the score threshold
-                is not finite, or the property filter names an invalid
-                property key.
+                If the limit is not positive, a query vector does not have
+                the collection's dimensions or has a coordinate that is not
+                finite, the score threshold is not finite, or the property
+                filter names an invalid property key.
         """
         raise NotImplementedError
 

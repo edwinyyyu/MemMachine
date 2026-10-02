@@ -80,6 +80,12 @@ def require_valid_score_threshold(score_threshold: float | None) -> None:
         raise ValueError(f"Score threshold is not finite: {score_threshold}")
 
 
+def require_valid_limit(limit: int) -> None:
+    """Raise ValueError unless a query limit is positive."""
+    if not limit > 0:
+        raise ValueError(f"Limit is not positive: {limit}")
+
+
 def require_dimensions(vector: Sequence[float], dimensions: int) -> None:
     """Raise ValueError unless a vector has the collection's dimensions."""
     if len(vector) != dimensions:

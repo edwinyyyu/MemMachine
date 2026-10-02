@@ -347,6 +347,14 @@ class TestUpsertAndQuery:
                 score_threshold=threshold,
             )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, -1])
+    async def test_a_limit_that_is_not_positive_is_refused(self, collection, limit):
+        with pytest.raises(ValueError, match="not positive"):
+            await collection.query(
+                query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=limit
+            )
+
 
 # ── Filters ──
 
