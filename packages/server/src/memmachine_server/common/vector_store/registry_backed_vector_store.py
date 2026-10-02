@@ -11,6 +11,7 @@ one collection, and purges a deleted incarnation's records.
 """
 
 import asyncio
+import contextlib
 import logging
 from abc import abstractmethod
 from collections.abc import Iterable, Sequence
@@ -372,20 +373,27 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 reservation.namespace, reservation.config, reservation.incarnation
             )
         except BaseException:
-            # Shielded, so a cancelled creation still frees the name.
+            # Shielded, so a cancelled creation still frees the name. The task
+            # reports its own failure, since a creation cancelled again stops
+            # awaiting it before it ends.
             cancellation = asyncio.create_task(reservation.cancel())
             self._cancellations.add(cancellation)
-            cancellation.add_done_callback(self._cancellations.discard)
-            try:
+
+            def finish(task: asyncio.Task[None]) -> None:
+                self._cancellations.discard(task)
+                if not task.cancelled() and task.exception() is not None:
+                    logger.exception(
+                        "Could not cancel the reservation of collection (%r, %r) "
+                        "after its storage preparation failed; it stays pending "
+                        "until deleted",
+                        reservation.namespace,
+                        reservation.name,
+                        exc_info=task.exception(),
+                    )
+
+            cancellation.add_done_callback(finish)
+            with contextlib.suppress(Exception):
                 await asyncio.shield(cancellation)
-            except Exception:
-                logger.exception(
-                    "Could not cancel the reservation of collection (%r, %r) "
-                    "after its storage preparation failed; it stays pending "
-                    "until deleted",
-                    reservation.namespace,
-                    reservation.name,
-                )
             raise
 
     @override
