@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from server_tests.memmachine_server.common.vector_store.partition_lifecycle_contract import (
@@ -39,6 +40,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionSchemaMismatchError,
 )
 from memmachine_server.common.vector_store.milvus_vector_store import (
+    MilvusVectorIndex,
     MilvusVectorStore,
     MilvusVectorStoreParams,
     MilvusVectorStorePartition,
@@ -940,6 +942,7 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
         indexed_properties={},
         tracker=OperationTracker(None, prefix="test"),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+        search_params={},
     )
 
     with pytest.raises(pymilvus.MilvusException, match="accepted the delete of 0 of 2"):
@@ -1015,6 +1018,146 @@ class TestPurgeBatches:
             left_after_each_round.append(await left_of_the_incarnation())
         # Batches of 2, then a round that finds nothing and removes the tombstone.
         assert left_after_each_round == [3, 1, 0, 0]
+
+
+# ── Vector index configuration ──
+
+
+@pytest_asyncio.fixture
+async def registry_engine(tmp_path):
+    """The relational database holding the partition registry, one per test."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}")
+    yield engine
+    await engine.dispose()
+
+
+def _stub_client() -> MagicMock:
+    """A client whose collection exists without indexes and whose searches find nothing."""
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.prepare_index_params = AsyncMilvusClient.prepare_index_params
+    client.has_collection = AsyncMock(return_value=True)
+    client.list_indexes = AsyncMock(return_value=[])
+    client.create_index = AsyncMock()
+    client.load_collection = AsyncMock()
+    client.search = AsyncMock(return_value=[[]])
+    return client
+
+
+class TestVectorIndexParams:
+    """The vector index of the store's collection and the parameters its searches pass."""
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_coerces_into_a_vector_index(self, registry_engine):
+        """A plain mapping (the YAML form) coerces into MilvusVectorIndex."""
+        params = await _params(
+            _stub_client(),
+            registry_engine,
+            vector_index={"index_type": "HNSW"},
+        )
+        assert params.vector_index == MilvusVectorIndex(index_type="HNSW")
+        assert params.vector_index.params == {}
+        assert params.vector_index.search_params == {}
+
+        params = await _params(
+            _stub_client(),
+            registry_engine,
+            vector_index={
+                "index_type": "HNSW_SQ",
+                "params": {"M": 16, "sq_type": "SQ8", "refine": True},
+                "search_params": {"ef": 64, "refine_k": 1.5},
+            },
+        )
+        assert params.vector_index is not None
+        assert params.vector_index.params == {"M": 16, "sq_type": "SQ8", "refine": True}
+        assert params.vector_index.params["refine"] is True
+        assert params.vector_index.search_params == {"ef": 64, "refine_k": 1.5}
+
+    @pytest.mark.parametrize("key", ["index_type", "metric_type"])
+    def test_params_naming_the_index_type_or_the_metric_are_rejected(self, key):
+        with pytest.raises(ValidationError, match=key):
+            MilvusVectorIndex.model_validate(
+                {"index_type": "HNSW", "params": {key: "IVF_FLAT"}}
+            )
+
+    def test_unknown_keys_are_rejected(self):
+        with pytest.raises(ValidationError, match="build_params"):
+            MilvusVectorIndex.model_validate(
+                {"index_type": "HNSW", "build_params": {"M": 16}}
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_default_index_is_hnsw_sq_searched_with_refine_k(
+        self, registry_engine
+    ):
+        """With no vector index configured, startup indexes the vector field
+        with HNSW_SQ and a query passes refine_k."""
+        client = _stub_client()
+        store = MilvusVectorStore(
+            await _params(client, registry_engine, indexed_properties={})
+        )
+        await store.startup()
+
+        client.create_index.assert_awaited_once()
+        [index] = client.create_index.call_args.args[1]
+        assert index.to_dict() == {
+            "field_name": "vector",
+            "index_type": "HNSW_SQ",
+            "index_name": "vector",
+            "metric_type": "COSINE",
+            "M": 18,
+            "efConstruction": 240,
+            "sq_type": "SQ4U",
+            "refine": True,
+            "refine_type": "FP16",
+        }
+
+        await store.create_partition(NAME)
+        partition = await store.get_partition(NAME)
+        assert partition is not None
+        await partition.query(query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=1)
+        client.search.assert_awaited_once()
+        assert client.search.call_args.kwargs["search_params"] == {
+            "params": {"refine_k": 8}
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_configured_index_is_built_and_searched(self, store, monkeypatch):
+        """Startup builds the configured index, and a query passes its search parameters."""
+        configured = MilvusVectorStore(
+            await _params(
+                store._client,
+                store._partition_registry._engine,
+                vector_store_name="configured_index",
+                vector_index={
+                    "index_type": "HNSW",
+                    "params": {"M": 16, "efConstruction": 128},
+                    "search_params": {"ef": 64},
+                },
+            )
+        )
+        await configured.startup()
+
+        index = await store._client.describe_index(
+            configured._collection_name, "vector"
+        )
+        assert index["index_type"] == "HNSW"
+        assert index["metric_type"] == "COSINE"
+        assert index["M"] == "16"
+        assert index["efConstruction"] == "128"
+
+        search = MagicMock(wraps=store._client.search)
+        monkeypatch.setattr(store._client, "search", search)
+        await configured.create_partition("configured")
+        partition = await configured.get_partition("configured")
+        assert partition is not None
+        vector = _normalize([1.0, 0.0, 0.0])
+        record = _make_record(vector=vector, properties={"name": "alice"})
+        await partition.upsert(records=[record])
+        await _settle(partition)
+        [result] = await partition.query(query_vectors=[vector], limit=1)
+        assert [match.record_uuid for match in result.matches] == [record.uuid]
+        assert search.call_args.kwargs["search_params"] == {"params": {"ef": 64}}
+        await configured.delete_partition("configured")
 
 
 class TestLifecycleContract(PartitionLifecycleContract):

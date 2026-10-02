@@ -137,6 +137,11 @@ def db_conf_dict() -> dict:
                     "db_name": "memory",
                     "partition_registry": "main_postgres",
                     "request_timeout_seconds": 7,
+                    "vector_index": {
+                        "index_type": "HNSW",
+                        "params": {"M": 16, "efConstruction": 128},
+                        "search_params": {"ef": 128},
+                    },
                 },
             },
             "my_sqlite_vs": {
@@ -226,6 +231,11 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.db_name == "memory"
     assert milvus_conf.partition_registry == "main_postgres"
     assert milvus_conf.request_timeout_seconds == 7
+    assert milvus_conf.vector_index == {
+        "index_type": "HNSW",
+        "params": {"M": 16, "efConstruction": 128},
+        "search_params": {"ef": 128},
+    }
 
     # SQLiteVectorStore (hnswlib engine)
     sqlite_vs_conf = storage_conf.sqlite_vector_store_confs["my_sqlite_vs"]
@@ -301,6 +311,7 @@ def test_milvus_conf_defaults():
     assert conf.request_timeout_seconds == 30
     assert conf.max_varchar_length == 65535
     assert conf.purge_batch_size == 10000
+    assert conf.vector_index is None
 
 
 def test_milvus_conf_requires_a_partition_registry():

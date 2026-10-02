@@ -661,6 +661,7 @@ async def test_get_vector_store_builds_a_milvus_store():
     conf.milvus_confs["milvus1"] = MilvusConf(
         partition_registry="registry",
         tombstone_retention_seconds=3600,
+        vector_index={"index_type": "HNSW", "search_params": {"ef": 64}},
     )
 
     mock_client = AsyncMock()
@@ -701,6 +702,7 @@ async def test_get_vector_store_builds_a_milvus_store():
         request_timeout_seconds=30,
         max_varchar_length=65535,
         purge_batch_size=10000,
+        vector_index={"index_type": "HNSW", "search_params": {"ef": 64}},
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()
