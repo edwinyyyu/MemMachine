@@ -120,6 +120,7 @@ async def _event_params(
     # create that loses a race to another caller or to a deletion, or an open
     # of a collection another caller is still creating, is retried until the
     # collection opens.
+    last_error: Exception | None = None
     for attempt in range(_MAX_OPEN_ATTEMPTS):
         if attempt:
             await asyncio.sleep(_OPEN_RETRY_DELAY_SECONDS)
@@ -151,7 +152,8 @@ async def _event_params(
             VectorStoreCollectionAlreadyExistsError,
             VectorStoreCollectionDeletedError,
             VectorStoreCollectionPendingError,
-        ):
+        ) as error:
+            last_error = error
             continue
         if collection is not None:
             break
@@ -159,7 +161,7 @@ async def _event_params(
         raise RuntimeError(
             f"The vector store collection of partition {partition_key!r} was "
             f"not live after {_MAX_OPEN_ATTEMPTS} attempts to open or create it"
-        )
+        ) from last_error
 
     partition = await segment_store.open_or_create_partition(
         partition_key,
