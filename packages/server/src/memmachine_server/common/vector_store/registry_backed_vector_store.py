@@ -399,10 +399,11 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
     @override
     async def open_collection(self, *, namespace: str, name: str) -> CollectionT | None:
         require_identifiers(namespace, name)
-        registration = await self._collection_registry.resolve(namespace, name)
-        if registration is None:
-            return None
-        return self._build_collection_handle(registration)
+        async with self._tracker("open_collection"):
+            registration = await self._collection_registry.resolve(namespace, name)
+            if registration is None:
+                return None
+            return self._build_collection_handle(registration)
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
