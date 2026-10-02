@@ -268,6 +268,21 @@ async def test_cancelling_a_reservation_spares_the_name_reserved_since(
 
 
 @pytest.mark.asyncio
+async def test_cancelling_a_confirmed_reservation_leaves_the_collection_live(
+    sqlalchemy_engine, vector_store_name
+):
+    """Only a deletion by name ends a live collection, so a creator that
+    cancels after a confirmation it did not see succeed takes nothing back."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    reservation = await registry.reserve(NAMESPACE, "c", CONFIG)
+    live = await reservation.confirm()
+
+    await reservation.cancel()
+    await live.require_current()
+    assert await _queued(registry) == []
+
+
+@pytest.mark.asyncio
 async def test_a_registration_is_current_until_its_collection_is_deleted(
     sqlalchemy_engine, vector_store_name
 ):
