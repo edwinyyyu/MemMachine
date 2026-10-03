@@ -194,7 +194,7 @@ class TestPartitionLifecycle:
 
     @pytest.mark.asyncio
     async def test_invalid_partition_key_raises(self, store):
-        with pytest.raises(ValueError, match="Invalid partition key"):
+        with pytest.raises(ValueError, match="Partition key 'INVALID' must match"):
             await store.create_partition("INVALID")
 
 
