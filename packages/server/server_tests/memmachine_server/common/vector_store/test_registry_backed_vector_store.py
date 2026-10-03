@@ -400,6 +400,72 @@ async def test_a_cancel_that_fails_after_its_creation_stopped_waiting_is_still_r
 
 
 @pytest.mark.asyncio
+async def test_a_confirmation_that_fails_frees_the_name(store, monkeypatch):
+    async def unreachable(reservation) -> Registration:
+        raise ConnectionError("the registry is unreachable")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            sqlalchemy_collection_registry._SQLAlchemyReservation,
+            "confirm",
+            unreachable,
+        )
+        with pytest.raises(ConnectionError):
+            await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+    await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_confirmation_frees_the_name(store, monkeypatch):
+    confirming = asyncio.Event()
+
+    async def hangs(reservation) -> Registration:
+        confirming.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            sqlalchemy_collection_registry._SQLAlchemyReservation, "confirm", hangs
+        )
+        creating = asyncio.create_task(
+            store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+        )
+        await confirming.wait()
+        creating.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await creating
+        await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
+
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_that_committed_before_failing_stands(store, monkeypatch):
+    """The cancel acts only on a pending collection, so a creation whose
+    confirmation committed but whose reply was lost leaves it live."""
+    confirm = sqlalchemy_collection_registry._SQLAlchemyReservation.confirm
+
+    async def commits_then_fails(reservation) -> Registration:
+        await confirm(reservation)
+        raise ConnectionError("the reply was lost")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            sqlalchemy_collection_registry._SQLAlchemyReservation,
+            "confirm",
+            commits_then_fails,
+        )
+        with pytest.raises(ConnectionError):
+            await store.create_collection(namespace=NAMESPACE, name=NAME, config=CONFIG)
+
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
+
+
+@pytest.mark.asyncio
 async def test_a_failed_preparation_the_registry_cannot_undo_stays_pending_until_deleted(
     store, monkeypatch
 ):

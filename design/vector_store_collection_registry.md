@@ -229,9 +229,10 @@ confirms the reservation, which makes the collection live:
   been pending, a `create_collection` of the name raises
   `VectorStoreCollectionAlreadyExistsError`, and open-or-create waits for it.
   `None` from `open_collection` means only that no collection holds the name.
-- A preparation that raises, or is cancelled, cancels the reservation when
-  the registry can, which frees the name and queues the incarnation's
-  tombstone. The reservation's cancellation is shielded, so a cancellation
+- A preparation or confirmation that raises, or is cancelled, cancels the
+  reservation when the registry can, which frees the name and queues the
+  incarnation's tombstone; a confirmation that committed before its failure
+  was observed stands, since the cancel acts only on a pending collection. The reservation's cancellation is shielded, so a cancellation
   of the creation does not cut it short.
   Otherwise, and after a crash, the collection stays pending until it is
   deleted like any other.
