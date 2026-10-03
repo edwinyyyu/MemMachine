@@ -295,8 +295,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             reservation = await self._collection_registry.reserve(
                 namespace, name, config
             )
-            await self._prepare_storage_or_cancel(reservation)
-            await reservation.confirm()
+            await self._prepare_and_confirm_or_cancel(reservation)
 
     @override
     async def open_or_create_collection(
@@ -347,9 +346,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 except VectorStoreCollectionAlreadyExistsError as err:
                     lost_race = err
                     continue
-                await self._prepare_storage_or_cancel(reservation)
                 try:
-                    registration = await reservation.confirm()
+                    registration = await self._prepare_and_confirm_or_cancel(
+                        reservation
+                    )
                 except VectorStoreCollectionDeletedError as err:
                     lost_race = err
                     continue
@@ -362,16 +362,21 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 f"no progress after {_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
             ) from lost_race
 
-    async def _prepare_storage_or_cancel(self, reservation: Reservation) -> None:
-        """Prepare a reserved collection's storage, cancelling the reservation if that raises or the creation is cancelled.
+    async def _prepare_and_confirm_or_cancel(
+        self, reservation: Reservation
+    ) -> Registration:
+        """Prepare a reserved collection's storage and confirm the reservation, cancelling it if either raises or the creation is cancelled.
 
-        A collection whose reservation the registry cannot cancel then stays
-        pending until it is deleted.
+        The cancel acts only on a pending collection, so a confirmation that
+        committed before its failure or cancellation was observed stands. A
+        collection whose reservation the registry cannot cancel stays pending
+        until it is deleted.
         """
         try:
             await self._prepare_storage(
                 reservation.namespace, reservation.config, reservation.incarnation
             )
+            return await reservation.confirm()
         except BaseException:
             # Shielded, so a cancelled creation still frees the name. The task
             # reports its own failure, since a creation cancelled again stops
@@ -384,8 +389,8 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
                 if not task.cancelled() and task.exception() is not None:
                     logger.exception(
                         "Could not cancel the reservation of collection (%r, %r) "
-                        "after its storage preparation failed; it stays pending "
-                        "until deleted",
+                        "after its creation failed or was cancelled; it stays "
+                        "pending until deleted",
                         reservation.namespace,
                         reservation.name,
                         exc_info=task.exception(),
