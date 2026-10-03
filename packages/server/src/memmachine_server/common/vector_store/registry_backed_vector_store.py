@@ -380,8 +380,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                 with contextlib.suppress(VectorStorePartitionPendingError):
                     await self._checked_entry(partition_key)
                 raise
-            await self._prepare_partition_storage_or_cancel(reservation)
-            await reservation.confirm()
+            await self._prepare_and_confirm_or_cancel(reservation)
 
     @override
     async def open_or_create_partition(self, partition_key: str) -> PartitionT:
@@ -416,9 +415,10 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                 except VectorStorePartitionAlreadyExistsError as err:
                     lost_race = err
                     continue
-                await self._prepare_partition_storage_or_cancel(reservation)
                 try:
-                    registration = await reservation.confirm()
+                    registration = await self._prepare_and_confirm_or_cancel(
+                        reservation
+                    )
                 except VectorStorePartitionDeletedError as err:
                     lost_race = err
                     continue
@@ -432,18 +432,21 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                 f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
             ) from lost_race
 
-    async def _prepare_partition_storage_or_cancel(
+    async def _prepare_and_confirm_or_cancel(
         self, reservation: Reservation
-    ) -> None:
-        """Prepare a reserved partition's storage, cancelling the reservation if that raises or the creation is cancelled.
+    ) -> Registration:
+        """Prepare a reserved partition's storage and confirm the reservation, cancelling it if either raises or the creation is cancelled.
 
-        A partition whose reservation the registry cannot cancel then stays
-        pending until it is deleted.
+        The cancel acts only on a pending partition, so a confirmation that
+        committed before its failure or cancellation was observed stands. A
+        partition whose reservation the registry cannot cancel stays pending
+        until it is deleted.
         """
         try:
             await self._prepare_partition_storage(
                 reservation.partition_key, reservation.incarnation
             )
+            return await reservation.confirm()
         except BaseException:
             # Shielded, so a cancelled creation still frees the key. The task
             # reports its own failure, since a creation cancelled again stops
@@ -456,8 +459,8 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                 if not task.cancelled() and task.exception() is not None:
                     logger.exception(
                         "Could not cancel the reservation of partition %r of "
-                        "vector store %r after its storage preparation failed; "
-                        "it stays pending until deleted",
+                        "vector store %r after its creation failed or was "
+                        "cancelled; it stays pending until deleted",
                         reservation.partition_key,
                         self._vector_store_name,
                         exc_info=task.exception(),
