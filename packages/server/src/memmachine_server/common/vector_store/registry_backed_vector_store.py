@@ -445,29 +445,37 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
                 reservation.partition_key, reservation.incarnation
             )
         except BaseException:
-            # Shielded, so a cancelled creation still frees the key.
+            # Shielded, so a cancelled creation still frees the key. The task
+            # reports its own failure, since a creation cancelled again stops
+            # awaiting it before it ends.
             cancellation = asyncio.create_task(reservation.cancel())
             self._cancellations.add(cancellation)
-            cancellation.add_done_callback(self._cancellations.discard)
-            try:
+
+            def finish(task: asyncio.Task[None]) -> None:
+                self._cancellations.discard(task)
+                if not task.cancelled() and task.exception() is not None:
+                    logger.exception(
+                        "Could not cancel the reservation of partition %r of "
+                        "vector store %r after its storage preparation failed; "
+                        "it stays pending until deleted",
+                        reservation.partition_key,
+                        self._vector_store_name,
+                        exc_info=task.exception(),
+                    )
+
+            cancellation.add_done_callback(finish)
+            with contextlib.suppress(Exception):
                 await asyncio.shield(cancellation)
-            except Exception:
-                logger.exception(
-                    "Could not cancel the reservation of partition %r of vector "
-                    "store %r after its storage preparation failed; it stays "
-                    "pending until deleted",
-                    reservation.partition_key,
-                    self._vector_store_name,
-                )
             raise
 
     @override
     async def get_partition(self, partition_key: str) -> PartitionT | None:
         require_partition_key(partition_key)
-        registration = await self._checked_entry(partition_key)
-        if registration is None:
-            return None
-        return self._partition_handle(registration)
+        async with self._tracker("get_partition"):
+            registration = await self._checked_entry(partition_key)
+            if registration is None:
+                return None
+            return self._partition_handle(registration)
 
     async def _checked_entry(self, partition_key: str) -> Registration | None:
         """
@@ -517,14 +525,8 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     @override
     async def purge_deleted_partitions(self) -> bool:
         # One purge round per call, on a due tombstone.
-        async with (
-            self._tracker("purge_deleted_partitions"),
-            self._partition_registry.claim_purgeable_incarnation() as claim,
-        ):
-            if claim is None:
-                return False
-            claim.any_records_found = await self._purge_round(claim.incarnation)
-            return True
+        async with self._tracker("purge_deleted_partitions"):
+            return await self._partition_registry.run_purge_round(self._purge_round)
 
     @abstractmethod
     async def _prepare_storage(self) -> None:
