@@ -230,11 +230,13 @@ makes the partition live:
   pending, a `create_partition` of the key raises
   `VectorStorePartitionAlreadyExistsError`, and open-or-create waits for it.
   `None` from `get_partition` means only that no partition holds the key.
-- A preparation that raises, or is cancelled, cancels the reservation when
-  the registry can, which frees the key and queues the incarnation's
-  tombstone. The reservation's cancellation is shielded, so a cancellation of
-  the creation does not cut it short. Otherwise, and after a crash, the
-  partition stays pending until it is deleted like any other.
+- A preparation or confirmation that raises, or is cancelled, cancels the
+  reservation when the registry can, which frees the key and queues the
+  incarnation's tombstone; a confirmation that committed before its failure
+  was observed stands, since the cancel acts only on a pending partition. The
+  reservation's cancellation is shielded, so a cancellation of the creation
+  does not cut it short. Otherwise, and after a crash, the partition stays
+  pending until it is deleted like any other.
 - Whatever a failed or interrupted preparation leaves is recoverable: the
   partition's own storage is reclaimed by its incarnation's purge rounds once
   the pending partition is deleted. The storage a store's partitions share is
