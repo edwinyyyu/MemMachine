@@ -39,7 +39,7 @@ through SQLAlchemy. The backend keeps only records, each carrying the
 - `VectorStorePartitionRegistry` (`common/vector_store/partition_registry/`)
   is the ABC. A registry belongs to one store and is addressed by partition
   key. Its operations are `startup`, `reserve`, `resolve`, `unregister` and
-  `claim_purgeable_incarnation`.
+  `run_purge_round`.
 - `Reservation` and `Registration` are handles on one life of a partition (see
   [Reservations and registrations](#reservations-and-registrations)).
 - `SQLAlchemyVectorStorePartitionRegistry` is the one implementation. It
@@ -85,7 +85,7 @@ reservation, or a registration.
 
 | Object | Operations | Answered by |
 |---|---|---|
-| `VectorStorePartitionRegistry` | `reserve`, `resolve`, `unregister` (by key), `claim_purgeable_incarnation` | |
+| `VectorStorePartitionRegistry` | `reserve`, `resolve`, `unregister` (by key), `run_purge_round` | |
 | `Reservation` | `confirm`, `cancel` | `reserve` |
 | `Registration` | `require_current` | `resolve`, `confirm` |
 
@@ -213,7 +213,7 @@ was lost. Racing deleters serialize on the row's write lock and the loser
 deletes nothing, on PostgreSQL and SQLite alike, so a deletion is idempotent
 and queues one tombstone.
 
-**`claim_purgeable_incarnation()`** is described in
+**`run_purge_round()`** is described in
 [purge](vector_store_purge.md).
 
 ### Creation
@@ -272,7 +272,7 @@ the same key is a new life the old handle cannot reach.
 
 - An upsert or query calls its registration's `require_current` once its
   inputs are checked and before its remote call; one with nothing to send (no
-  records, no query vectors, a limit of 0) checks too.
+  records, no query vectors) checks too.
 - An upsert checks again after the remote call, so an upsert that completed
   under an incarnation that died meanwhile raises instead of reporting
   success. A delete checks once, after its remote call: it adds nothing a

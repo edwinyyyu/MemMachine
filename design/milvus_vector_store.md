@@ -291,7 +291,8 @@ both.
 
 ## Consequences
 
-- An existing native Milvus collection created with the earlier schema is not
-  usable by this store and has to be dropped.
+- A native Milvus collection from an earlier release has another name than
+  this store's, so the store neither reads nor purges it; dropping it frees
+  its space.
 - A deployment that raises `common.gracefulTime` lengthens the store's read
   delay, which the tombstone retention must still exceed by far.

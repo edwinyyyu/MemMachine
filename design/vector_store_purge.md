@@ -73,19 +73,23 @@ nothing is due, so a caller drains the queue by calling it until `False`. On
 Qdrant and Milvus a call is one round on the tombstone that came due first;
 both SQLite stores, whose deletion reclaims physically, return `False`.
 
-A round runs inside `claim_purgeable_incarnation()`:
+`run_purge_round()` runs one round:
 
-1. **Claim.** One range on the `enqueued_at` index: the oldest due tombstone
-   that is neither backing off nor dead-lettered, `LIMIT 1`, under `FOR UPDATE
-   SKIP LOCKED`. On PostgreSQL a concurrent purger skips a locked tombstone
-   and takes the next, so purgers on every process split a backlog without
-   coordinating. SQLite holds no row lock, so two purgers can claim one
-   tombstone; that costs a repeated round and nothing more, since by the time
-   any round runs no write can land, so a round finding nothing still proves
-   the incarnation empty.
-2. **Round.** The store looks for records under the incarnation in its
-   native collection, deletes what it finds (per backend, below), and reports
-   whether it found any.
+1. **Claim.** One range on the `(vector_store_name, enqueued_at)` index: the
+   oldest due tombstone that is neither backing off nor dead-lettered,
+   `LIMIT 1`. On PostgreSQL it is selected `FOR UPDATE SKIP LOCKED`: a
+   concurrent purger skips a locked tombstone and takes the next, so purgers
+   on every process split a backlog without coordinating. SQLite has no row
+   locks, so there the claim is an `UPDATE` of the tombstone's row, which
+   opens SQLite's write transaction: purgers serialize at the claim, and
+   rounds run one at a time. SQLite's single write lock is then held across
+   the round's remote deletion, so the registry's other writers wait for it,
+   and past the driver's busy timeout they fail with a locked-database
+   error.
+2. **Round.** The registry calls the store's round with the tombstone's
+   incarnation. The round looks for records under the incarnation in the
+   store's native collection, deletes what it finds (per backend, below), and
+   returns whether it found any.
 3. **Record.** In the claim's transaction: a round that found nothing removes
    the tombstone, which frees the incarnation; a round that found records keeps
    it due and clears its failed rounds.
