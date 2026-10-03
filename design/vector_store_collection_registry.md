@@ -232,8 +232,9 @@ confirms the reservation, which makes the collection live:
 - A preparation or confirmation that raises, or is cancelled, cancels the
   reservation when the registry can, which frees the name and queues the
   incarnation's tombstone; a confirmation that committed before its failure
-  was observed stands, since the cancel acts only on a pending collection. The reservation's cancellation is shielded, so a cancellation
-  of the creation does not cut it short.
+  was observed stands, since the cancel acts only on a pending collection.
+  The reservation's cancellation is shielded, so a cancellation of the
+  creation does not cut it short.
   Otherwise, and after a crash, the collection stays pending until it is
   deleted like any other.
 - Whatever a failed or interrupted preparation leaves is recoverable. Shared
