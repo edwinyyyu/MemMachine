@@ -58,11 +58,11 @@ from .utils import (
     _IDENTIFIER_MAX_BYTES,
     require_declared_types,
     require_dimensions,
+    require_partition_key,
     require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
-    validate_identifier,
 )
 from .vector_store import VectorStore, VectorStorePartition
 
@@ -485,8 +485,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     @override
     async def create_partition(self, partition_key: str) -> None:
-        if not validate_identifier(partition_key):
-            raise ValueError(f"Invalid partition key {partition_key!r}")
+        require_partition_key(partition_key)
 
         async with self._create_session() as session, session.begin():
             if await self._stored_schema(session, partition_key) is not None:
@@ -507,8 +506,7 @@ class SQLiteVecVectorStore(VectorStore):
     async def open_or_create_partition(
         self, partition_key: str
     ) -> VectorStorePartition:
-        if not validate_identifier(partition_key):
-            raise ValueError(f"Invalid partition key {partition_key!r}")
+        require_partition_key(partition_key)
 
         async with self._create_session() as session, session.begin():
             if await self._stored_schema(session, partition_key) is None:
@@ -527,8 +525,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     @override
     async def get_partition(self, partition_key: str) -> VectorStorePartition | None:
-        if not validate_identifier(partition_key):
-            raise ValueError(f"Invalid partition key {partition_key!r}")
+        require_partition_key(partition_key)
 
         async with self._create_session() as session:
             schema = await self._stored_schema(session, partition_key)
@@ -556,8 +553,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     @override
     async def delete_partition(self, partition_key: str) -> None:
-        if not validate_identifier(partition_key):
-            raise ValueError(f"Invalid partition key {partition_key!r}")
+        require_partition_key(partition_key)
 
         async with self._create_session() as session, session.begin():
             exists = (

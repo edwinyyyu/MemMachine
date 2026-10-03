@@ -1,6 +1,7 @@
 """Tests of RegistryBackedVectorStore's creation flow, on a store whose partition storage preparation the test controls."""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import override
 from uuid import UUID
@@ -324,6 +325,78 @@ async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives
     release.set()
     await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
     assert await store.get_partition(KEY) is None
+
+
+@pytest.mark.asyncio
+async def test_every_lifecycle_call_is_tracked(store, monkeypatch):
+    tracked: list[str] = []
+    tracker = store._tracker
+
+    def recording(operation: str):
+        tracked.append(operation)
+        return tracker(operation)
+
+    monkeypatch.setattr(store, "_tracker", recording)
+    await store.create_partition(KEY)
+    await store.get_partition(KEY)
+    await store.open_or_create_partition(KEY)
+    await store.delete_partition(KEY)
+    await store.purge_deleted_partitions()
+
+    assert tracked == [
+        "create_partition",
+        "get_partition",
+        "open_or_create_partition",
+        "delete_partition",
+        "purge_deleted_partitions",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_that_fails_after_its_creation_stopped_waiting_is_still_reported(
+    store, monkeypatch, caplog
+):
+    """A creation cancelled again stops awaiting the reservation's cancel; the
+    cancel's failure is still logged, naming the partition."""
+    started = asyncio.Event()
+    cancelling = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hangs(partition_key, incarnation) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def fails_late(reservation) -> None:
+        cancelling.set()
+        await release.wait()
+        raise ConnectionError("the registry is unreachable")
+
+    store.prepare = hangs
+    monkeypatch.setattr(
+        sqlalchemy_partition_registry._SQLAlchemyReservation, "cancel", fails_late
+    )
+    creating = asyncio.create_task(store.create_partition(KEY))
+    await started.wait()
+    creating.cancel()
+    await asyncio.wait_for(cancelling.wait(), 5)
+    creating.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+    with caplog.at_level(logging.ERROR):
+        release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*store._cancellations, return_exceptions=True), 5
+        )
+        await asyncio.sleep(0)
+    assert [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and repr(KEY) in r.getMessage()
+        and isinstance(r.exc_info[1], ConnectionError)
+    ]
+    assert not store._cancellations
 
 
 @pytest.mark.asyncio
