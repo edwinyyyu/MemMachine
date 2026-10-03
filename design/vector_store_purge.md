@@ -82,10 +82,14 @@ both SQLite stores, whose deletion reclaims physically, return `False`.
    on every process split a backlog without coordinating. SQLite has no row
    locks, so there the claim is an `UPDATE` of the tombstone's row, which
    opens SQLite's write transaction: purgers serialize at the claim, and
-   rounds run one at a time. SQLite's single write lock is then held across
-   the round's remote deletion, so the registry's other writers wait for it,
-   and past the driver's busy timeout they fail with a locked-database
-   error.
+   rounds run one at a time. SQLite's write lock covers the whole database
+   file and is then held across the round's remote calls, each bounded by the
+   store's request timeout (30 s by default). Every writer to that database
+   waits for it: the registry's, and those of every store sharing the
+   database, as the episode store, session manager, segment store and
+   configuration database do under the configuration wizard's defaults. Past
+   the driver's busy timeout (SQLite's 5 s default, which the server does not
+   change) they fail with a locked-database error.
 2. **Round.** The registry calls the store's round with the tombstone's
    incarnation. The round looks for records under the incarnation in the
    store's native collection, deletes what it finds (per backend, below), and
