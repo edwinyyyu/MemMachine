@@ -79,6 +79,13 @@ episodic_memory:
     segment_store: profile_storage
 ```
 
+Upgrading does not carry existing vector store data over. The stores name
+their native collections by vector store name, which no earlier release did,
+so an existing Qdrant or Milvus collection stays as it is: no search reads it
+and no purge reaches it. Drop the existing collections, before or after
+upgrading, to free their space. The SQLite stores' tables are named anew too,
+and their existing data is likewise left in place.
+
 ## neo4j
 Neo4j is a leading **graph database**, which means it's specially designed to store and manage highly connected data. Instead of rows and columns, Neo4j works with three fundamental building blocks:
 

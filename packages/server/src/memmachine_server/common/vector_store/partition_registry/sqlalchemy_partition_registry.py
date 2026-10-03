@@ -11,8 +11,6 @@ PostgreSQL a purge claim is a row lock.
 
 import logging
 import sqlite3
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import override
@@ -59,7 +57,7 @@ from memmachine_server.common.vector_store.utils import (
 )
 
 from .partition_registry import (
-    PurgeClaim,
+    PurgeRound,
     Registration,
     Reservation,
     VectorStorePartitionRegistry,
@@ -381,71 +379,86 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
         )
 
     @override
-    @asynccontextmanager
-    async def claim_purgeable_incarnation(
-        self,
-    ) -> AsyncGenerator[PurgeClaim | None, None]:
+    async def run_purge_round(self, purge_round: PurgeRound) -> bool:
         # The retention is applied when a claim is decided, on the database
         # clock, so a changed retention applies to every tombstone. On
-        # PostgreSQL the claim is a row lock held for the body, which a
-        # concurrent purger skips; on SQLite two purgers may run the same
-        # round. A round that raises rolls back, then counts against
-        # the tombstone in a transaction of its own.
+        # PostgreSQL the claim is a row lock held for the round, which a
+        # concurrent purger skips; on SQLite it is a write, so purgers
+        # serialize at the claim and SQLite's write lock is held for the
+        # round. A round that raises rolls back, then counts against the
+        # tombstone in a transaction of its own.
+        eligible = (
+            PurgeQueueRow.vector_store_name == self._vector_store_name,
+            PurgeQueueRow.enqueued_at <= self._retention_cutoff(),
+            PurgeQueueRow.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
+            or_(
+                PurgeQueueRow.failed_rounds == 0,
+                PurgeQueueRow.last_failed_at <= self._backoff_cutoff(),
+            ),
+        )
+        claimed_columns = (PurgeQueueRow.incarnation, PurgeQueueRow.failed_rounds)
+        if self._is_sqlite:
+            # As the segment store's purge claim: the row UPDATE opens the
+            # write transaction, so a racing purger waits here until this
+            # round ends. RETURNING resolves the claim in the same round trip.
+            oldest_due = (
+                select(PurgeQueueRow.incarnation)
+                .where(*eligible)
+                .order_by(PurgeQueueRow.enqueued_at)
+                .limit(1)
+                .scalar_subquery()
+            )
+            claim = (
+                update(PurgeQueueRow)
+                .where(PurgeQueueRow.incarnation == oldest_due)
+                .values(incarnation=PurgeQueueRow.incarnation)
+                .returning(*claimed_columns)
+            )
+        else:
+            claim = (
+                select(*claimed_columns)
+                .where(*eligible)
+                .order_by(PurgeQueueRow.enqueued_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
         claimed: UUID | None = None
         try:
             async with self._engine.begin() as connection:
-                row = (
-                    await connection.execute(
-                        select(PurgeQueueRow.incarnation, PurgeQueueRow.failed_rounds)
-                        .where(
-                            PurgeQueueRow.vector_store_name == self._vector_store_name,
-                            PurgeQueueRow.enqueued_at <= self._retention_cutoff(),
-                            PurgeQueueRow.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
-                            or_(
-                                PurgeQueueRow.failed_rounds == 0,
-                                PurgeQueueRow.last_failed_at <= self._backoff_cutoff(),
-                            ),
-                        )
-                        .order_by(PurgeQueueRow.enqueued_at)
-                        .limit(1)
-                        .with_for_update(skip_locked=True)
-                    )
-                ).one_or_none()
+                row = (await connection.execute(claim)).one_or_none()
                 if row is None:
-                    yield None
-                    return
+                    return False
                 claimed = row.incarnation
-                claim = PurgeClaim(incarnation=row.incarnation)
-                yield claim
-                await self._record_round(connection, claim, row.failed_rounds)
+                any_records_found = await purge_round(row.incarnation)
+                await self._record_round(
+                    connection, row.incarnation, row.failed_rounds, any_records_found
+                )
+                return True
         except Exception as error:
             if claimed is not None:
                 await self._count_failed_round(claimed, error)
             raise
 
     async def _record_round(
-        self, connection: AsyncConnection, claim: PurgeClaim, failed_rounds: int
+        self,
+        connection: AsyncConnection,
+        incarnation: UUID,
+        failed_rounds: int,
+        any_records_found: bool,
     ) -> None:
         """Record a purge round's outcome, in the claim's transaction.
 
         A round that found no records removes the tombstone; one that found
         records resets its count of failed rounds.
         """
-        if claim.any_records_found is None:
-            raise RuntimeError(
-                f"Purge round for incarnation {claim.incarnation} ended "
-                "without setting any_records_found"
-            )
-        if not claim.any_records_found:
+        if not any_records_found:
             await connection.execute(
-                delete(PurgeQueueRow).where(
-                    PurgeQueueRow.incarnation == claim.incarnation
-                )
+                delete(PurgeQueueRow).where(PurgeQueueRow.incarnation == incarnation)
             )
         elif failed_rounds:
             await connection.execute(
                 update(PurgeQueueRow)
-                .where(PurgeQueueRow.incarnation == claim.incarnation)
+                .where(PurgeQueueRow.incarnation == incarnation)
                 .values(failed_rounds=0)
             )
 
@@ -463,7 +476,9 @@ class SQLAlchemyVectorStorePartitionRegistry(VectorStorePartitionRegistry):
                     .returning(PurgeQueueRow.failed_rounds)
                 )
             ).scalar_one_or_none()
-        if failed_rounds == _MAX_FAILED_PURGE_ROUNDS:
+        # The claim takes only tombstones under the bound, so this one is now
+        # dead-lettered.
+        if failed_rounds is not None and failed_rounds >= _MAX_FAILED_PURGE_ROUNDS:
             logger.error(
                 "Purge of incarnation %s failed %d rounds in a row and is "
                 "dead-lettered: its records stay and it is no longer claimed. "
