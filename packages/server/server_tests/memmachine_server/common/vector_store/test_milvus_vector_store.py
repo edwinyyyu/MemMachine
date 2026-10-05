@@ -21,6 +21,8 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 AsyncMilvusClient = pymilvus.AsyncMilvusClient
 
+from pymilvus.client.types import ConsistencyLevel
+
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
@@ -968,6 +970,58 @@ class TestScores:
             expected_scores, abs=1e-3
         )
         await store.delete_collection(namespace=NAMESPACE, name=name)
+
+
+# The client's reads; each takes an optional consistency level.
+_CLIENT_READS = ("search", "query", "get", "hybrid_search")
+# The levels at which a read reflects every write that returned at least
+# common.gracefulTime before it, given by name or by value.
+_BOUNDED_OR_STRONGER = {
+    "Bounded",
+    "Strong",
+    ConsistencyLevel.Bounded,
+    ConsistencyLevel.Strong,
+}
+
+
+class TestConsistency:
+    @pytest.mark.asyncio
+    async def test_the_store_reads_at_bounded_or_stronger(self, store, monkeypatch):
+        """The native collection reads at Bounded, and no read of the store
+        names a weaker level, so a read lags writes by at most
+        common.gracefulTime: the purge and the tombstone retention rely on it."""
+        # Its own namespace, so the store creates the native collection.
+        namespace = "bounded_namespace"
+        spies = {}
+        for name in _CLIENT_READS:
+            spies[name] = MagicMock(wraps=getattr(store._client, name))
+            monkeypatch.setattr(store._client, name, spies[name])
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+
+        await store.create_collection(
+            namespace=namespace, name="bounded", config=config
+        )
+        coll = await store.open_collection(namespace=namespace, name="bounded")
+        assert coll is not None
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await coll.upsert(records=[record])
+        await _settle(coll)
+        await coll.query(query_vectors=[record.vector], limit=1)
+        await store.delete_collection(namespace=namespace, name="bounded")
+        while await store.purge_deleted_collections():
+            pass
+
+        description = await store._client.describe_collection(
+            coll._native_collection_name
+        )
+        assert description["consistency_level"] == ConsistencyLevel.Bounded
+        calls = [
+            (name, call) for name, spy in spies.items() for call in spy.call_args_list
+        ]
+        assert calls
+        for name, call in calls:
+            level = call.kwargs.get("consistency_level")
+            assert level is None or level in _BOUNDED_OR_STRONGER, (name, call)
 
 
 class TestDelete:
