@@ -573,13 +573,14 @@ def _milvus_only_conf() -> MagicMock:
 @pytest.mark.asyncio
 @requires_pymilvus
 async def test_milvus_client_kwargs_forwarded():
-    """uri, token, and db_name are forwarded to AsyncMilvusClient."""
+    """uri, token, db_name and the request timeout are forwarded to AsyncMilvusClient."""
     conf = _milvus_only_conf()
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
         uri="https://example.zillizcloud.com",
         token=SecretStr("secret-token"),
         db_name="memory",
+        request_timeout_seconds=7,
     )
 
     mock_client = AsyncMock()
@@ -603,7 +604,7 @@ async def test_milvus_client_kwargs_forwarded():
     assert call_kwargs["uri"] == "https://example.zillizcloud.com"
     assert call_kwargs["token"] == "secret-token"
     assert call_kwargs["db_name"] == "memory"
-    assert call_kwargs["timeout"] == 30
+    assert call_kwargs["timeout"] == 7
 
 
 @pytest.mark.asyncio
@@ -656,6 +657,9 @@ async def test_milvus_creates_vector_store():
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
         tombstone_retention_seconds=3600,
+        request_timeout_seconds=7,
+        max_varchar_length=2048,
+        purge_batch_size=500,
     )
 
     mock_client = AsyncMock()
@@ -689,9 +693,9 @@ async def test_milvus_creates_vector_store():
     mock_params_cls.assert_called_once_with(
         client=mock_client,
         collection_registry=mock_registry_cls.return_value,
-        request_timeout_seconds=30,
-        max_varchar_length=65535,
-        purge_batch_size=10000,
+        request_timeout_seconds=7,
+        max_varchar_length=2048,
+        purge_batch_size=500,
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()

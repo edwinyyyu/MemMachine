@@ -132,6 +132,8 @@ def db_conf_dict() -> dict:
                     "db_name": "memory",
                     "collection_registry": "main_postgres",
                     "request_timeout_seconds": 7,
+                    "max_varchar_length": 2048,
+                    "purge_batch_size": 500,
                 },
             },
             "my_sqlite_vs": {
@@ -216,6 +218,8 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.db_name == "memory"
     assert milvus_conf.collection_registry == "main_postgres"
     assert milvus_conf.request_timeout_seconds == 7
+    assert milvus_conf.max_varchar_length == 2048
+    assert milvus_conf.purge_batch_size == 500
 
     # SQLiteVectorStore (hnswlib engine)
     sqlite_vs_conf = storage_conf.sqlite_vector_store_confs["my_sqlite_vs"]
@@ -321,6 +325,12 @@ def test_milvus_conf_rejects_invalid_values():
 def test_milvus_conf_rejects_a_milvus_lite_file():
     with pytest.raises(ValueError, match="Milvus Lite files are not supported"):
         MilvusConf(collection_registry="db", uri="./milvus.db")
+
+
+@pytest.mark.parametrize("setting", ["max_varchar_length", "purge_batch_size"])
+def test_milvus_conf_rejects_a_length_or_batch_size_that_is_not_positive(setting):
+    with pytest.raises(ValueError, match=setting):
+        MilvusConf(collection_registry="db", **{setting: 0})
 
 
 def test_milvus_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():
