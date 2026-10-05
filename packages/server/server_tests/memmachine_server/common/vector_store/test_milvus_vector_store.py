@@ -1790,6 +1790,30 @@ class TestPurgeBatches:
 
 class TestPurge:
     @pytest.mark.asyncio
+    async def test_a_purge_round_on_a_dropped_native_collection_retires_the_tombstone(
+        self, store
+    ):
+        """A deleted partition whose native collection is gone holds nothing:
+        its purge round raises nothing and removes the tombstone."""
+        # A name of its own, so dropping its native collection spares the others.
+        dropped = await _started_store(
+            store._client,
+            store._partition_registry._engine,
+            vector_store_name="dropped_native",
+        )
+        await dropped.create_partition("dropped")
+        partition = await dropped.get_partition("dropped")
+        assert partition is not None
+        await partition.upsert(
+            records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))]
+        )
+        await dropped.delete_partition("dropped")
+        await store._client.drop_collection(dropped._collection_name)
+
+        await _drain(dropped)
+        assert await dropped.purge_deleted_partitions() is False
+
+    @pytest.mark.asyncio
     async def test_purgers_on_two_stores_reclaim_the_deleted_partitions_alone(
         self, store, other_store
     ):

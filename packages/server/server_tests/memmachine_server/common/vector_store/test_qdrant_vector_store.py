@@ -1446,6 +1446,31 @@ class TestPurge:
         assert await store.purge_deleted_partitions() is False
 
     @pytest.mark.asyncio
+    async def test_a_purge_round_on_a_dropped_native_collection_retires_the_tombstone(
+        self, any_qdrant_client, registry_engine
+    ):
+        """A deleted partition whose native collection is gone holds nothing:
+        its purge round raises nothing and removes the tombstone."""
+        # A name of its own, so dropping its native collection spares the others.
+        dropped = QdrantVectorStore(
+            await _params(
+                any_qdrant_client, registry_engine, vector_store_name="dropped_native"
+            )
+        )
+        await dropped.startup()
+        await dropped.create_partition("dropped")
+        partition = await dropped.get_partition("dropped")
+        assert partition is not None
+        await partition.upsert(
+            records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))]
+        )
+        await dropped.delete_partition("dropped")
+        await any_qdrant_client.delete_collection(dropped.vector_store_name)
+
+        await _drain(dropped)
+        assert await dropped.purge_deleted_partitions() is False
+
+    @pytest.mark.asyncio
     async def test_a_write_landing_after_a_purge_round_is_reclaimed_by_the_next(
         self, store
     ):
