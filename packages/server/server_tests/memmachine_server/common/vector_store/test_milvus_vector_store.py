@@ -42,6 +42,7 @@ from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.collection_registry import (
     Registration,
+    VectorStoreCollectionRegistry,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -63,9 +64,10 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "milvus_test"
-REQUEST_TIMEOUT_SECONDS = 30
+# Settings other than their defaults, so a default in their place shows.
+REQUEST_TIMEOUT_SECONDS = 17
 MAX_VARCHAR_LENGTH = 1024
-PURGE_BATCH_SIZE = 10000
+PURGE_BATCH_SIZE = 5000
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -374,8 +376,7 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     await coll.delete(record_uuids=[record.uuid])
     await store.delete_collection(namespace=namespace, name="timed")
     # The purge finds the record the deletion left and reclaims it.
-    while await store.purge_deleted_collections():
-        pass
+    await _drain(store)
 
     assert {name for name, spy in spies.items() if spy.call_count} >= set(
         _CLIENT_REQUESTS
@@ -383,6 +384,18 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     for name, spy in spies.items():
         for call in spy.call_args_list:
             assert call.kwargs.get("timeout") == REQUEST_TIMEOUT_SECONDS, (name, call)
+
+
+@pytest.mark.parametrize(
+    "setting", ["request_timeout_seconds", "max_varchar_length", "purge_batch_size"]
+)
+def test_a_setting_that_is_not_positive_is_refused(setting):
+    with pytest.raises(ValueError, match=setting):
+        MilvusVectorStoreParams(
+            client=MagicMock(spec=AsyncMilvusClient),
+            collection_registry=MagicMock(spec=VectorStoreCollectionRegistry),
+            **{setting: 0},
+        )
 
 
 @pytest_asyncio.fixture
