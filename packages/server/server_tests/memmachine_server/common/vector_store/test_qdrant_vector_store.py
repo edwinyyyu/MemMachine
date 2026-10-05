@@ -2061,8 +2061,9 @@ class TestCollectionLifecycleAcrossWorkers:
     """Collection creation has to survive more than one creator.
 
     Stores on separate clients can share one registry database, so two can
-    decide to create the same collection at the same moment, and one can find
-    the native collection already there without its indexes.
+    decide to create the same collection at the same moment, two creating
+    collections that share a native collection prepare it at once, and one
+    can find the native collection already there without its indexes.
     """
 
     @staticmethod
@@ -2114,15 +2115,29 @@ class TestCollectionLifecycleAcrossWorkers:
             await store.delete_collection(namespace=namespace, name=name)
             await qdrant_client.delete_collection(native)
 
+    @staticmethod
+    def _together(monkeypatch, targets: list, attribute: str) -> None:
+        """Make each target's `attribute` wait until every target has called it, so the calls overlap."""
+        barrier = asyncio.Barrier(len(targets))
+        for target in targets:
+            method = getattr(target, attribute)
+
+            async def together(*args, method=method, **kwargs):
+                await barrier.wait()
+                return await method(*args, **kwargs)
+
+            monkeypatch.setattr(target, attribute, together)
+
     @pytest.mark.asyncio
     async def test_two_workers_creating_at_once_agree_on_one_collection(
-        self, new_qdrant_client, registry_engine
+        self, new_qdrant_client, registry_engine, monkeypatch
     ):
         """Two clients, one registry - the multi-worker shape, in one process.
 
-        Both open-or-creates must return a usable handle bound to the one
-        incarnation, the collection they agree on must end up indexed, and
-        a strict create both issue at once is created once.
+        Both workers find the name free and reserve it at once. Both
+        open-or-creates return a handle on the one collection, so a record
+        written through either is read through the other, and of a strict
+        create both issue at once exactly one succeeds.
         """
         client_a = new_qdrant_client()
         client_b = new_qdrant_client()
@@ -2134,47 +2149,100 @@ class TestCollectionLifecycleAcrossWorkers:
         store_b = QdrantVectorStore(await _params(client_b, registry_engine))
         await store_a.startup()
         await store_b.startup()
+        self._together(
+            monkeypatch,
+            [store_a._collection_registry, store_b._collection_registry],
+            "reserve",
+        )
 
         try:
-            results = await asyncio.gather(
-                store_a.open_or_create_collection(
-                    namespace=namespace, name=name, config=config
-                ),
-                store_b.open_or_create_collection(
-                    namespace=namespace, name=name, config=config
-                ),
-                return_exceptions=True,
-            )
+            async with asyncio.timeout(60):
+                results = await asyncio.gather(
+                    store_a.open_or_create_collection(
+                        namespace=namespace, name=name, config=config
+                    ),
+                    store_b.open_or_create_collection(
+                        namespace=namespace, name=name, config=config
+                    ),
+                    return_exceptions=True,
+                )
             handles = [r for r in results if isinstance(r, QdrantVectorStoreCollection)]
             assert len(handles) == 2, f"a concurrent creator raised: {results!r}"
-            assert handles[0]._incarnation == handles[1]._incarnation
-
-            info = await client_a.get_collection(native)
-            indexed = set(info.payload_schema or {})
-            assert _PAYLOAD_INCARNATION in indexed, (
-                "two workers raced and the tenant incarnation index is missing. "
-                "present: "
-                f"{sorted(indexed)}"
-            )
+            record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+            await handles[0].upsert(records=[record])
+            [result] = await handles[1].query(query_vectors=[record.vector], limit=10)
+            assert [match.record_uuid for match in result.matches] == [record.uuid]
 
             # The registry's primary key arbitrates a strict create: one
             # creator wins, the other gets AlreadyExists.
             await store_a.delete_collection(namespace=namespace, name=name)
-            results = await asyncio.gather(
-                store_a.create_collection(
-                    namespace=namespace, name=name, config=config
-                ),
-                store_b.create_collection(
-                    namespace=namespace, name=name, config=config
-                ),
-                return_exceptions=True,
-            )
+            async with asyncio.timeout(60):
+                results = await asyncio.gather(
+                    store_a.create_collection(
+                        namespace=namespace, name=name, config=config
+                    ),
+                    store_b.create_collection(
+                        namespace=namespace, name=name, config=config
+                    ),
+                    return_exceptions=True,
+                )
             assert sorted(type(r).__name__ for r in results) == [
                 "NoneType",
                 "VectorStoreCollectionAlreadyExistsError",
             ], results
         finally:
             await store_a.delete_collection(namespace=namespace, name=name)
+            await client_a.delete_collection(native)
+            await client_a.close()
+            await client_b.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prefer_grpc", [False, True], ids=["rest", "grpc"])
+    async def test_two_collections_preparing_shared_storage_at_once_both_succeed(
+        self, new_qdrant_client, registry_engine, monkeypatch, prefer_grpc
+    ):
+        """Two workers create two collections of one namespace and
+        configuration at once, so both prepare the native collection they
+        share at the same moment. Both creations succeed, and each
+        collection holds its own records."""
+        client_a = new_qdrant_client(prefer_grpc=prefer_grpc)
+        client_b = new_qdrant_client(prefer_grpc=prefer_grpc)
+        namespace = f"race_storage_{'grpc' if prefer_grpc else 'rest'}"
+        config = self._config()
+        native = QdrantVectorStore._build_native_collection_name(namespace, config)
+
+        store_a = QdrantVectorStore(await _params(client_a, registry_engine))
+        store_b = QdrantVectorStore(await _params(client_b, registry_engine))
+        await store_a.startup()
+        await store_b.startup()
+        self._together(monkeypatch, [store_a, store_b], "_prepare_storage")
+
+        try:
+            async with asyncio.timeout(60):
+                await asyncio.gather(
+                    store_a.create_collection(
+                        namespace=namespace, name="first", config=config
+                    ),
+                    store_b.create_collection(
+                        namespace=namespace, name="second", config=config
+                    ),
+                )
+            first = await store_b.open_collection(namespace=namespace, name="first")
+            second = await store_a.open_collection(namespace=namespace, name="second")
+            assert first is not None
+            assert second is not None
+            records = {
+                collection: _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+                for collection in (first, second)
+            }
+            for collection, record in records.items():
+                await collection.upsert(records=[record])
+            for collection, record in records.items():
+                [result] = await collection.query(
+                    query_vectors=[record.vector], limit=10
+                )
+                assert [match.record_uuid for match in result.matches] == [record.uuid]
+        finally:
             await client_a.delete_collection(native)
             await client_a.close()
             await client_b.close()
