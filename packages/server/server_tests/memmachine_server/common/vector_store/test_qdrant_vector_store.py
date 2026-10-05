@@ -4,7 +4,8 @@ import asyncio
 import math
 import operator
 import random
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ import pytest
 import pytest_asyncio
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
@@ -38,10 +40,13 @@ from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collec
 from memmachine_server.common.vector_store.data_types import (
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionDeletedError,
     VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
     _PAYLOAD_INCARNATION,
@@ -1701,6 +1706,311 @@ class TestAgainstAModel:
             await store.delete_collection(namespace=_MODEL_NAMESPACE, name=name)
         await _drain(store)
         assert await run.count_stored() == run.baseline
+
+
+# ── Concurrent churn across stores sharing one registry ──
+
+
+_CHURN_SEED = 1735
+_CHURN_WORKERS = 8
+_CHURN_STEPS = 50
+_CHURN_OWNED = 4
+_CHURN_NAMES = ("churn_a", "churn_b", "churn_c")
+_CHURN_CONFIG = VectorStoreCollectionConfig(
+    vector_dimensions=VECTOR_DIM, indexed_properties_schema={"owner": int}
+)
+# Bounds the whole churn, so a deadlock fails the test instead of hanging it.
+_CHURN_DEADLINE_SECONDS = 120
+# The outcomes the contract documents for an operation that races another
+# worker's: anything else fails the test.
+_CHURN_DOMAIN_ERRORS = (
+    VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionPendingError,
+    VectorStoreCollectionDeletedError,
+    VectorStoreAttemptsExhaustedError,
+)
+
+
+async def _stored_points(
+    store: QdrantVectorStore, namespace: str, config: VectorStoreCollectionConfig
+) -> set[tuple[UUID, UUID]]:
+    """The (incarnation, record UUID) of every point Qdrant holds for a namespace and configuration."""
+    points, _ = await store._client.scroll(
+        collection_name=QdrantVectorStore._build_native_collection_name(
+            namespace, config
+        ),
+        limit=10000,
+        with_payload=[_PAYLOAD_INCARNATION, _PAYLOAD_RECORD_UUID],
+        with_vectors=False,
+    )
+    return {
+        (
+            UUID(str((point.payload or {})[_PAYLOAD_INCARNATION])),
+            UUID(str((point.payload or {})[_PAYLOAD_RECORD_UUID])),
+        )
+        for point in points
+    }
+
+
+@dataclass
+class _ChurnWorker:
+    """A worker writing only the record UUIDs it owns, so its records in each collection life follow from its own operations.
+
+    `lives` holds, per incarnation, the records it wrote there and has not
+    deleted; `unconfirmed` the records whose upsert raised because the
+    collection was deleted meanwhile, which may have landed.
+    """
+
+    index: int
+    store: QdrantVectorStore
+    namespace: str
+    owned: list[UUID]
+    rng: random.Random
+    deleted: asyncio.Event
+    handles: dict[str, QdrantVectorStoreCollection] = field(default_factory=dict)
+    lives: defaultdict[UUID, dict[UUID, Record]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+    unconfirmed: set[tuple[UUID, UUID]] = field(default_factory=set)
+
+    async def run(self) -> None:
+        operations = {self.upsert: 4, self.delete: 2, self.query: 3, self.drop: 1}
+        for _ in range(_CHURN_STEPS):
+            name = self.rng.choice(_CHURN_NAMES)
+            [operation] = self.rng.choices(
+                list(operations), weights=list(operations.values())
+            )
+            try:
+                await operation(name)
+            except _CHURN_DOMAIN_ERRORS:
+                self.handles.pop(name, None)
+
+    async def handle(self, name: str) -> QdrantVectorStoreCollection:
+        if name not in self.handles:
+            self.handles[name] = await self.store.open_or_create_collection(
+                namespace=self.namespace, name=name, config=_CHURN_CONFIG
+            )
+        return self.handles[name]
+
+    async def upsert(self, name: str) -> None:
+        records = [
+            Record(
+                uuid=record_uuid,
+                vector=_random_vector(self.rng),
+                properties={"owner": self.index},
+            )
+            for record_uuid in self.rng.sample(self.owned, self.rng.randint(1, 3))
+        ]
+        handle = await self.handle(name)
+        try:
+            await handle.upsert(records=records)
+        except VectorStoreCollectionHandleStaleError:
+            self.unconfirmed.update(
+                (handle._incarnation, record.uuid) for record in records
+            )
+            raise
+        self.lives[handle._incarnation].update(
+            {record.uuid: record for record in records}
+        )
+
+    async def delete(self, name: str) -> None:
+        record_uuids = self.rng.sample(self.owned, self.rng.randint(1, 3))
+        handle = await self.handle(name)
+        await handle.delete(record_uuids=record_uuids)
+        for record_uuid in record_uuids:
+            self.lives[handle._incarnation].pop(record_uuid, None)
+
+    async def query(self, name: str) -> None:
+        query = _random_vector(self.rng)
+        handle = await self.handle(name)
+        [result] = await handle.query(
+            query_vectors=[query],
+            limit=len(self.owned),
+            property_filter=Comparison(field="owner", op="=", value=self.index),
+        )
+        found = {match.record_uuid for match in result.matches}
+        own = set(self.lives[handle._incarnation])
+        # Only this worker removes its records from a live collection; the
+        # purge may remove them once the collection is deleted.
+        assert found <= own
+        # A delete of nothing raises once the collection is deleted, so past
+        # it the collection was live throughout the query.
+        await handle.delete(record_uuids=[])
+        assert found == own
+
+    async def drop(self, name: str) -> None:
+        create_again = self.rng.random() < 0.5
+        self.handles.pop(name, None)
+        await self.store.delete_collection(namespace=self.namespace, name=name)
+        self.deleted.set()
+        if create_again:
+            await self.store.create_collection(
+                namespace=self.namespace, name=name, config=_CHURN_CONFIG
+            )
+
+
+@pytest_asyncio.fixture
+async def sqlite_registry_engines(tmp_path):
+    """Two engines on one SQLite registry file, as two processes open it."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
+    engines = [create_async_engine(url) for _ in range(2)]
+    yield engines
+    for engine in engines:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def postgresql_registry_engines(pg_server):
+    """Two engines on one PostgreSQL registry database, as two processes connect to it."""
+    url = URL.create(
+        "postgresql+asyncpg",
+        username=pg_server["user"],
+        password=pg_server["password"],
+        host=pg_server["host"],
+        port=pg_server["port"],
+        database=pg_server["database"],
+    )
+    engines = [create_async_engine(url) for _ in range(2)]
+    yield engines
+    for engine in engines:
+        await engine.dispose()
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+def registry_engines(request):
+    """The registry database's name and two engines on it."""
+    return request.param, request.getfixturevalue(f"{request.param}_registry_engines")
+
+
+async def _stores_sharing_a_registry(
+    clients: list[AsyncQdrantClient], engines: list
+) -> list[QdrantVectorStore]:
+    """One store per client, each with its own registry object and engine on one registry."""
+    # One registry: one vector store name on one database.
+    vector_store_name = f"shared_{uuid4().hex}"
+    stores = []
+    for client, engine in zip(clients, engines, strict=True):
+        collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
+            SQLAlchemyVectorStoreCollectionRegistryParams(
+                engine=engine,
+                vector_store_name=vector_store_name,
+                tombstone_retention_seconds=0,
+            )
+        )
+        await collection_registry.startup()
+        store = QdrantVectorStore(
+            QdrantVectorStoreParams(
+                client=client, collection_registry=collection_registry
+            )
+        )
+        await store.startup()
+        stores.append(store)
+    return stores
+
+
+async def _churn(stores: list[QdrantVectorStore], workers: list[_ChurnWorker]) -> None:
+    """Run the workers to completion beside a purger per store, then drain."""
+    [deleted] = {worker.deleted for worker in workers}
+    quiesced = False
+
+    async def purge(store: QdrantVectorStore) -> None:
+        while True:
+            await deleted.wait()
+            if quiesced:
+                return
+            deleted.clear()
+            await _drain(store)
+
+    async with asyncio.timeout(_CHURN_DEADLINE_SECONDS):
+        async with asyncio.TaskGroup() as purgers:
+            for store in stores:
+                purgers.create_task(purge(store))
+            async with asyncio.TaskGroup() as working:
+                for worker in workers:
+                    working.create_task(worker.run())
+            quiesced = True
+            deleted.set()
+        for store in stores:
+            await _drain(store)
+
+
+async def _assert_churned_state(
+    store: QdrantVectorStore, namespace: str, workers: list[_ChurnWorker]
+) -> None:
+    """Each live collection holds what its workers wrote and kept; a deleted one holds nothing written successfully."""
+    live: set[UUID] = set()
+    for name in _CHURN_NAMES:
+        handle = await store.open_collection(namespace=namespace, name=name)
+        if handle is None:
+            continue
+        live.add(handle._incarnation)
+        expected = {
+            record_uuid
+            for worker in workers
+            for record_uuid in worker.lives[handle._incarnation]
+        }
+        assert await _stored_uuids(handle) == expected, name
+        [result] = await handle.query(
+            query_vectors=[_MODEL_PROBE], limit=_CHURN_WORKERS * _CHURN_OWNED
+        )
+        assert {match.record_uuid for match in result.matches} == expected, name
+
+    unconfirmed = set().union(*(worker.unconfirmed for worker in workers))
+    dead = {
+        point
+        for point in await _stored_points(store, namespace, _CHURN_CONFIG)
+        if point[0] not in live
+    }
+    assert dead <= unconfirmed
+
+
+@pytest.mark.integration
+class TestConcurrentChurn:
+    @pytest.mark.asyncio
+    async def test_two_stores_churning_one_registry_keep_every_collection_exact(
+        self, qdrant_client, qdrant_grpc_client, registry_engines
+    ):
+        """Two stores, on a REST and a gRPC client and their own engines on
+        one registry database, serve workers that upsert, delete and query
+        their own records and delete and create collections of three names,
+        while each store's purger drains whenever a collection is deleted.
+
+        Every operation succeeds or raises a documented domain error, and
+        nothing deadlocks. A query's matches agree with its worker's records
+        whenever the collection was live throughout it. Once the workers stop
+        and the purge is drained, each live collection holds exactly what its
+        workers wrote and did not delete, and no deleted collection's record
+        remains but one whose upsert raised because the collection was
+        deleted while it was in flight: such a write can land after a purge
+        round found the incarnation empty, the race the tombstone retention
+        closes, and the test's retention is zero.
+        """
+        database, engines = registry_engines
+        namespace = f"churn_{database}"
+        stores = await _stores_sharing_a_registry(
+            [qdrant_client, qdrant_grpc_client], engines
+        )
+        pool = sorted(uuid4() for _ in range(_CHURN_WORKERS * _CHURN_OWNED))
+        deleted = asyncio.Event()
+        workers = [
+            _ChurnWorker(
+                index=index,
+                store=stores[index % len(stores)],
+                namespace=namespace,
+                owned=pool[index * _CHURN_OWNED : (index + 1) * _CHURN_OWNED],
+                rng=random.Random(_CHURN_SEED + index),
+                deleted=deleted,
+            )
+            for index in range(_CHURN_WORKERS)
+        ]
+
+        await _churn(stores, workers)
+        await _assert_churned_state(stores[0], namespace, workers)
+
+        for name in _CHURN_NAMES:
+            await stores[0].delete_collection(namespace=namespace, name=name)
+        await _drain(stores[0])
 
 
 # ── Metrics ──
