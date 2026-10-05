@@ -2,9 +2,10 @@
 
 # ruff: noqa: E402
 
+import asyncio
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
 from unittest.mock import AsyncMock, MagicMock
@@ -117,6 +118,30 @@ async def _stored(
         consistency_level="Strong",
     )
     return {UUID(row["record_uuid"]): row for row in rows}
+
+
+async def _incarnation_uuids(
+    client: AsyncMilvusClient, native_collection_name: str, incarnation: UUID
+) -> list[UUID]:
+    """The record UUIDs Milvus holds under an incarnation, once per entity, read past the store at Strong."""
+    rows = await client.query(
+        collection_name=native_collection_name,
+        filter=f'partition_key == "{incarnation}"',
+        output_fields=["record_uuid"],
+        limit=16384,
+        consistency_level="Strong",
+    )
+    return [UUID(row["record_uuid"]) for row in rows]
+
+
+async def _drain(store: MilvusVectorStore) -> None:
+    """Run purge rounds until none is due, failing on a purge that never ends."""
+
+    async def drain() -> None:
+        while await store.purge_deleted_collections():
+            pass
+
+    await asyncio.wait_for(drain(), 60)
 
 
 # Properties of every type, declared and not, for the tests against a model.
@@ -531,31 +556,6 @@ class TestCollectionLifecycle:
 
 class TestUpsertAndQuery:
     @pytest.mark.asyncio
-    async def test_upsert_calls_native_upsert(self, collection, monkeypatch):
-        captured_kwargs = None
-
-        async def tracked_upsert(**kwargs):
-            nonlocal captured_kwargs
-            captured_kwargs = kwargs
-
-        async def fail_insert(*args, **kwargs):
-            pytest.fail("collection upsert must not call AsyncMilvusClient.insert")
-
-        monkeypatch.setattr(collection._client, "upsert", tracked_upsert)
-        monkeypatch.setattr(collection._client, "insert", fail_insert)
-
-        record = _make_record(
-            vector=_normalize([1.0, 0.0, 0.0]),
-            properties={"name": "test"},
-        )
-        await collection.upsert(records=[record])
-        await _settle(collection)
-
-        assert captured_kwargs is not None
-        assert captured_kwargs["collection_name"] == collection._native_collection_name
-        assert captured_kwargs["data"] == [collection._build_entity(record)]
-
-    @pytest.mark.asyncio
     async def test_a_query_may_ask_for_hundreds_of_results(self, collection):
         records = [
             _make_record(vector=_normalize([1.0, float(i), 0.0])) for i in range(3)
@@ -646,6 +646,12 @@ class TestUpsertAndQuery:
             property_filter=IsNull(field="name"),
         )
         assert {match.record_uuid for match in results[0].matches} == {record.uuid}
+        [old] = await collection.query(
+            query_vectors=[v1],
+            limit=10,
+            property_filter=Comparison(field="name", op="=", value="old"),
+        )
+        assert old.matches == []
 
     @pytest.mark.asyncio
     async def test_upsert_failure_preserves_existing_record(
@@ -1038,6 +1044,146 @@ class TestFilterModel:
             }, property_filter
 
         await store.delete_collection(namespace=namespace, name="model")
+
+
+@dataclass
+class _ModelCollections:
+    """Collections of one store, with the records a model says each holds."""
+
+    store: MilvusVectorStore
+    namespace: str
+    handles: dict[str, MilvusVectorStoreCollection]
+    records: dict[str, dict[UUID, Record]]
+    dead_incarnations: list[UUID] = field(default_factory=list)
+
+    async def upsert(self, name: str, batch: list[Record]) -> list[Record]:
+        """Upsert a batch, and return the records it replaced."""
+        await self.handles[name].upsert(records=batch)
+        records = self.records[name]
+        replaced = [records[record.uuid] for record in batch if record.uuid in records]
+        records.update({record.uuid: record for record in batch})
+        return replaced
+
+    async def delete(self, name: str, record_uuids: list[UUID]) -> None:
+        await self.handles[name].delete(record_uuids=record_uuids)
+        for record_uuid in record_uuids:
+            self.records[name].pop(record_uuid, None)
+
+    async def recreate(self, name: str) -> None:
+        self.dead_incarnations.append(self.handles[name]._incarnation)
+        await self.store.delete_collection(namespace=self.namespace, name=name)
+        await self.store.create_collection(
+            namespace=self.namespace, name=name, config=_MODEL_CONFIG
+        )
+        handle = await self.store.open_collection(namespace=self.namespace, name=name)
+        assert handle is not None
+        self.handles[name] = handle
+        self.records[name] = {}
+
+    async def purge(self) -> None:
+        """Drain the purge, and check that no deleted collection's record remains."""
+        await _drain(self.store)
+        for native in {
+            handle._native_collection_name for handle in self.handles.values()
+        }:
+            for incarnation in self.dead_incarnations:
+                assert (
+                    await _incarnation_uuids(self.store._client, native, incarnation)
+                    == []
+                ), incarnation
+
+    async def check(self, rng: random.Random) -> None:
+        """Check what each collection holds, and what its settled queries select."""
+        for name, handle in self.handles.items():
+            records = self.records[name]
+            stored = await _incarnation_uuids(
+                self.store._client,
+                handle._native_collection_name,
+                handle._incarnation,
+            )
+            assert sorted(stored) == sorted(records), name
+            await _settle(handle)
+            assert await _model_matches(handle, None) == set(records), name
+            for _ in range(3):
+                property_filter = _model_filter(rng)
+                assert await _model_matches(handle, property_filter) == {
+                    record.uuid
+                    for record in records.values()
+                    if evaluate_filter(property_filter, record.properties)
+                }, (name, property_filter)
+
+    async def check_replaced(self, name: str, replaced: list[Record]) -> None:
+        """Check that a replaced record's old values select it no more."""
+        for old in replaced:
+            current = self.records[name][old.uuid]
+            for key, value in old.properties.items():
+                old_value = Comparison(field=key, op="=", value=value)
+                if not evaluate_filter(old_value, current.properties):
+                    assert old.uuid not in await _model_matches(
+                        self.handles[name], old_value
+                    ), old_value
+
+
+class TestOperationModel:
+    @pytest.mark.asyncio
+    async def test_a_random_sequence_of_operations_agrees_with_a_model(self, store):
+        """Seeded upserts, new and replacing, deletes of present and absent
+        records, deletion and recreation of a collection, and purge drains, on
+        two collections sharing a native collection: after each step, each
+        collection holds the model's records, its settled queries select what
+        the model selects, and a replaced record's old values select nothing."""
+        rng = random.Random(1736)
+        namespace = "operation_model"
+        names = ("alpha", "beta")
+        # Few UUIDs, so each recurs in both collections and across their lives.
+        pool = sorted(uuid4() for _ in range(12))
+        handles = {}
+        for name in names:
+            await store.create_collection(
+                namespace=namespace, name=name, config=_MODEL_CONFIG
+            )
+            handles[name] = await store.open_collection(namespace=namespace, name=name)
+            assert handles[name] is not None
+        model = _ModelCollections(
+            store=store,
+            namespace=namespace,
+            handles=handles,
+            records={name: {} for name in names},
+        )
+
+        for step in range(60):
+            name = rng.choice(names)
+            replaced: list[Record] = []
+            action = rng.choices(
+                ("upsert", "delete", "recreate", "purge"), weights=(8, 3, 1, 1)
+            )[0]
+            match action:
+                case "upsert":
+                    replaced = await model.upsert(
+                        name,
+                        [
+                            Record(
+                                uuid=record_uuid,
+                                vector=_normalize([1.0, rng.random(), rng.random()]),
+                                properties=_model_properties(rng),
+                            )
+                            for record_uuid in rng.sample(pool, k=rng.randint(1, 4))
+                        ],
+                    )
+                case "delete":
+                    await model.delete(name, rng.sample(pool, k=rng.randint(1, 4)))
+                case "recreate":
+                    await model.recreate(name)
+                case _:
+                    await model.purge()
+            try:
+                await model.check(rng)
+                await model.check_replaced(name, replaced)
+            except AssertionError as error:
+                raise AssertionError(f"after step {step}, {action} {name}") from error
+
+        for name in names:
+            await store.delete_collection(namespace=namespace, name=name)
 
 
 class TestScores:
