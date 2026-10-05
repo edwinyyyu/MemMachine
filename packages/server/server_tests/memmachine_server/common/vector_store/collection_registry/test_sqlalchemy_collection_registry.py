@@ -666,7 +666,7 @@ async def test_the_backoff_stops_doubling_at_its_maximum(
             engine=sqlalchemy_engine,
             vector_store_name=vector_store_name,
             tombstone_retention_seconds=RETENTION_SECONDS,
-            purge_retry_backoff_seconds=30,
+            base_purge_retry_backoff_seconds=30,
             max_purge_retry_backoff_seconds=120,
         )
     )

@@ -175,7 +175,7 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
         purge_lease_seconds (int):
             Seconds a purge round's claim holds its tombstone, on the database
             clock; it should exceed the longest round (default: 300).
-        purge_retry_backoff_seconds (int):
+        base_purge_retry_backoff_seconds (int):
             Seconds before a tombstone whose purge round raised is claimed
             again, doubled for each further consecutive failure (default: 30).
         max_purge_retry_backoff_seconds (int):
@@ -210,7 +210,7 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
             "clock; it should exceed the longest round"
         ),
     )
-    purge_retry_backoff_seconds: int = Field(
+    base_purge_retry_backoff_seconds: int = Field(
         30,
         gt=0,
         description=(
@@ -264,8 +264,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             seconds=params.tombstone_retention_seconds
         )
         self._purge_lease = timedelta(seconds=params.purge_lease_seconds)
-        self._purge_retry_backoff = timedelta(
-            seconds=params.purge_retry_backoff_seconds
+        self._base_purge_retry_backoff = timedelta(
+            seconds=params.base_purge_retry_backoff_seconds
         )
         self._max_purge_retry_backoff = timedelta(
             seconds=params.max_purge_retry_backoff_seconds
@@ -569,7 +569,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         )
         if self._is_sqlite:
             seconds = func.min(
-                int(self._purge_retry_backoff.total_seconds()) * doublings,
+                int(self._base_purge_retry_backoff.total_seconds()) * doublings,
                 int(self._max_purge_retry_backoff.total_seconds()),
             )
             return func.datetime(
@@ -578,7 +578,9 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 type_=DateTime(timezone=True),
             )
         return func.now() - func.least(
-            bindparam("retry_backoff", self._purge_retry_backoff, type_=Interval)
+            bindparam(
+                "base_retry_backoff", self._base_purge_retry_backoff, type_=Interval
+            )
             * doublings,
             bindparam(
                 "max_retry_backoff", self._max_purge_retry_backoff, type_=Interval

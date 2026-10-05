@@ -143,7 +143,7 @@ claim is the latest: `failed_rounds + 1`, and `last_failed_at = now()` on the
 database clock.
 
 - **Backoff.** After its f-th consecutive failure, a tombstone is claimed
-  again once `min(purge_retry_backoff_seconds * 2^(f-1),
+  again once `min(base_purge_retry_backoff_seconds * 2^(f-1),
   max_purge_retry_backoff_seconds)` has passed since `last_failed_at`: 30 s,
   60 s, 120 s and so on, at most 1 h. The tombstones behind it are claimed
   meanwhile, so one failing tombstone does not hold the queue.
