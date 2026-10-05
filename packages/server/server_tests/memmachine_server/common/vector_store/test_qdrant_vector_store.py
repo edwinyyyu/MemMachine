@@ -2,6 +2,8 @@
 
 import asyncio
 import math
+import operator
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
@@ -19,6 +21,7 @@ from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
+    FilterExpr,
     In,
     IsNull,
     Not,
@@ -33,10 +36,12 @@ from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collec
     SQLAlchemyVectorStoreCollectionRegistryParams,
 )
 from memmachine_server.common.vector_store.data_types import (
+    QueryResult,
     Record,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionHandleStaleError,
 )
 from memmachine_server.common.vector_store.qdrant_vector_store import (
     _PAYLOAD_INCARNATION,
@@ -1476,6 +1481,226 @@ class TestPurge:
 
         await _drain(store)
         assert await _stored_uuids(collection) == set()
+
+
+# ── A seeded operation sequence against a model ──
+
+
+_MODEL_SEED = 1735
+_MODEL_STEPS = 200
+_MODEL_POOL_SIZE = 12
+_MODEL_NAMESPACE = "model_ns"
+_MODEL_NAMES = ("model_a", "model_b")
+# "tag" is not declared in the schema.
+_MODEL_CONFIG = VectorStoreCollectionConfig(
+    vector_dimensions=VECTOR_DIM,
+    indexed_properties_schema={"color": str, "size": int},
+)
+_MODEL_COLORS = ("red", "green", "blue")
+_MODEL_TAGS = ("x", "y")
+_MODEL_PROBE = [1.0, 0.0, 0.0]
+
+
+def _random_vector(rng: random.Random) -> list[float]:
+    return [rng.uniform(0.1, 1.0) * rng.choice((-1.0, 1.0)) for _ in range(VECTOR_DIM)]
+
+
+def _random_properties(rng: random.Random) -> dict[str, PropertyValue]:
+    """Properties of which each is present or absent, so a re-upsert may change or drop any."""
+    properties: dict[str, PropertyValue] = {}
+    if rng.random() < 0.7:
+        properties["color"] = rng.choice(_MODEL_COLORS)
+    if rng.random() < 0.7:
+        properties["size"] = rng.randrange(10)
+    if rng.random() < 0.5:
+        properties["tag"] = rng.choice(_MODEL_TAGS)
+    return properties
+
+
+def _random_filter(rng: random.Random) -> FilterExpr:
+    color = rng.choice(_MODEL_COLORS)
+    size = rng.randrange(10)
+    colors = rng.sample(_MODEL_COLORS, 2)
+    tag = rng.choice(_MODEL_TAGS)
+    return rng.choice(
+        [
+            Comparison(field="color", op="=", value=color),
+            Comparison(field="size", op=">", value=size),
+            Comparison(field="size", op="<=", value=size),
+            In(field="color", values=colors),
+            IsNull(field="color"),
+            Not(expr=IsNull(field="tag")),
+            Comparison(field="tag", op="=", value=tag),
+            Or(
+                left=Comparison(field="color", op="=", value=color),
+                right=Comparison(field="size", op="<=", value=size),
+            ),
+            And(
+                left=Comparison(field="color", op="=", value=color),
+                right=Not(expr=IsNull(field="size")),
+            ),
+        ]
+    )
+
+
+_MODEL_COMPARISONS = {"=": operator.eq, ">": operator.gt, "<=": operator.le}
+
+
+def _model_matches(expr: FilterExpr, properties: dict[str, PropertyValue]) -> bool:
+    """Whether properties meet a filter; an absent property meets only IsNull."""
+    if isinstance(expr, Comparison):
+        value = properties.get(expr.field)
+        return value is not None and _MODEL_COMPARISONS[expr.op](value, expr.value)
+    if isinstance(expr, In):
+        return properties.get(expr.field) in expr.values
+    if isinstance(expr, IsNull):
+        return expr.field not in properties
+    if isinstance(expr, Not):
+        return not _model_matches(expr.expr, properties)
+    if isinstance(expr, And):
+        return _model_matches(expr.left, properties) and _model_matches(
+            expr.right, properties
+        )
+    if isinstance(expr, Or):
+        return _model_matches(expr.left, properties) or _model_matches(
+            expr.right, properties
+        )
+    raise TypeError(expr)
+
+
+def _assert_matches_model(
+    result: QueryResult, expected: dict[UUID, Record], query: list[float]
+) -> None:
+    """The result holds each expected record once, scored by its latest vector, best first."""
+    scores = {match.record_uuid: match.score for match in result.matches}
+    assert len(result.matches) == len(expected)
+    assert scores.keys() == expected.keys()
+    for record_uuid, record in expected.items():
+        assert scores[record_uuid] == pytest.approx(
+            _metric_score(SimilarityMetric.COSINE, query, record.vector), abs=1e-5
+        )
+    ranked = [match.score for match in result.matches]
+    assert ranked == sorted(ranked, reverse=True)
+
+
+class _ModelRun:
+    """Operations on the model test's collections, each applied to the store and to the model."""
+
+    def __init__(
+        self, store: QdrantVectorStore, rng: random.Random, pool: list[UUID]
+    ) -> None:
+        self.store = store
+        self.rng = rng
+        self.pool = pool
+        self.handles: dict[str, QdrantVectorStoreCollection] = {}
+        self.model: dict[str, dict[UUID, Record]] = {}
+        self.baseline = 0
+
+    async def create(self, name: str) -> None:
+        await self.store.create_collection(
+            namespace=_MODEL_NAMESPACE, name=name, config=_MODEL_CONFIG
+        )
+        handle = await self.store.open_collection(namespace=_MODEL_NAMESPACE, name=name)
+        assert handle is not None
+        self.handles[name] = handle
+        self.model[name] = {}
+
+    async def upsert(self, name: str) -> None:
+        records = [
+            Record(
+                uuid=record_uuid,
+                vector=_random_vector(self.rng),
+                properties=_random_properties(self.rng),
+            )
+            for record_uuid in self.rng.sample(self.pool, self.rng.randint(1, 4))
+        ]
+        await self.handles[name].upsert(records=records)
+        self.model[name].update({record.uuid: record for record in records})
+
+    async def delete(self, name: str) -> None:
+        record_uuids = self.rng.sample(self.pool, self.rng.randint(1, 4))
+        await self.handles[name].delete(record_uuids=record_uuids)
+        for record_uuid in record_uuids:
+            self.model[name].pop(record_uuid, None)
+
+    async def query(self, name: str) -> None:
+        property_filter = _random_filter(self.rng)
+        query = _random_vector(self.rng)
+        [result] = await self.handles[name].query(
+            query_vectors=[query], limit=len(self.pool), property_filter=property_filter
+        )
+        expected = {
+            record_uuid: record
+            for record_uuid, record in self.model[name].items()
+            if _model_matches(property_filter, record.properties)
+        }
+        _assert_matches_model(result, expected, query)
+
+    async def recreate(self, name: str) -> None:
+        stale = self.handles[name]
+        await self.store.delete_collection(namespace=_MODEL_NAMESPACE, name=name)
+        with pytest.raises(VectorStoreCollectionHandleStaleError):
+            await stale.query(query_vectors=[_MODEL_PROBE], limit=1)
+        await self.create(name)
+
+    async def drain(self, name: str) -> None:
+        await _drain(self.store)
+        assert await self.count_stored() == self.baseline + sum(
+            len(records) for records in self.model.values()
+        )
+
+    async def count_stored(self) -> int:
+        return await _count_stored(self.store, _MODEL_NAMESPACE, _MODEL_CONFIG)
+
+    async def check(self) -> None:
+        """Each collection stores, and a query matches, what the model holds."""
+        for name, handle in self.handles.items():
+            assert await _stored_uuids(handle) == set(self.model[name]), name
+            [result] = await handle.query(
+                query_vectors=[_MODEL_PROBE], limit=len(self.pool)
+            )
+            _assert_matches_model(result, self.model[name], _MODEL_PROBE)
+
+
+class TestAgainstAModel:
+    @pytest.mark.asyncio
+    async def test_a_seeded_operation_sequence_agrees_with_a_model(self, store):
+        """Two collections sharing a native collection take a seeded sequence
+        of upserts (re-upserts change or drop properties), deletes (of their
+        own, the other collection's and absent UUIDs), filtered queries,
+        deletion and re-creation under the same name, and purge drains.
+        After each step the records stored, a query's matches and a drain's
+        count agree with a model that holds each collection's records."""
+        rng = random.Random(_MODEL_SEED)
+        run = _ModelRun(store, rng, sorted(uuid4() for _ in range(_MODEL_POOL_SIZE)))
+        for name in _MODEL_NAMES:
+            await run.create(name)
+        run.baseline = await run.count_stored()
+
+        operations = {
+            run.upsert: 5,
+            run.delete: 3,
+            run.query: 3,
+            run.recreate: 1,
+            run.drain: 1,
+        }
+        for step in range(_MODEL_STEPS):
+            name = rng.choice(_MODEL_NAMES)
+            [operation] = rng.choices(
+                list(operations), weights=list(operations.values())
+            )
+            try:
+                await operation(name)
+                await run.check()
+            except AssertionError as error:
+                raise AssertionError(
+                    f"step {step}: {operation.__name__} on {name}"
+                ) from error
+
+        for name in _MODEL_NAMES:
+            await store.delete_collection(namespace=_MODEL_NAMESPACE, name=name)
+        await _drain(store)
+        assert await run.count_stored() == run.baseline
 
 
 # ── Metrics ──
