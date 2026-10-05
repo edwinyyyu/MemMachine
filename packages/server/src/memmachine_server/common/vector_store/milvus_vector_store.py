@@ -652,6 +652,12 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
         # Deletes the incarnation's entities by primary key, one listed batch
         # per round, keeping each delete short for every tenant of the native
         # collection.
+        if not await self._client.has_collection(
+            self._collection_name,
+            timeout=self._request_timeout_seconds,
+        ):
+            # The native collection is gone with everything in it.
+            return False
         listed = await self._client.query(
             collection_name=self._collection_name,
             filter=_incarnation_filter(incarnation),

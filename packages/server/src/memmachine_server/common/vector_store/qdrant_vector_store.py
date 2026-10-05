@@ -444,6 +444,15 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
             return error.code() == grpc.StatusCode.ALREADY_EXISTS
         return False
 
+    @staticmethod
+    def _is_not_found_error(error: Exception) -> bool:
+        """Check if an exception indicates a resource was not found."""
+        if isinstance(error, UnexpectedResponse):
+            return error.status_code == 404
+        if isinstance(error, grpc.aio.AioRpcError):
+            return error.code() == grpc.StatusCode.NOT_FOUND
+        return False
+
     def __init__(self, params: QdrantVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
         super().__init__(params, metrics_prefix="vector_store_qdrant")
@@ -531,13 +540,19 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
     async def _purge_round(self, incarnation: UUID) -> bool:
         # If a point remains under the incarnation, one filter-delete removes
         # them all.
-        points, _ = await self._client.scroll(
-            collection_name=self.vector_store_name,
-            scroll_filter=_incarnation_filter(incarnation),
-            limit=1,
-            with_payload=False,
-            with_vectors=False,
-        )
+        try:
+            points, _ = await self._client.scroll(
+                collection_name=self.vector_store_name,
+                scroll_filter=_incarnation_filter(incarnation),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+            )
+        except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
+            # The native collection is gone with everything in it.
+            if not QdrantVectorStore._is_not_found_error(e):
+                raise
+            points = []
         if points:
             await self._client.delete(
                 collection_name=self.vector_store_name,
