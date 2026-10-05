@@ -29,6 +29,11 @@ from memmachine_server.common.vector_store import (
 
 LIFECYCLE_KEY = "lifecycle"
 
+# Purge rounds a drain runs before it fails the test: far more than the few
+# deleted partitions a test leaves need, so only a round that keeps finding
+# records reaches it.
+_MAX_DRAIN_ROUNDS = 1000
+
 
 def _unit(vector: list[float]) -> list[float]:
     magnitude = math.sqrt(sum(x * x for x in vector))
@@ -71,9 +76,13 @@ class PartitionLifecycleContract:
 
     async def _drained_count(self, store) -> int:
         """`count_stored` once nothing deleted is left to reclaim."""
-        while await store.purge_deleted_partitions():
-            pass
-        return await self.count_stored(store)
+        for _ in range(_MAX_DRAIN_ROUNDS):
+            if not await store.purge_deleted_partitions():
+                return await self.count_stored(store)
+        pytest.fail(
+            f"a deleted partition was still due for purge after "
+            f"{_MAX_DRAIN_ROUNDS} rounds"
+        )
 
     @pytest.mark.asyncio
     async def test_a_handle_is_stale_once_its_partition_is_deleted(self, store):
@@ -109,6 +118,9 @@ class PartitionLifecycleContract:
         await store.delete_partition(LIFECYCLE_KEY)
         new = await _fresh(store, LIFECYCLE_KEY)
 
+        # Once the store's reads reflect the old life's write, the new life
+        # still does not hold it.
+        await self.settle(new)
         [before] = await new.query(query_vectors=[old_record.vector], limit=5)
         assert before.matches == []
 
@@ -136,6 +148,7 @@ class PartitionLifecycleContract:
 
         await store.delete_partition(LIFECYCLE_KEY)
         third = await store.open_or_create_partition(LIFECYCLE_KEY)
+        await self.settle(third)
         [empty] = await third.query(query_vectors=[record.vector], limit=5)
         assert empty.matches == []
         with pytest.raises(VectorStorePartitionHandleStaleError):
@@ -223,30 +236,18 @@ class PartitionLifecycleContract:
             await store.create_partition(f"{LIFECYCLE_KEY}\n")
 
     @pytest.mark.asyncio
-    async def test_an_upsert_checks_the_registry_twice_and_a_query_or_delete_once(
-        self, store, monkeypatch
-    ):
+    async def test_a_stale_upsert_writes_nothing(self, store):
+        """An upsert through a handle whose partition is already deleted
+        raises before it writes: the dead life keeps exactly what it held."""
         partition = await _fresh(store, LIFECYCLE_KEY)
-        record = _records(1)[0]
-        checks = 0
-        registration_type = type(partition._registration)
-        require_current = registration_type.require_current
+        kept, refused = _records(2)
+        await partition.upsert(records=[kept])
 
-        async def counted(registration) -> None:
-            nonlocal checks
-            checks += 1
-            await require_current(registration)
+        await store.delete_partition(LIFECYCLE_KEY)
 
-        monkeypatch.setattr(registration_type, "require_current", counted)
-
-        await partition.upsert(records=[record])
-        assert checks == 2
-        checks = 0
-        await partition.query(query_vectors=[record.vector], limit=1)
-        assert checks == 1
-        checks = 0
-        await partition.delete(record_uuids=[record.uuid])
-        assert checks == 1
+        with pytest.raises(VectorStorePartitionHandleStaleError, match=LIFECYCLE_KEY):
+            await partition.upsert(records=[refused])
+        assert await self.stored_uuids(partition) == {kept.uuid}
 
     @pytest.mark.asyncio
     async def test_open_or_create_gives_up_after_losing_every_race(
