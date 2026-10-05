@@ -582,6 +582,117 @@ class TestCollectionLifecycle:
             )
 
 
+async def _require_usable(collection: MilvusVectorStoreCollection) -> None:
+    """Write a record to the collection, and find it by a filtered query."""
+    record = _make_record(
+        vector=_normalize([1.0, 0.0, 0.0]), properties={"name": "usable"}
+    )
+    await collection.upsert(records=[record])
+    await _settle(collection)
+    [result] = await collection.query(
+        query_vectors=[record.vector],
+        limit=10,
+        property_filter=Comparison(field="name", op="=", value="usable"),
+    )
+    assert [match.record_uuid for match in result.matches] == [record.uuid]
+
+
+class TestConcurrentPreparation:
+    @pytest.mark.asyncio
+    async def test_a_creation_finding_the_native_collection_mid_creation_completes_it(
+        self, store, other_store, monkeypatch
+    ):
+        """Two stores create collections of one namespace and configuration at
+        once, and the second finds the native collection the first created but
+        has not yet indexed or loaded. The second's creation completes it, so
+        its collection is usable before the first creation goes on, and both
+        collections end usable with every index."""
+        namespace = "raced_preparation"
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
+        )
+        first_created = asyncio.Event()
+        second_done = asyncio.Event()
+        create_native_collection = store._client.create_collection
+
+        async def create_and_hold(*args, **kwargs):
+            await create_native_collection(*args, **kwargs)
+            first_created.set()
+            await asyncio.wait_for(second_done.wait(), 60)
+
+        monkeypatch.setattr(store._client, "create_collection", create_and_hold)
+
+        async def create_second() -> None:
+            try:
+                await asyncio.wait_for(first_created.wait(), 60)
+                await other_store.create_collection(
+                    namespace=namespace, name="second", config=config
+                )
+                second = await other_store.open_collection(
+                    namespace=namespace, name="second"
+                )
+                assert second is not None
+                await _require_usable(second)
+            finally:
+                second_done.set()
+
+        await asyncio.gather(
+            store.create_collection(namespace=namespace, name="first", config=config),
+            create_second(),
+        )
+
+        first = await store.open_collection(namespace=namespace, name="first")
+        assert first is not None
+        await _require_usable(first)
+        assert set(await store._client.list_indexes(first._native_collection_name)) == {
+            "vector",
+            "_p_name",
+        }
+
+
+@pytest.mark.asyncio
+async def test_a_creation_that_loses_the_native_collection_to_another_completes_it(
+    registry_url,
+):
+    """A creation whose create request Milvus refuses as existing, because
+    another creator made the native collection after this one checked, still
+    indexes and loads the native collection, and the collection opens."""
+    indexed: set[str] = set()
+    loaded: list[str] = []
+
+    async def list_indexes(collection_name: str, **kwargs) -> list[str]:
+        return sorted(indexed)
+
+    async def create_index(collection_name: str, index_params, **kwargs) -> None:
+        indexed.update(index.field_name for index in index_params)
+
+    async def load_collection(collection_name: str, **kwargs) -> None:
+        loaded.append(collection_name)
+
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.prepare_index_params = AsyncMilvusClient.prepare_index_params
+    client.create_schema = AsyncMilvusClient.create_schema
+    client.has_collection = AsyncMock(return_value=False)
+    client.create_collection = AsyncMock(
+        side_effect=pymilvus.MilvusException(message="collection already exists")
+    )
+    client.list_indexes = AsyncMock(side_effect=list_indexes)
+    client.create_index = AsyncMock(side_effect=create_index)
+    client.load_collection = AsyncMock(side_effect=load_collection)
+    registry_engine = create_async_engine(registry_url)
+    store = await _started_store(client, registry_engine)
+    config = VectorStoreCollectionConfig(
+        vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
+    )
+
+    await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
+
+    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
+    assert indexed == {"vector", "_p_name"}
+    assert loaded
+    await registry_engine.dispose()
+
+
 class TestUpsertAndQuery:
     @pytest.mark.asyncio
     async def test_a_query_may_ask_for_hundreds_of_results(self, collection):
