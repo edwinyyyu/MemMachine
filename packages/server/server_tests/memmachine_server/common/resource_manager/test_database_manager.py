@@ -322,7 +322,7 @@ def _qdrant_only_conf(registry_dir: Path) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_qdrant_client_kwargs_forwarded(tmp_path):
-    """host, port, grpc_port, prefer_grpc, and https are forwarded to AsyncQdrantClient."""
+    """host, port, grpc_port, prefer_grpc, https, api_key, and request_timeout_seconds are forwarded to AsyncQdrantClient."""
     conf = _qdrant_only_conf(tmp_path)
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         collection_registry="registry",
@@ -332,6 +332,7 @@ async def test_qdrant_client_kwargs_forwarded(tmp_path):
         prefer_grpc=True,
         https=True,
         api_key=SecretStr("secret-key"),
+        request_timeout_seconds=7,
     )
 
     mock_client = AsyncMock()
@@ -360,7 +361,7 @@ async def test_qdrant_client_kwargs_forwarded(tmp_path):
     assert call_kwargs["grpc_port"] == 7334
     assert call_kwargs["prefer_grpc"] is True
     assert call_kwargs["https"] is True
-    assert call_kwargs["timeout"] == 30
+    assert call_kwargs["timeout"] == 7
     assert call_kwargs["api_key"] == "secret-key"
 
 
