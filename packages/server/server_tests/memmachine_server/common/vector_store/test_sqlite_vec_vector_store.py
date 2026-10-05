@@ -889,6 +889,61 @@ class TestScoreSemantics:
         await euclidean.shutdown()
 
 
+# A query, and vectors that each metric ranks in its own order, with no two
+# tied under any metric.
+_THRESHOLD_QUERY = [1.0, 0.0, 0.0]
+_THRESHOLD_VECTORS = [
+    [3.0, 3.0, 0.0],
+    [1.0, 0.2, 0.0],
+    [1.4, 0.4, 0.0],
+    [1.6, 0.0, 0.0],
+    [0.5, 0.05, 0.0],
+]
+
+
+class TestScoreThreshold:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "metric",
+        [SimilarityMetric.COSINE, SimilarityMetric.EUCLIDEAN],
+    )
+    async def test_a_threshold_keeps_a_match_scoring_exactly_it(self, store, metric):
+        """A score threshold equal to a match's reported score keeps the
+        match; one a step better than that score drops it."""
+        name = f"edge_{metric.value}"
+        edged = await _store_with(
+            store, name, vector_dimensions=VECTOR_DIM, similarity_metric=metric
+        )
+        partition = await edged.open_or_create_partition(name)
+        records = [_make_record(vector=vector) for vector in _THRESHOLD_VECTORS]
+        await partition.upsert(records=records)
+        [ranked] = await partition.query(
+            query_vectors=[_THRESHOLD_QUERY], limit=len(records)
+        )
+        edge = ranked.matches[2]
+        better = math.inf if metric.higher_is_better else -math.inf
+
+        [at_edge] = await partition.query(
+            query_vectors=[_THRESHOLD_QUERY],
+            limit=len(records),
+            score_threshold=edge.score,
+        )
+        [past_edge] = await partition.query(
+            query_vectors=[_THRESHOLD_QUERY],
+            limit=len(records),
+            score_threshold=math.nextafter(edge.score, better),
+        )
+
+        assert [match.record_uuid for match in at_edge.matches] == [
+            match.record_uuid for match in ranked.matches[:3]
+        ]
+        assert [match.record_uuid for match in past_edge.matches] == [
+            match.record_uuid for match in ranked.matches[:2]
+        ]
+        await edged.delete_partition(name)
+        await edged.shutdown()
+
+
 # ── Upsert behavior ──
 
 
