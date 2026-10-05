@@ -412,6 +412,30 @@ async def test_a_batch_refused_as_sent_is_halved_until_it_fits(status_code: int)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 413])
+async def test_an_upsert_with_a_point_refused_alone_raises(status_code: int):
+    """Halving stops at a single point: a point refused on its own fails the
+    upsert, which does not report it accepted."""
+    refused = _make_record(vector=[0.0, 0.0, 1.0])
+
+    async def refuse_the_refused_point(
+        *, collection_name: str, points: list[models.PointStruct], wait: bool
+    ) -> None:
+        if any(point.vector == refused.vector for point in points):
+            raise UnexpectedResponse(status_code, "", b"", httpx.Headers())
+
+    client = MagicMock(spec=AsyncQdrantClient)
+    client.upsert = AsyncMock(side_effect=refuse_the_refused_point)
+    collection = _collection_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(4)]
+    records.insert(3, refused)
+
+    with pytest.raises(UnexpectedResponse) as raised:
+        await collection.upsert(records=records)
+    assert raised.value.status_code == status_code
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error",
     [
