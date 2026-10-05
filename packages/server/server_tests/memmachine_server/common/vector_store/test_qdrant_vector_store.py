@@ -74,14 +74,8 @@ async def _stored_uuids(collection) -> set[UUID]:
     return {UUID(str((point.payload or {})[_PAYLOAD_RECORD_UUID])) for point in points}
 
 
-@pytest.fixture
-def in_memory_qdrant_client():
-    return AsyncQdrantClient(location=":memory:")
-
-
 @pytest.fixture(
     params=[
-        "in_memory_qdrant_client",
         pytest.param("qdrant_client", marks=pytest.mark.integration),
         pytest.param("qdrant_grpc_client", marks=pytest.mark.integration),
     ],
@@ -1253,9 +1247,6 @@ class TestCollectionLifecycleAcrossWorkers:
     Stores on separate clients can share one registry database, so two can
     decide to create the same collection at the same moment, and one can find
     the native collection already there without its indexes.
-
-    These need a real server: payload indexes have no effect in local-mode
-    Qdrant, so the thing under test is invisible there.
     """
 
     @staticmethod
