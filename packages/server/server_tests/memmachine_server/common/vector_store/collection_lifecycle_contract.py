@@ -303,30 +303,20 @@ class CollectionLifecycleContract:
                 )
 
     @pytest.mark.asyncio
-    async def test_an_upsert_checks_the_registry_twice_and_a_query_or_delete_once(
-        self, store, monkeypatch
-    ):
+    async def test_a_stale_upsert_writes_nothing(self, store):
+        """An upsert through a handle whose collection is already deleted
+        raises before it writes: the dead life keeps exactly what it held."""
         collection = await _fresh(store, LIFECYCLE_NAME)
-        record = _records(1)[0]
-        checks = 0
-        registration_type = type(collection._registration)
-        require_current = registration_type.require_current
+        kept, refused = _records(2)
+        await collection.upsert(records=[kept])
 
-        async def counted(registration) -> None:
-            nonlocal checks
-            checks += 1
-            await require_current(registration)
+        await store.delete_collection(
+            namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME
+        )
 
-        monkeypatch.setattr(registration_type, "require_current", counted)
-
-        await collection.upsert(records=[record])
-        assert checks == 2
-        checks = 0
-        await collection.query(query_vectors=[record.vector], limit=1)
-        assert checks == 1
-        checks = 0
-        await collection.delete(record_uuids=[record.uuid])
-        assert checks == 1
+        with pytest.raises(VectorStoreCollectionHandleStaleError, match=LIFECYCLE_NAME):
+            await collection.upsert(records=[refused])
+        assert await self.stored_uuids(collection) == {kept.uuid}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
