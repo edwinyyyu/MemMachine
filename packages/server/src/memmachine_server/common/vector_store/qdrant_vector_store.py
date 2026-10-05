@@ -322,11 +322,9 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
                 ]
             )
 
-        # Qdrant compares its threshold in single precision and keeps only
-        # scores strictly better than it, so it is sent the adjacent
-        # single-precision value on the worse side, which keeps a score equal to
-        # the threshold; the check below applies the caller's threshold exactly.
-        # A threshold beyond single precision is not sent.
+        # Qdrant keeps only scores strictly better than its threshold, compared
+        # in single precision, so send the next single-precision value on the
+        # worse side; the check below applies the caller's threshold exactly.
         higher_is_better = self.config.similarity_metric.higher_is_better
         qdrant_score_threshold = None
         if score_threshold is not None:
