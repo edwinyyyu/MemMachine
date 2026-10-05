@@ -3,6 +3,7 @@
 # ruff: noqa: E402
 
 import math
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
@@ -16,6 +17,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from server_tests.memmachine_server.common.vector_store.collection_lifecycle_contract import (
     CollectionLifecycleContract,
 )
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
+    evaluate_filter,
+)
 
 pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
@@ -27,6 +31,7 @@ from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
+    FilterExpr,
     In,
     IsNull,
     Not,
@@ -112,6 +117,123 @@ async def _stored(
         consistency_level="Strong",
     )
     return {UUID(row["record_uuid"]): row for row in rows}
+
+
+# Properties of every type, declared and not, for the tests against a model.
+_MODEL_DECLARED: dict[str, type[PropertyValue]] = {
+    "d_bool": bool,
+    "d_int": int,
+    "d_float": float,
+    "d_str": str,
+    "d_datetime": datetime,
+}
+_MODEL_PROPERTY_TYPES: dict[str, type[PropertyValue]] = {
+    **_MODEL_DECLARED,
+    "u_bool": bool,
+    "u_int": int,
+    "u_float": float,
+    "u_str": str,
+    "u_datetime": datetime,
+}
+_MODEL_CONFIG = VectorStoreCollectionConfig(
+    vector_dimensions=VECTOR_DIM, indexed_properties_schema=_MODEL_DECLARED
+)
+_MODEL_INTS = [-7, -1, 0, 1, 2, 3, 1 << 40]
+_MODEL_FLOATS = [-2.5, -0.5, 0.0, 0.25, 1.0, 3.75]
+_MODEL_STRINGS = [
+    "",
+    "alpha",
+    "Alpha",
+    "beta",
+    "a b",
+    'q"uote',
+    "back\\slash",
+    "it's",
+    "\u00fcn\u00ef",
+]
+# Instants a microsecond and a second apart, each written at varied offsets.
+_MODEL_INSTANTS = [
+    datetime(1999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    datetime(2024, 6, 14, 12, tzinfo=UTC),
+    datetime(2024, 6, 15, 12, tzinfo=UTC),
+    datetime(2024, 6, 15, 12, 0, 0, 1, tzinfo=UTC),
+    datetime(2024, 6, 15, 12, 0, 1, tzinfo=UTC),
+]
+_MODEL_OFFSETS = [
+    UTC,
+    timezone(timedelta(hours=5, minutes=30)),
+    timezone(timedelta(hours=-8)),
+    timezone(timedelta(hours=14)),
+    timezone(timedelta(hours=-12)),
+]
+
+
+def _model_value(rng: random.Random, value_type: type[PropertyValue]) -> PropertyValue:
+    if value_type is bool:
+        return rng.choice([False, True])
+    if value_type is int:
+        return rng.choice(_MODEL_INTS)
+    if value_type is float:
+        return rng.choice(_MODEL_FLOATS)
+    if value_type is str:
+        return rng.choice(_MODEL_STRINGS)
+    return rng.choice(_MODEL_INSTANTS).astimezone(rng.choice(_MODEL_OFFSETS))
+
+
+def _model_properties(rng: random.Random) -> dict[str, PropertyValue]:
+    """Properties of every type, each missing a quarter of the time."""
+    return {
+        key: _model_value(rng, value_type)
+        for key, value_type in _MODEL_PROPERTY_TYPES.items()
+        if rng.random() < 0.75
+    }
+
+
+def _model_filter(rng: random.Random, depth: int = 3) -> FilterExpr:
+    """A random filter tree whose values have their properties' types.
+
+    It compares with `!=` only through Not(=): on a property with no value,
+    the store's `!=` holds, as the complement of `=`, where the model's does
+    not.
+    """
+    if depth > 0 and rng.random() < 0.6:
+        match rng.choice(("and", "or", "not")):
+            case "not":
+                return Not(expr=_model_filter(rng, depth - 1))
+            case "and":
+                return And(
+                    left=_model_filter(rng, depth - 1),
+                    right=_model_filter(rng, depth - 1),
+                )
+            case _:
+                return Or(
+                    left=_model_filter(rng, depth - 1),
+                    right=_model_filter(rng, depth - 1),
+                )
+    key = rng.choice(list(_MODEL_PROPERTY_TYPES))
+    value_type = _MODEL_PROPERTY_TYPES[key]
+    match rng.choice(("is_null", "comparison", "in")):
+        case "is_null":
+            return IsNull(field=key)
+        case "in" if value_type is int:
+            return In(field=key, values=rng.sample(_MODEL_INTS, k=rng.randint(1, 3)))
+        case "in" if value_type is str:
+            return In(field=key, values=rng.sample(_MODEL_STRINGS, k=rng.randint(1, 3)))
+        case _:
+            op = "=" if value_type is bool else rng.choice(("=", "<", "<=", ">", ">="))
+            return Comparison(field=key, op=op, value=_model_value(rng, value_type))
+
+
+async def _model_matches(
+    collection: MilvusVectorStoreCollection, property_filter: FilterExpr | None
+) -> set[UUID]:
+    """The UUIDs of every record of the collection the filter selects."""
+    [result] = await collection.query(
+        query_vectors=[_normalize([1.0, 0.0, 0.0])],
+        limit=1000,
+        property_filter=property_filter,
+    )
+    return {match.record_uuid for match in result.matches}
 
 
 @pytest_asyncio.fixture
@@ -880,6 +1002,42 @@ class TestFilters:
             await collection.query(
                 query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=limit
             )
+
+
+class TestFilterModel:
+    @pytest.mark.asyncio
+    async def test_random_filters_agree_with_the_model(self, store):
+        """Seeded filter trees over properties of every type, declared and not,
+        datetimes at varied offsets and missing values included, select the
+        records the in-memory evaluator selects."""
+        rng = random.Random(1736)
+        # Its own native collection, holding only the model's records.
+        namespace = "filter_model"
+        await store.create_collection(
+            namespace=namespace, name="model", config=_MODEL_CONFIG
+        )
+        coll = await store.open_collection(namespace=namespace, name="model")
+        assert coll is not None
+        records = [
+            Record(
+                uuid=record_uuid,
+                vector=_normalize([1.0, rng.random(), rng.random()]),
+                properties=_model_properties(rng),
+            )
+            for record_uuid in sorted(uuid4() for _ in range(48))
+        ]
+        await coll.upsert(records=records)
+        await _settle(coll)
+
+        for _ in range(200):
+            property_filter = _model_filter(rng)
+            assert await _model_matches(coll, property_filter) == {
+                record.uuid
+                for record in records
+                if evaluate_filter(property_filter, record.properties)
+            }, property_filter
+
+        await store.delete_collection(namespace=namespace, name="model")
 
 
 class TestScores:
