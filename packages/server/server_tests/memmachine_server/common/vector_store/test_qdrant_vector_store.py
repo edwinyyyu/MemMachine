@@ -74,6 +74,15 @@ async def _stored_uuids(collection) -> set[UUID]:
     return {UUID(str((point.payload or {})[_PAYLOAD_RECORD_UUID])) for point in points}
 
 
+async def _count_stored(
+    store: QdrantVectorStore, namespace: str, config: VectorStoreCollectionConfig
+) -> int:
+    """Points Qdrant holds for a namespace and configuration, deleted collections' included."""
+    native = QdrantVectorStore._build_native_collection_name(namespace, config)
+    result = await store._client.count(collection_name=native, exact=True)
+    return result.count
+
+
 @pytest.fixture(
     params=[
         pytest.param("qdrant_client", marks=pytest.mark.integration),
@@ -1126,6 +1135,97 @@ class TestPartitionIsolation:
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
 
     @pytest.mark.asyncio
+    async def test_a_filtered_query_returns_only_its_own_collections_records(
+        self, store
+    ):
+        """Two collections share a native collection and hold records that
+        match the same filters; a filtered query returns its own records."""
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM,
+            indexed_properties_schema={"name": str, "age": int},
+        )
+        await store.create_collection(
+            namespace=NAMESPACE, name="tenant_a", config=config
+        )
+        await store.create_collection(
+            namespace=NAMESPACE, name="tenant_b", config=config
+        )
+        coll_a = await store.open_collection(namespace=NAMESPACE, name="tenant_a")
+        coll_b = await store.open_collection(namespace=NAMESPACE, name="tenant_b")
+        assert coll_a is not None
+        assert coll_b is not None
+
+        vector = _normalize([1.0, 0.0, 0.0])
+        # "note" is not declared in the schema.
+        properties: dict[str, PropertyValue] = {
+            "name": "alice",
+            "age": 30,
+            "note": "shared",
+        }
+        records_a = [_make_record(vector=vector, properties=properties)]
+        records_b = [_make_record(vector=vector, properties=properties)]
+        await coll_a.upsert(records=records_a)
+        await coll_b.upsert(records=records_b)
+
+        filters = [
+            Comparison(field="name", op="=", value="alice"),
+            Comparison(field="age", op=">=", value=30),
+            In(field="name", values=["alice", "bob"]),
+            Or(
+                left=Comparison(field="name", op="=", value="bob"),
+                right=Comparison(field="age", op="<", value=31),
+            ),
+            Not(expr=IsNull(field="note")),
+            And(
+                left=Comparison(field="note", op="=", value="shared"),
+                right=Not(expr=IsNull(field="age")),
+            ),
+        ]
+        for property_filter in filters:
+            for collection, own in ((coll_a, records_a), (coll_b, records_b)):
+                [result] = await collection.query(
+                    query_vectors=[vector], limit=10, property_filter=property_filter
+                )
+                assert [match.record_uuid for match in result.matches] == [
+                    record.uuid for record in own
+                ], property_filter
+
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
+        await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+    @pytest.mark.asyncio
+    async def test_namespaces_keep_their_records_in_separate_storage(self, store):
+        """Collections of two namespaces share no storage, even under one
+        name and configuration."""
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        writer_namespace, other_namespace = "tenant_ns_a", "tenant_ns_b"
+        await store.create_collection(
+            namespace=writer_namespace, name=NAME, config=config
+        )
+        await store.create_collection(
+            namespace=other_namespace, name=NAME, config=config
+        )
+        writer = await store.open_collection(namespace=writer_namespace, name=NAME)
+        assert writer is not None
+        writer_before = await _count_stored(store, writer_namespace, config)
+        other_before = await _count_stored(store, other_namespace, config)
+
+        await writer.upsert(
+            records=[
+                _make_record(vector=_normalize([1.0, 0.1 * index, 0.0]))
+                for index in range(3)
+            ]
+        )
+
+        assert await _count_stored(store, writer_namespace, config) == (
+            writer_before + 3
+        )
+        assert await _count_stored(store, other_namespace, config) == other_before
+
+        await store.delete_collection(namespace=writer_namespace, name=NAME)
+        await store.delete_collection(namespace=other_namespace, name=NAME)
+
+    @pytest.mark.asyncio
     async def test_the_same_uuid_in_two_collections_is_two_records(self, store):
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
@@ -1367,12 +1467,7 @@ class TestCollectionLifecycleAcrossWorkers:
 class TestLifecycleContract(CollectionLifecycleContract):
     """The collection lifecycle contract, against this store."""
 
-    @staticmethod
-    async def count_stored(store, namespace: str, config) -> int:
-        native = QdrantVectorStore._build_native_collection_name(namespace, config)
-        result = await store._client.count(collection_name=native, exact=True)
-        return result.count
-
+    count_stored = staticmethod(_count_stored)
     stored_uuids = staticmethod(_stored_uuids)
 
     @staticmethod
