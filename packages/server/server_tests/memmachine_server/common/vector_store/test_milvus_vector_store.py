@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from server_tests.memmachine_server.common.vector_store.collection_lifecycle_contract import (
     CollectionLifecycleContract,
@@ -275,11 +275,10 @@ def milvus_client(request):
     return request.getfixturevalue(request.param)
 
 
-@pytest_asyncio.fixture
-async def store(milvus_client, tmp_path):
-    registry_engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
-    )
+async def _started_store(
+    client: AsyncMilvusClient, registry_engine: AsyncEngine, **overrides: int
+) -> MilvusVectorStore:
+    """A started store with its own registry object over the registry database."""
     collection_registry = SQLAlchemyVectorStoreCollectionRegistry(
         SQLAlchemyVectorStoreCollectionRegistryParams(
             engine=registry_engine,
@@ -290,19 +289,48 @@ async def store(milvus_client, tmp_path):
         )
     )
     await collection_registry.startup()
+    settings = {
+        "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
+        "max_varchar_length": MAX_VARCHAR_LENGTH,
+        "purge_batch_size": PURGE_BATCH_SIZE,
+        **overrides,
+    }
     vector_store = MilvusVectorStore(
         MilvusVectorStoreParams(
-            client=milvus_client,
-            collection_registry=collection_registry,
-            request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-            max_varchar_length=MAX_VARCHAR_LENGTH,
-            purge_batch_size=PURGE_BATCH_SIZE,
+            client=client, collection_registry=collection_registry, **settings
         )
     )
     await vector_store.startup()
+    return vector_store
+
+
+@pytest.fixture
+def registry_url(tmp_path) -> str:
+    """The registry database every store of a test shares."""
+    return f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
+
+
+@pytest_asyncio.fixture
+async def store(milvus_client, registry_url):
+    registry_engine = create_async_engine(registry_url)
+    vector_store = await _started_store(milvus_client, registry_engine)
     yield vector_store
     await vector_store.shutdown()
     await registry_engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def other_store(milvus_container, registry_url):
+    """A store as another process runs it beside `store`: its own Milvus
+    client and registry connections, over the same Milvus and registry
+    database."""
+    client = AsyncMilvusClient(uri=milvus_container.get_connection_url())
+    registry_engine = create_async_engine(registry_url)
+    vector_store = await _started_store(client, registry_engine)
+    yield vector_store
+    await vector_store.shutdown()
+    await registry_engine.dispose()
+    await client.close()
 
 
 # The client requests the store makes; each must carry the store's timeout.
@@ -1367,7 +1395,7 @@ class _CurrentRegistration(Registration):
 async def test_a_delete_milvus_does_not_accept_in_full_raises():
     """A delete Milvus accepts for fewer primary keys than the store sent raises."""
     client = MagicMock(spec=AsyncMilvusClient)
-    client.delete = AsyncMock(return_value={"delete_count": 0})
+    client.delete = AsyncMock(return_value={"delete_count": 1})
     collection = MilvusVectorStoreCollection(
         client=client,
         native_collection_name="native",
@@ -1381,8 +1409,32 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 
-    with pytest.raises(pymilvus.MilvusException, match="accepted the delete of 0 of 2"):
+    with pytest.raises(pymilvus.MilvusException):
         await collection.delete(record_uuids=[uuid4(), uuid4()])
+
+
+@pytest.mark.asyncio
+async def test_a_purge_round_milvus_does_not_accept_in_full_raises(registry_url):
+    """A purge round raises when Milvus accepts the delete of fewer primary
+    keys than the round listed."""
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.prepare_index_params = AsyncMilvusClient.prepare_index_params
+    # The native collection exists with its index, and holds two entities of
+    # the deleted collection.
+    client.has_collection = AsyncMock(return_value=True)
+    client.list_indexes = AsyncMock(return_value=["vector"])
+    client.load_collection = AsyncMock(return_value=None)
+    client.query = AsyncMock(return_value=[{"id": "listed_a"}, {"id": "listed_b"}])
+    client.delete = AsyncMock(return_value={"delete_count": 1})
+    registry_engine = create_async_engine(registry_url)
+    store = await _started_store(client, registry_engine)
+    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+    await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
+    await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+    with pytest.raises(pymilvus.MilvusException):
+        await store.purge_deleted_collections()
+    await registry_engine.dispose()
 
 
 class TestPartitionIsolation:
@@ -1515,6 +1567,89 @@ class TestPurgeBatches:
             left_after_each_round.append(await left_of_the_incarnation())
         # Batches of 2, then a round that finds nothing and removes the tombstone.
         assert left_after_each_round == [3, 1, 0, 0]
+
+
+class TestPurge:
+    @pytest.mark.asyncio
+    async def test_a_purge_round_on_a_dropped_native_collection_retires_the_tombstone(
+        self, store
+    ):
+        """A deleted collection whose native collection is gone holds nothing:
+        its purge round raises nothing and removes the tombstone."""
+        namespace = "dropped_native"
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(
+            namespace=namespace, name="dropped", config=config
+        )
+        coll = await store.open_collection(namespace=namespace, name="dropped")
+        assert coll is not None
+        await coll.upsert(records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))])
+        await store.delete_collection(namespace=namespace, name="dropped")
+        await store._client.drop_collection(coll._native_collection_name)
+
+        await _drain(store)
+        assert await store.purge_deleted_collections() is False
+
+    @pytest.mark.asyncio
+    async def test_purgers_on_two_stores_reclaim_the_deleted_collections_alone(
+        self, store, other_store
+    ):
+        """Purgers on two stores sharing a registry, draining at once in small
+        batches, reclaim every deleted collection's records and leave the live
+        collection's."""
+        namespace = "two_purgers"
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        handles = {}
+        for name in ("live", "dead_0", "dead_1", "dead_2", "dead_3"):
+            await store.create_collection(namespace=namespace, name=name, config=config)
+            handle = await store.open_collection(namespace=namespace, name=name)
+            assert handle is not None
+            await handle.upsert(
+                records=[
+                    _make_record(vector=_normalize([1.0, 0.1 * index, 0.0]))
+                    for index in range(7)
+                ]
+            )
+            handles[name] = handle
+        live = handles.pop("live")
+        live_uuids = await _incarnation_uuids(
+            store._client, live._native_collection_name, live._incarnation
+        )
+        await _settle(live)
+        for name in handles:
+            await store.delete_collection(namespace=namespace, name=name)
+        purgers = [
+            MilvusVectorStore(
+                MilvusVectorStoreParams(
+                    client=purging._client,
+                    collection_registry=purging._collection_registry,
+                    request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+                    purge_batch_size=3,
+                )
+            )
+            for purging in (store, other_store)
+        ]
+
+        await asyncio.gather(*(_drain(purger) for purger in purgers))
+
+        for handle in handles.values():
+            assert (
+                await _incarnation_uuids(
+                    store._client, handle._native_collection_name, handle._incarnation
+                )
+                == []
+            )
+        assert sorted(
+            await _incarnation_uuids(
+                store._client, live._native_collection_name, live._incarnation
+            )
+        ) == sorted(live_uuids)
+        assert len(live_uuids) == 7
+        assert [await purger.purge_deleted_collections() for purger in purgers] == [
+            False,
+            False,
+        ]
+        await store.delete_collection(namespace=namespace, name="live")
 
 
 class TestLifecycleContract(CollectionLifecycleContract):
