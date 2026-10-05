@@ -1,12 +1,14 @@
 """Qdrant-based vector store implementation."""
 
 import hashlib
+import math
 from datetime import datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
 
 import grpc
 import grpc.aio
+import numpy as np
 from pydantic import Field, InstanceOf
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -320,11 +322,23 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
                 ]
             )
 
+        # Qdrant compares its threshold in single precision and keeps only
+        # scores strictly better than it, so it is sent the adjacent
+        # single-precision value on the worse side, which keeps a score equal to
+        # the threshold; the check below applies the caller's threshold exactly.
+        # A threshold beyond single precision is not sent.
+        higher_is_better = self.config.similarity_metric.higher_is_better
+        qdrant_score_threshold = None
+        if score_threshold is not None:
+            worse = np.float32(-np.inf if higher_is_better else np.inf)
+            adjacent = float(np.nextafter(np.float32(score_threshold), worse))
+            if math.isfinite(adjacent):
+                qdrant_score_threshold = adjacent
         requests = [
             models.QueryRequest(
                 query=query_vector,
                 filter=qdrant_filter,
-                score_threshold=score_threshold,
+                score_threshold=qdrant_score_threshold,
                 limit=limit,
                 with_vector=False,
                 with_payload=models.PayloadSelectorInclude(
@@ -347,6 +361,12 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
                         record_uuid=UUID((point.payload or {})[_PAYLOAD_RECORD_UUID]),
                     )
                     for point in batch.points
+                    if score_threshold is None
+                    or (
+                        point.score >= score_threshold
+                        if higher_is_better
+                        else point.score <= score_threshold
+                    )
                 ]
             )
             for batch in batch_results

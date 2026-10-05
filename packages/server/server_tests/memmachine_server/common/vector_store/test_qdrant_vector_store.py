@@ -445,6 +445,45 @@ class TestSimilarityMetrics:
 
         await store.delete_collection(namespace=NAMESPACE, name=name)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("metric", list(SimilarityMetric))
+    async def test_a_threshold_keeps_a_match_scoring_exactly_it(self, store, metric):
+        """A score threshold equal to a match's reported score keeps the
+        match; one a step better than that score drops it."""
+        name = f"edge_{metric.value}"
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM, similarity_metric=metric
+        )
+        await store.create_collection(namespace=NAMESPACE, name=name, config=config)
+        collection = await store.open_collection(namespace=NAMESPACE, name=name)
+        assert collection is not None
+        records = [_make_record(vector=vector) for vector in _METRIC_VECTORS]
+        await collection.upsert(records=records)
+        [ranked] = await collection.query(
+            query_vectors=[_METRIC_QUERY], limit=len(records)
+        )
+        edge = ranked.matches[2]
+        better = math.inf if metric.higher_is_better else -math.inf
+
+        [at_edge] = await collection.query(
+            query_vectors=[_METRIC_QUERY],
+            limit=len(records),
+            score_threshold=edge.score,
+        )
+        [past_edge] = await collection.query(
+            query_vectors=[_METRIC_QUERY],
+            limit=len(records),
+            score_threshold=math.nextafter(edge.score, better),
+        )
+
+        assert [match.record_uuid for match in at_edge.matches] == [
+            match.record_uuid for match in ranked.matches[:3]
+        ]
+        assert [match.record_uuid for match in past_edge.matches] == [
+            match.record_uuid for match in ranked.matches[:2]
+        ]
+        await store.delete_collection(namespace=NAMESPACE, name=name)
+
 
 @dataclass(frozen=True)
 class _CurrentRegistration(Registration):
