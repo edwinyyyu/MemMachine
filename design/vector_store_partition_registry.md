@@ -157,8 +157,10 @@ column, rather than a table pair per vector store, keeps the schema static.
 | `vector_store_name` | string | Whose purge claims the tombstone. |
 | `partition_key` | string | Kept for inspection; the purge does not read it. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
-| `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised. |
-| `last_failed_at` | timestamp, nullable | When the last of them raised, on the database clock. |
+| `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
+| `last_failed_at` | timestamp, nullable | When the last of them raised or, if it never ended, was claimed, on the database clock. |
+| `claimed_at` | timestamp, nullable | When the tombstone's latest claim was taken, on the database clock; null once its round ended. |
+| `claim_generation` | integer | Incremented by each claim; a round's writes that end its claim are conditioned on it. |
 
 Index `partition_registry_gc__vs_ea` on (`vector_store_name`, `enqueued_at`)
 bounds the purge claim, equality before order. The index follows the
@@ -307,6 +309,8 @@ the backend is remote:
   the write, since the write is not in the database;
 - the purge is one tombstone per call, each backend deleting the way it
   measured best;
+- the purge claim is a lease, committed before the round, rather than the
+  round's own transaction, since the round's work is remote;
 - a tombstone waits out a retention, since a remote write can land after the
   deletion.
 
