@@ -32,6 +32,11 @@ LIFECYCLE_NAMESPACE = "lifecycle_ns"
 LIFECYCLE_NAME = "lifecycle"
 LIFECYCLE_CONFIG = VectorStoreCollectionConfig(vector_dimensions=3)
 
+# Purge rounds a drain runs before it fails the test: far more than the few
+# deleted collections a test leaves need, so only a round that keeps finding
+# records reaches it.
+_MAX_DRAIN_ROUNDS = 1000
+
 
 def _unit(vector: list[float]) -> list[float]:
     magnitude = math.sqrt(sum(x * x for x in vector))
@@ -76,9 +81,15 @@ class CollectionLifecycleContract:
 
     async def _drained_count(self, store) -> int:
         """`count_stored` once nothing deleted is left to reclaim."""
-        while await store.purge_deleted_collections():
-            pass
-        return await self.count_stored(store, LIFECYCLE_NAMESPACE, LIFECYCLE_CONFIG)
+        for _ in range(_MAX_DRAIN_ROUNDS):
+            if not await store.purge_deleted_collections():
+                return await self.count_stored(
+                    store, LIFECYCLE_NAMESPACE, LIFECYCLE_CONFIG
+                )
+        pytest.fail(
+            f"a deleted collection was still due for purge after "
+            f"{_MAX_DRAIN_ROUNDS} rounds"
+        )
 
     @pytest.mark.asyncio
     async def test_a_handle_is_stale_once_its_collection_is_deleted(self, store):
@@ -123,6 +134,9 @@ class CollectionLifecycleContract:
         )
         new = await _fresh(store, LIFECYCLE_NAME)
 
+        # Once the store's reads reflect the old life's write, the new life
+        # still does not hold it.
+        await self.settle(new)
         [before] = await new.query(query_vectors=[old_record.vector], limit=5)
         assert before.matches == []
 
@@ -162,6 +176,7 @@ class CollectionLifecycleContract:
         third = await store.open_or_create_collection(
             namespace=LIFECYCLE_NAMESPACE, name=LIFECYCLE_NAME, config=LIFECYCLE_CONFIG
         )
+        await self.settle(third)
         [empty] = await third.query(query_vectors=[record.vector], limit=5)
         assert empty.matches == []
         with pytest.raises(VectorStoreCollectionHandleStaleError):
