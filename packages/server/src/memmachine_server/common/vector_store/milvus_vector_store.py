@@ -497,7 +497,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         config: VectorStoreCollectionConfig,
         incarnation: UUID,
     ) -> None:
-        # Created, indexed and loaded as separate steps, each when missing.
+        # Created, indexed, and loaded as separate steps, each when missing.
         self._validate_metric(config.similarity_metric)
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config

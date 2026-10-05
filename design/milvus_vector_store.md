@@ -60,7 +60,7 @@ registry](vector_store_collection_registry.md),
   pymilvus's async client returns that count for a delete Milvus rejected, so
   the store compares it with the keys it sent.
 - **Milvus Lite is not supported.** It is a separate embedded engine that
-  scores, indexes and enforces collection properties differently; a URI with
+  scores, indexes, and enforces collection properties differently; a URI with
   no scheme, which pymilvus reads as a Lite file, is refused. Every call the
   store makes exists in Milvus 2.6.8 and later; CI tests against 2.6.24, and
   the store's tests pass against 2.6.8 and 3.0.2.
@@ -92,7 +92,7 @@ default says to raise `ef` and `refine_k` if recall is insufficient
 (milvus-io/milvus#47386). The store keeps every default but `refine_k`.
 
 Measured on Milvus 2.6.24 (180k vectors of 384 dimensions from a mixture of
-64 clusters; tenants of 100k, 10k, 1k and 100 rows; 100 queries per tenant
+64 clusters; tenants of 100k, 10k, 1k, and 100 rows; 100 queries per tenant
 size; recall@k against exact search within the tenant), on the 100k-row
 tenant, over two runs unless marked:
 
@@ -116,14 +116,14 @@ runs, MemMachine's own HNSW engines' parameters (hnswlib and usearch: M=16,
 efConstruction=128) recalled up to 0.03 less than AUTOINDEX's and at most
 0.002 more, and building took 1.3 to 1.7 times as long with AUTOINDEX's.
 Raising `ef` changed little once enough candidates were rescored; `refine_k`
-decided it (with `ef = max(k, 128)`: 0.80, 0.94 and 0.99 at recall@10 for
-`refine_k` of 1, 2 and 4, one run). With the default `ef`, `refine_k = 8` is
+decided it (with `ef = max(k, 128)`: 0.80, 0.94, and 0.99 at recall@10 for
+`refine_k` of 1, 2, and 4, one run). With the default `ef`, `refine_k = 8` is
 the least measured that comes within 0.01 of float32 HNSW searched with
 `ef = max(k, 128)` at k=10 and beats it at k=100, at a latency within noise
 of `refine_k = 4`; 16 recalls within noise of 8 and adds 1 ms at k=100.
 
 Memory, measured on Milvus 3.0.2 at 600k vectors of 768 dimensions (tenants
-of 200k, 50k, 5k and 2,000 of 100; 4 CPUs; one run): HNSW_SQ took 0.8 GB less
+of 200k, 50k, 5k, and 2,000 of 100; 4 CPUs; one run): HNSW_SQ took 0.8 GB less
 than float32 HNSW and 2.9 against 3.7 ms of CPU per search on the 200k
 tenant, at similar recall. Partition-key isolation halved the index-build CPU
 there (855 against 448 CPU-seconds) for about 0.2 GB more memory, with search
@@ -158,7 +158,7 @@ variation.
 Bounded batches. A round lists up to `purge_batch_size` of the incarnation's
 primary keys, by a query on the incarnation field at the store's read level,
 and deletes them by key. Measured (Milvus 3.0.2; 2.11M points in this layout,
-dead incarnations of 10k to 1M among live tenants under search, upsert and
+dead incarnations of 10k to 1M among live tenants under search, upsert, and
 scroll traffic; 2 CPUs / 4 GB): rounds stayed flat at about 100 ms to the end
 of a 1M purge, with at most a 0.3 s stall for other tenants; one filter-delete
 of 1M points instead stalled every tenant's reads and writes for 2.7-9 s at
