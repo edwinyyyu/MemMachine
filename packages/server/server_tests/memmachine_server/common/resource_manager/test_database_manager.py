@@ -1,4 +1,5 @@
 import importlib.util
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -292,14 +293,20 @@ async def test_sqlalchemy_pool_lifecycle_kwargs_none_omitted():
 # --- Qdrant ---
 
 
-_REGISTRY_DB = SqlAlchemyConf(dialect="sqlite", driver="aiosqlite", path=":memory:")
+def _qdrant_only_conf(registry_dir: Path) -> MagicMock:
+    """Build a DatabasesConf mock with only a Qdrant entry.
 
-
-def _qdrant_only_conf() -> MagicMock:
-    """Build a DatabasesConf mock with only a Qdrant entry."""
+    Its collection registry is a SQLite file in `registry_dir`.
+    """
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
-    conf.relational_db_confs = {"registry": _REGISTRY_DB}
+    conf.relational_db_confs = {
+        "registry": SqlAlchemyConf(
+            dialect="sqlite",
+            driver="aiosqlite",
+            path=str(registry_dir / "registry.db"),
+        )
+    }
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {
         "qdrant1": QdrantConf(
@@ -314,9 +321,9 @@ def _qdrant_only_conf() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_qdrant_client_kwargs_forwarded():
+async def test_qdrant_client_kwargs_forwarded(tmp_path):
     """host, port, grpc_port, prefer_grpc, and https are forwarded to AsyncQdrantClient."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         collection_registry="registry",
         host="qdrant.example.com",
@@ -358,9 +365,9 @@ async def test_qdrant_client_kwargs_forwarded():
 
 
 @pytest.mark.asyncio
-async def test_qdrant_api_key_omitted_when_empty():
+async def test_qdrant_api_key_omitted_when_empty(tmp_path):
     """api_key is not forwarded when it is the empty default."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
 
     mock_client = AsyncMock()
     mock_client.get_collections = AsyncMock(return_value=[])
@@ -386,9 +393,9 @@ async def test_qdrant_api_key_omitted_when_empty():
 
 
 @pytest.mark.asyncio
-async def test_qdrant_creates_vector_store():
+async def test_qdrant_creates_vector_store(tmp_path):
     """async_get_qdrant_client creates a QdrantVectorStore and stores it."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         collection_registry="registry",
         tombstone_retention_seconds=3600,
@@ -439,10 +446,12 @@ async def test_qdrant_creates_vector_store():
 
 
 @pytest.mark.asyncio
-async def test_qdrant_client_is_not_opened_when_the_registry_database_is_unknown():
+async def test_qdrant_client_is_not_opened_when_the_registry_database_is_unknown(
+    tmp_path,
+):
     """The registry database is resolved before the client is opened, so a
     bad collection_registry leaves no client behind."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
     conf.qdrant_confs["qdrant1"] = QdrantConf(collection_registry="missing")
 
     with patch("qdrant_client.AsyncQdrantClient") as mock_cls:
@@ -455,9 +464,9 @@ async def test_qdrant_client_is_not_opened_when_the_registry_database_is_unknown
 
 
 @pytest.mark.asyncio
-async def test_get_vector_store_qdrant():
+async def test_get_vector_store_qdrant(tmp_path):
     """get_vector_store returns the VectorStore for a Qdrant config."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
 
     mock_client = AsyncMock()
     mock_client.get_collections = AsyncMock(return_value=[])
@@ -483,9 +492,9 @@ async def test_get_vector_store_qdrant():
 
 
 @pytest.mark.asyncio
-async def test_qdrant_config_not_found():
+async def test_qdrant_config_not_found(tmp_path):
     """async_get_qdrant_client raises ValueError for unknown names."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
     conf.qdrant_confs = {}
     builder = DatabaseManager(conf)
     with pytest.raises(ValueError, match="Qdrant config 'missing' not found"):
@@ -506,9 +515,9 @@ async def test_qdrant_validation_failure():
 
 
 @pytest.mark.asyncio
-async def test_qdrant_close():
+async def test_qdrant_close(tmp_path):
     """close() cleans up Qdrant clients and vector stores."""
-    conf = _qdrant_only_conf()
+    conf = _qdrant_only_conf(tmp_path)
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
