@@ -972,6 +972,7 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
 class TestPartitionIsolation:
     @pytest.mark.asyncio
     async def test_same_uuid_can_exist_in_different_logical_collections(self, store):
+        """The same UUID in two collections is two records, written and deleted apart."""
         config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
         await store.create_collection(
             namespace=NAMESPACE, name="tenant_a", config=config
@@ -1001,8 +1002,56 @@ class TestPartitionIsolation:
         assert decode_properties(stored_a[record_uuid]["properties"]) == {"name": "a"}
         assert decode_properties(stored_b[record_uuid]["properties"]) == {"name": "b"}
 
+        await coll_a.delete(record_uuids=[record_uuid])
+        await _settle(coll_b)
+
+        assert await _stored(coll_a, [record_uuid]) == {}
+        assert set(await _stored(coll_b, [record_uuid])) == {record_uuid}
+        [kept] = await coll_b.query(query_vectors=[v1], limit=10)
+        assert [match.record_uuid for match in kept.matches] == [record_uuid]
+
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+    @pytest.mark.asyncio
+    async def test_a_query_returns_only_its_own_collections_records(self, store):
+        """Collections of one namespace and configuration answer with their own
+        records alone, filtered or not, though the other's records match too."""
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
+        )
+        vector = _normalize([1.0, 0.0, 0.0])
+        own_records = {}
+        for name in ("query_a", "query_b"):
+            await store.create_collection(namespace=NAMESPACE, name=name, config=config)
+            coll = await store.open_collection(namespace=NAMESPACE, name=name)
+            assert coll is not None
+            records = [
+                _make_record(
+                    vector=vector, properties={"name": "shared", "color": "red"}
+                )
+                for _ in range(2)
+            ]
+            await coll.upsert(records=records)
+            own_records[name] = (coll, {record.uuid for record in records})
+
+        for coll, own in own_records.values():
+            await _settle(coll)
+            for property_filter in (
+                None,
+                Comparison(field="name", op="=", value="shared"),
+                Comparison(field="color", op="=", value="red"),
+                Not(expr=IsNull(field="name")),
+            ):
+                [result] = await coll.query(
+                    query_vectors=[vector], limit=10, property_filter=property_filter
+                )
+                assert {match.record_uuid for match in result.matches} == own, (
+                    property_filter
+                )
+
+        for name in own_records:
+            await store.delete_collection(namespace=NAMESPACE, name=name)
 
 
 class TestPurgeBatches:
