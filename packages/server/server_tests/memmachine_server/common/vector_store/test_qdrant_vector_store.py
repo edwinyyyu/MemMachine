@@ -83,6 +83,22 @@ async def _count_stored(
     return result.count
 
 
+# Purge rounds a drain runs before it fails the test: far more than the
+# deleted collections a test leaves need, so only a round that keeps finding
+# records reaches it.
+_MAX_DRAIN_ROUNDS = 1000
+
+
+async def _drain(store: QdrantVectorStore) -> None:
+    """Run purge rounds until none is due."""
+    for _ in range(_MAX_DRAIN_ROUNDS):
+        if not await store.purge_deleted_collections():
+            return
+    pytest.fail(
+        f"a deleted collection was still due for purge after {_MAX_DRAIN_ROUNDS} rounds"
+    )
+
+
 @pytest.fixture(
     params=[
         pytest.param("qdrant_client", marks=pytest.mark.integration),
@@ -1295,6 +1311,71 @@ class TestPartitionIsolation:
 
         await store.delete_collection(namespace=NAMESPACE, name="tenant_a")
         await store.delete_collection(namespace=NAMESPACE, name="tenant_b")
+
+
+# ── Purge ──
+
+
+class TestPurge:
+    @pytest.mark.asyncio
+    async def test_a_tombstone_whose_storage_was_never_made_is_retired(
+        self, store, monkeypatch
+    ):
+        """A creation that fails before it prepares any storage leaves a
+        tombstone whose native collection Qdrant never had: its purge round
+        finds nothing there and retires it, raising nothing."""
+        namespace = "never_prepared"
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        native = QdrantVectorStore._build_native_collection_name(namespace, config)
+        assert not await store._client.collection_exists(native)
+
+        async def refused(namespace, config, incarnation) -> None:
+            raise RuntimeError("the backend refused")
+
+        monkeypatch.setattr(store, "_prepare_storage", refused)
+        with pytest.raises(RuntimeError, match="refused"):
+            await store.create_collection(namespace=namespace, name=NAME, config=config)
+        monkeypatch.undo()
+
+        # The cancelled creation's tombstone is due, and one round retires it.
+        assert await store.purge_deleted_collections() is True
+        assert await store.purge_deleted_collections() is False
+
+    @pytest.mark.asyncio
+    async def test_a_write_landing_after_a_purge_round_is_reclaimed_by_the_next(
+        self, store
+    ):
+        """A write whose liveness check passed before its collection was
+        deleted can land after a purge round deleted the incarnation's
+        records; the tombstone stays until a round finds nothing, so the next
+        round reclaims the late write."""
+        name = "purged"
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(namespace=NAMESPACE, name=name, config=config)
+        collection = await store.open_collection(namespace=NAMESPACE, name=name)
+        assert collection is not None
+        await collection.upsert(
+            records=[
+                _make_record(vector=_normalize([1.0, 0.1 * index, 0.0]))
+                for index in range(3)
+            ]
+        )
+        await store.delete_collection(namespace=NAMESPACE, name=name)
+
+        assert await store.purge_deleted_collections() is True
+        assert await _stored_uuids(collection) == set()
+
+        # The handle's backend write, past its liveness checks, as a write in
+        # flight across the deletion lands.
+        late = [
+            _make_record(vector=_normalize([0.1 * index, 1.0, 0.0]))
+            for index in range(2)
+        ]
+        await collection._upsert(late)
+        assert await _stored_uuids(collection) == {record.uuid for record in late}
+
+        await _drain(store)
+        assert await _stored_uuids(collection) == set()
 
 
 # ── Metrics ──
