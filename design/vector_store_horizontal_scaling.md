@@ -8,7 +8,7 @@ anything, and the Qdrant and Milvus stores relied on that sentence for
 correctness:
 
 - their catalogs lived inside the backend, which cannot arbitrate a create, a
-  delete or a purge between processes;
+  delete, or a purge between processes;
 - they serialized their own operations with process-local locks;
 - a collection's name was the tenant discriminator on its records, so deleting
   and re-creating a name did not end the old life (#1563).

@@ -1,7 +1,7 @@
 """
 A collection registry in a relational database, through SQLAlchemy.
 
-A table of registered collections keyed by vector store, namespace and name,
+A table of registered collections keyed by vector store, namespace, and name,
 each with its incarnation and whether it is live (its storage prepared), and
 a queue of deleted incarnations claimed in the order they come due. The
 primary key arbitrates registration across processes, a conditional update
@@ -29,7 +29,6 @@ from sqlalchemy import (
     Interval,
     String,
     Uuid,
-    bindparam,
     case,
     delete,
     func,
@@ -132,21 +131,19 @@ class PurgeQueueRow(BaseCollectionRegistry):
     enqueued_at: MappedColumn[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    # Consecutive purge rounds on the tombstone that raised or never ended,
-    # and when the last one raised or, if it never ended, was claimed, on the
-    # database clock.
-    failed_rounds: MappedColumn[int] = mapped_column(Integer, nullable=False, default=0)
+    # Consecutive purge rounds that raised or never ended, and when the last
+    # one raised or, if it never ended, was claimed.
+    consecutive_failed_rounds: MappedColumn[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     last_failed_at: MappedColumn[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # When the tombstone's latest claim was taken, on the database clock, and
-    # None once its round ended. The claim holds the tombstone until the
-    # purge lease has passed since.
+    # When the latest claim was taken; None once its round ended.
     claimed_at: MappedColumn[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Incremented by each claim. A round ends its claim only while the
-    # tombstone's generation is still its claim's.
+    # Incremented by each claim; a round ends only its own claim.
     claim_generation: MappedColumn[int] = mapped_column(
         Integer, nullable=False, default=0
     )
@@ -255,7 +252,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     After `_MAX_FAILED_PURGE_ROUNDS` consecutive failed rounds, a
     tombstone is dead-lettered: kept, its incarnation reserved, skipped by
     claims, and reported in an error log. Setting its
-    `failed_rounds` back to 0 returns it to the purge.
+    `consecutive_failed_rounds` back to 0 returns it to the purge.
     """
 
     def __init__(self, params: SQLAlchemyVectorStoreCollectionRegistryParams) -> None:
@@ -263,16 +260,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
         self._engine = params.engine
         self._is_sqlite = params.engine.dialect.name == "sqlite"
         self._vector_store_name = params.vector_store_name
-        self._tombstone_retention = timedelta(
-            seconds=params.tombstone_retention_seconds
-        )
-        self._purge_lease = timedelta(seconds=params.purge_lease_seconds)
-        self._base_purge_retry_backoff = timedelta(
-            seconds=params.base_purge_retry_backoff_seconds
-        )
-        self._max_purge_retry_backoff = timedelta(
-            seconds=params.max_purge_retry_backoff_seconds
-        )
+        self._tombstone_retention_seconds = params.tombstone_retention_seconds
+        self._purge_lease_seconds = params.purge_lease_seconds
+        self._base_purge_retry_backoff_seconds = params.base_purge_retry_backoff_seconds
+        self._max_purge_retry_backoff_seconds = params.max_purge_retry_backoff_seconds
         self._claim_releases: set[asyncio.Task[None]] = set()
 
     @override
@@ -410,44 +401,35 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @override
     async def run_purge_round(self, purge_round: PurgeRound) -> bool:
-        # The claim is a lease: one committed write takes the oldest due
-        # tombstone that no unexpired claim holds, and the round runs with no
-        # transaction open, so no lock is held across its remote calls. The
-        # lease only spreads rounds across purgers: a round is safe to repeat
-        # and to run beside another, so a lease that ends early repeats work.
-        # The retention, the backoff and the lease are applied when a claim is
-        # decided, on the database clock, so a changed duration applies to
-        # every tombstone. On PostgreSQL a concurrent claim skips the row
-        # being claimed; SQLite drops the locking clause and serializes the
-        # claims as writes. The writes that end a claim are conditioned on its
-        # generation, so a round that outlasted its lease cannot end the claim
-        # taken after it.
+        # Lease the oldest due tombstone in one committed write, then run the
+        # round with no transaction open. The lease only spreads the work;
+        # rounds are safe to repeat.
         oldest_due = (
             select(PurgeQueueRow.incarnation)
             .where(
                 PurgeQueueRow.vector_store_name == self._vector_store_name,
                 PurgeQueueRow.enqueued_at
-                <= self._now_less(self._tombstone_retention, "retention"),
-                PurgeQueueRow.failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
+                <= self._database_time_ago(self._tombstone_retention_seconds),
+                PurgeQueueRow.consecutive_failed_rounds < _MAX_FAILED_PURGE_ROUNDS,
                 or_(
-                    PurgeQueueRow.failed_rounds == 0,
+                    PurgeQueueRow.consecutive_failed_rounds == 0,
                     PurgeQueueRow.last_failed_at <= self._backoff_cutoff(),
                 ),
                 or_(
                     PurgeQueueRow.claimed_at.is_(None),
                     PurgeQueueRow.claimed_at
-                    <= self._now_less(self._purge_lease, "purge_lease"),
+                    <= self._database_time_ago(self._purge_lease_seconds),
                 ),
             )
             .order_by(PurgeQueueRow.enqueued_at)
             .limit(1)
+            # SQLite drops this; there the claim's write serializes claims.
             .with_for_update(skip_locked=True)
             .scalar_subquery()
         )
-        # A claim that finds the tombstone's previous claim unended, its lease
-        # passed, runs no round: it counts that round as failed, as of when it
-        # was claimed, and ends it. SET reads the row as it was, so one
-        # statement both tells the cases apart and records either.
+        # An expired claim means its round never ended: count that round as
+        # failed and end the claim instead of running a round. SET sees the
+        # row's old values.
         unended = PurgeQueueRow.claimed_at.is_not(None)
         async with self._engine.begin() as connection:
             claim = (
@@ -457,8 +439,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     .values(
                         claimed_at=case((unended, None), else_=func.now()),
                         claim_generation=PurgeQueueRow.claim_generation + 1,
-                        failed_rounds=PurgeQueueRow.failed_rounds
-                        + case((unended, 1), else_=0),
+                        consecutive_failed_rounds=(
+                            PurgeQueueRow.consecutive_failed_rounds
+                            + case((unended, 1), else_=0)
+                        ),
                         last_failed_at=case(
                             (unended, PurgeQueueRow.claimed_at),
                             else_=PurgeQueueRow.last_failed_at,
@@ -470,7 +454,7 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         PurgeQueueRow.config,
                         PurgeQueueRow.claim_generation,
                         PurgeQueueRow.claimed_at,
-                        PurgeQueueRow.failed_rounds,
+                        PurgeQueueRow.consecutive_failed_rounds,
                         PurgeQueueRow.last_failed_at,
                     )
                 )
@@ -484,11 +468,11 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                 "on past the lease. It counts as a failed round.",
                 claim.incarnation,
                 claim.last_failed_at,
-                int(self._purge_lease.total_seconds()),
+                self._purge_lease_seconds,
             )
             self._report_dead_lettering(
                 claim.incarnation,
-                claim.failed_rounds,
+                claim.consecutive_failed_rounds,
                 f"the round claimed at {claim.last_failed_at} did not end",
             )
             return True
@@ -504,10 +488,8 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
             )
             raise
         except BaseException:
-            # A cancelled round ends its claim uncounted, shielded so a
-            # cancelled purge still frees the tombstone at once. The task
-            # reports its own failure, since a purge cancelled again stops
-            # awaiting it; the claim then ends with its lease.
+            # A cancelled round ends its claim uncounted. Shielded, so a second
+            # cancellation cannot cut it short; the task logs its own failure.
             release = asyncio.create_task(
                 self._end_claim(claim.incarnation, claim.claim_generation)
             )
@@ -537,10 +519,10 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
     ) -> None:
         """Record a purge round's outcome.
 
-        A round that found no records removes the tombstone, under whichever
-        claim it ran: an incarnation found empty after the retention needs no
-        more rounds. One that found records ends its claim and resets the
-        tombstone's count of failed rounds, while its claim is the latest.
+        Finding nothing removes the tombstone under any claim, since an
+        incarnation found empty after the retention needs no more rounds.
+        Finding records ends the claim and resets the count of failed rounds,
+        if the claim is the latest.
         """
         if not any_records_found:
             async with self._engine.begin() as connection:
@@ -557,26 +539,22 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                     PurgeQueueRow.incarnation == incarnation,
                     PurgeQueueRow.claim_generation == claim_generation,
                 )
-                .values(failed_rounds=0, claimed_at=None)
+                .values(consecutive_failed_rounds=0, claimed_at=None)
             )
         if ended.rowcount != 1:
             logger.warning(
                 "Purge round on incarnation %s outlasted its claim's %d s lease: "
                 "the tombstone was claimed again or removed while it ran",
                 incarnation,
-                int(self._purge_lease.total_seconds()),
+                self._purge_lease_seconds,
             )
 
     async def _count_failed_round(
         self, incarnation: UUID, claim_generation: int, error: Exception
     ) -> None:
-        """Count a raised purge round against its tombstone, ending its claim, and report its dead-lettering.
-
-        Counted while the round's claim is the latest, so a round that
-        outlasted its lease does not count against the claim taken after it.
-        """
+        """Count a raised purge round and end its claim, if the claim is the latest; report dead-lettering."""
         async with self._engine.begin() as connection:
-            failed_rounds = (
+            consecutive_failed_rounds = (
                 await connection.execute(
                     update(PurgeQueueRow)
                     .where(
@@ -584,26 +562,28 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
                         PurgeQueueRow.claim_generation == claim_generation,
                     )
                     .values(
-                        failed_rounds=PurgeQueueRow.failed_rounds + 1,
+                        consecutive_failed_rounds=(
+                            PurgeQueueRow.consecutive_failed_rounds + 1
+                        ),
                         last_failed_at=func.now(),
                         claimed_at=None,
                     )
-                    .returning(PurgeQueueRow.failed_rounds)
+                    .returning(PurgeQueueRow.consecutive_failed_rounds)
                 )
             ).scalar_one_or_none()
-        if failed_rounds is None:
+        if consecutive_failed_rounds is None:
             logger.warning(
                 "Purge round on incarnation %s outlasted its claim's %d s lease, "
                 "so its failure is not counted: the tombstone was claimed again "
                 "or removed while it ran",
                 incarnation,
-                int(self._purge_lease.total_seconds()),
+                self._purge_lease_seconds,
             )
             return
-        self._report_dead_lettering(incarnation, failed_rounds, repr(error))
+        self._report_dead_lettering(incarnation, consecutive_failed_rounds, repr(error))
 
     async def _end_claim(self, incarnation: UUID, claim_generation: int) -> None:
-        """End a round's claim without recording an outcome, while its claim is the latest."""
+        """End a round's claim without recording an outcome, if the claim is the latest."""
         async with self._engine.begin() as connection:
             await connection.execute(
                 update(PurgeQueueRow)
@@ -616,65 +596,50 @@ class SQLAlchemyVectorStoreCollectionRegistry(VectorStoreCollectionRegistry):
 
     @staticmethod
     def _report_dead_lettering(
-        incarnation: UUID, failed_rounds: int, last_error: str
+        incarnation: UUID, consecutive_failed_rounds: int, last_error: str
     ) -> None:
-        """Report a tombstone whose count of failed rounds reached the dead-letter bound."""
-        # The claim takes only tombstones under the bound, so one at or past
-        # it is dead-lettered.
-        if failed_rounds >= _MAX_FAILED_PURGE_ROUNDS:
+        """Report a tombstone whose failed rounds reached the dead-letter bound."""
+        # Claims take only tombstones under the bound.
+        if consecutive_failed_rounds >= _MAX_FAILED_PURGE_ROUNDS:
             logger.error(
                 "Purge of incarnation %s failed %d rounds in a row and is "
                 "dead-lettered: its records stay and it is no longer claimed. "
-                "Last error: %s. Set its failed_rounds to 0 in %s to retry it.",
+                "Last error: %s. Set its consecutive_failed_rounds to 0 in %s to "
+                "retry it.",
                 incarnation,
-                failed_rounds,
+                consecutive_failed_rounds,
                 last_error,
                 PurgeQueueRow.__tablename__,
             )
 
     def _backoff_cutoff(self) -> ColumnElement:
-        """The database clock's now, less each queue row's backoff, computed by the database."""
-        # 1 << (f - 1) is 2 ** (f - 1) on both dialects. The claim evaluates
-        # it for rows at 0 failures too, so the count is clamped at 0: a
-        # shift by a negative count is undefined on PostgreSQL.
+        """The database clock's time each tombstone's backoff ago."""
+        # 1 << (f - 1) is 2 ** (f - 1) on both dialects. f is clamped at 0:
+        # the claim evaluates this for tombstones with no failures too, and
+        # PostgreSQL leaves a negative shift undefined.
+        failed = PurgeQueueRow.consecutive_failed_rounds
         doublings = literal(1, Integer).op("<<")(
-            case(
-                (PurgeQueueRow.failed_rounds > 0, PurgeQueueRow.failed_rounds - 1),
-                else_=0,
+            case((failed > 0, failed - 1), else_=0)
+        )
+        smaller = func.min if self._is_sqlite else func.least
+        return self._database_time_ago(
+            smaller(
+                self._base_purge_retry_backoff_seconds * doublings,
+                self._max_purge_retry_backoff_seconds,
             )
         )
+
+    def _database_time_ago(self, seconds: int | ColumnElement[int]) -> ColumnElement:
+        """The database clock's time `seconds` ago, computed by the database."""
         if self._is_sqlite:
-            seconds = func.min(
-                int(self._base_purge_retry_backoff.total_seconds()) * doublings,
-                int(self._max_purge_retry_backoff.total_seconds()),
-            )
+            # datetime() emits CURRENT_TIMESTAMP's text form, so stored stamps
+            # compare with it in time order.
             return func.datetime(
                 "now",
                 func.printf("-%d seconds", seconds),
                 type_=DateTime(timezone=True),
             )
-        return func.now() - func.least(
-            bindparam(
-                "base_retry_backoff", self._base_purge_retry_backoff, type_=Interval
-            )
-            * doublings,
-            bindparam(
-                "max_retry_backoff", self._max_purge_retry_backoff, type_=Interval
-            ),
-        )
-
-    def _now_less(self, period: timedelta, key: str) -> ColumnElement:
-        """The database clock's now, less `period`, computed by the database; `key` names its bound parameter."""
-        if self._is_sqlite:
-            # datetime() emits the form CURRENT_TIMESTAMP stamps with, so
-            # the stamps and the cutoff compare as text in time order.
-            seconds = int(period.total_seconds())
-            return func.datetime(
-                "now",
-                bindparam(f"{key}_modifier", f"-{seconds} seconds"),
-                type_=DateTime(timezone=True),
-            )
-        return func.now() - bindparam(key, period, type_=Interval)
+        return func.now() - literal(timedelta(seconds=1), Interval) * seconds
 
 
 @dataclass(frozen=True)

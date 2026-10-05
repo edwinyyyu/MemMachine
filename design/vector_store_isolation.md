@@ -21,7 +21,7 @@ has to be able to keep the promise.
 
 - An incarnation is a random UUID (version 4) minted by the registry when a
   collection's name is reserved, one per collection life (see [collection
-  registry](vector_store_collection_registry.md)). Every read, write and
+  registry](vector_store_collection_registry.md)). Every read, write, and
   delete of a handle is scoped to it.
 - An incarnation is never re-minted while it is registered, pending or live,
   or its tombstone is queued, so a new life starts empty: no dead life's
@@ -38,7 +38,7 @@ has to be able to keep the promise.
 
 A record UUID may come from anywhere, a caller included: reusing one in
 another collection stores another record, and no operation on one collection
-reads, replaces or deletes another's.
+reads, replaces, or deletes another's.
 
 | Store | How ids are scoped to a collection |
 |---|---|

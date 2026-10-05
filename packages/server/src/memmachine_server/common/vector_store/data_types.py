@@ -102,7 +102,7 @@ class VectorStoreCollectionPendingError(Exception):
         registered_at: datetime,
         config: VectorStoreCollectionConfig,
     ) -> None:
-        """Initialize with the pending collection's namespace, name, registration time and configuration."""
+        """Initialize with the pending collection's namespace, name, registration time, and configuration."""
         self.namespace = namespace
         self.name = name
         self.registered_at = registered_at

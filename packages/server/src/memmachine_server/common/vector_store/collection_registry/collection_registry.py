@@ -1,5 +1,5 @@
 """
-Abstract base classes for a collection registry, its reservations and registrations.
+Abstract base classes for a collection registry, its reservations, and registrations.
 
 The catalog of a vector store whose backend cannot arbitrate one: which
 logical collections exist, under which incarnation and configuration, and
@@ -206,7 +206,7 @@ class VectorStoreCollectionRegistry(ABC):
 
         A tombstone is due once the retention has passed since its deletion.
         The registry claims it, calls `purge_round` with its namespace,
-        configuration and incarnation, and records the outcome under the claim:
+        configuration, and incarnation, and records the outcome under the claim:
         a round that returns False found no records, which removes the tombstone
         and frees its incarnation; one that returns True keeps the tombstone due.
         A round that raises is a failed round and its error propagates: the

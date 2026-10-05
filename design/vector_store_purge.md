@@ -17,7 +17,7 @@ serves a backend:
 
 ## Design
 
-Deletion is logical and immediate; reclamation is physical, deferred, bounded
+Deletion is logical and immediate; reclamation is physical, deferred, bounded,
 and retried.
 
 ### Tombstones
@@ -85,7 +85,7 @@ both SQLite stores, whose deletion reclaims physically, return `False`.
    backlog without coordinating. SQLite drops the locking clause; there the
    claim's write serializes claims, for one statement.
 2. **Round.** The registry calls the store's round with the tombstone's
-   namespace, configuration and incarnation, with no transaction open. The
+   namespace, configuration, and incarnation, with no transaction open. The
    round looks for records under the incarnation where the namespace and
    configuration locate them, deletes what it finds (per backend, below), and
    returns whether it found any.
@@ -145,20 +145,22 @@ transaction, holding back vacuum or meeting
 ### Failed rounds: backoff and dead-lettering
 
 A round that raises counts against its tombstone, ending its claim, while the
-claim is the latest: `failed_rounds + 1`, and `last_failed_at = now()` on the
-database clock. A round that never ended counts the same way once its lease
-has passed, with `last_failed_at` the time it was claimed, so each round that
-does not finish is counted once, whether it raised or its purger died.
+claim is the latest: `consecutive_failed_rounds + 1`, and `last_failed_at =
+now()` on the database clock. A round that never ended counts the same way
+once its lease has passed, with `last_failed_at` the time it was claimed, so
+each round that does not finish is counted once, whether it raised or its
+purger died.
 
 - **Backoff.** After its f-th consecutive failure, a tombstone is claimed
   again once `min(base_purge_retry_backoff_seconds * 2^(f-1),
   max_purge_retry_backoff_seconds)` has passed since `last_failed_at`: 30 s,
-  60 s, 120 s and so on, at most 1 h. The tombstones behind it are claimed
+  60 s, 120 s, and so on, at most 1 h. The tombstones behind it are claimed
   meanwhile, so one failing tombstone does not hold the queue.
 - **Dead-lettering.** After 10 consecutive failures, about 3 hours of retries,
   the tombstone is dead-lettered: kept, its incarnation reserved, skipped by
-  claims, and reported by an error log naming the incarnation, the last error, and the
-  table. Setting its `failed_rounds` back to 0 returns it to the purge.
+  claims, and reported by an error log naming the incarnation, the last error,
+  and the table. Setting its `consecutive_failed_rounds` back to 0 returns it
+  to the purge.
 - The backoff is computed from recorded facts (the count and the time of the
   last failure), not stored as a time to retry at. Both durations are registry
   parameters in seconds with those defaults, so they can become configuration
@@ -214,16 +216,16 @@ processes need no coordination: the claim arbitrates.
 - **Count the backoff from when the tombstone came due**, with no new column.
   Measured: a tombstone due for days retries at once, its backoff spent before
   it first fails, so after an outage it fails as fast as before.
-- **An index on `(enqueued_at, failed_rounds)`.** It helps only skipping
-  dead-lettered tombstones, so the claim keeps `(enqueued_at)`.
+- **An index on `(enqueued_at, consecutive_failed_rounds)`.** It helps only
+  skipping dead-lettered tombstones, so the claim keeps `(enqueued_at)`.
 - **A separate dead-letter table.** A counter on the queue row does the same
   with no move between tables.
 - **Count every round when it is claimed**, resetting the count when a round
   finds records, as job queues count attempts. It counts the same rounds, but
   the count would include the round still running, and a round whose purger
   died would have no failure time to back off from. Counting an unended round
-  when its lease is found passed keeps `failed_rounds` the number of rounds
-  that did not finish, and the backoff running from a recorded time.
+  when its lease is found passed keeps `consecutive_failed_rounds` the number
+  of rounds that did not finish, and the backoff running from a recorded time.
 - **A column for the claim a round ended, or PostgreSQL's `RETURNING OLD`**,
   to tell an unended claim from a fresh one. The claim's `SET` reads the row
   as it was on both PostgreSQL and SQLite, so it records the difference in
@@ -272,7 +274,7 @@ processes need no coordination: the claim arbitrates.
 - Deleted records stay in the backend at least the retention: storage is
   reclaimed a day after deletion by default.
 - An operator watches for the dead-letter error log. A dead-lettered
-  tombstone's records stay until someone resets its `failed_rounds`.
+  tombstone's records stay until someone resets its `consecutive_failed_rounds`.
 - The purge loads the backend in bounded rounds from every process's sweeper,
   and the rounds of different tombstones proceed in parallel.
 - A tombstone whose round died waits out the lease, then counts that round as

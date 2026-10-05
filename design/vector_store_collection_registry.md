@@ -37,7 +37,7 @@ wrote it.
 
 - `VectorStoreCollectionRegistry` (`common/vector_store/collection_registry/`)
   is the ABC, addressed by (namespace, name). Its operations are `startup`,
-  `reserve`, `resolve`, `unregister` and `run_purge_round`.
+  `reserve`, `resolve`, `unregister`, and `run_purge_round`.
 - `Reservation` and `Registration` are handles on one life of a collection
   (see [Reservations and registrations](#reservations-and-registrations)).
 - `SQLAlchemyVectorStoreCollectionRegistry` is the one implementation. It
@@ -46,15 +46,15 @@ wrote it.
   SQLite.
 - `RegistryBackedVectorStore` (`common/vector_store/registry_backed_vector_store.py`)
   is the base of the Qdrant and Milvus stores and makes every registry call
-  they make: create, open-or-create, open and delete, the purge claim, and a
-  handle's liveness fence. Its handle's `upsert`, `query` and `delete` check
+  they make: create, open-or-create, open, delete, the purge round, and a
+  handle's liveness fence. Its handle's `upsert`, `query`, and `delete` check
   their inputs and the handle's liveness around the backend call. A subclass
   supplies the backend steps: preparing a new collection's storage, the
   handle's backend calls (`_upsert`, `_query`, `_delete`), and one purge
   round over an incarnation's records. Nothing in the base assumes how the backend lays
   records out. Qdrant and Milvus share a native collection per namespace and
   configuration. A backend with a unit per collection, such as a Pinecone or
-  turbopuffer namespace, a Chroma collection or a Weaviate tenant, would make
+  turbopuffer namespace, a Chroma collection, or a Weaviate tenant, would make
   the collection's unit when it prepares its storage, which runs after the
   registration that mints the incarnation naming it, and its purge round
   would drop it.
@@ -110,7 +110,7 @@ reservation, or a registration.
   `VectorStoreCollectionHandleStaleError`).
 - **Why no state fields.** A handle's fields (namespace, name, configuration,
   incarnation) belong to its life and never change. Whether the collection is
-  pending, live or deleted changes under every holder: a `live` field would
+  pending, live, or deleted changes under every holder: a `live` field would
   be a snapshot, made stale by the creator's own `confirm`. The state is
   conveyed instead by the outcome of each call. `reserve` answers a
   reservation, and `confirm` a registration. `resolve` answers a
@@ -153,7 +153,7 @@ pair per vector store, keeps the schema static.
 | `name` | string | Kept for inspection; the purge does not read it. |
 | `config` | JSON | With `namespace`, locates the records in the store. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
-| `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
+| `consecutive_failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
 | `last_failed_at` | timestamp, nullable | When the last of them raised or, if it never ended, was claimed, on the database clock. |
 | `claimed_at` | timestamp, nullable | When the tombstone's latest claim was taken, on the database clock; null once its round ended. |
 | `claim_generation` | integer | Incremented by each claim; a round's writes that end its claim are conditioned on it. |
@@ -334,7 +334,7 @@ where the backend is remote:
 ## Alternatives considered
 
 - **Keep the catalog in the backend.** Rejected: neither
-  backend can arbitrate a create, a delete or a claim.
+  backend can arbitrate a create, a delete, or a claim.
 - **Process-local locks.** They serialize one process only; the goal is any
   process serving any collection.
 - **Storage first, registry last**, with no pending state. It suits storage a namespace and configuration's collections

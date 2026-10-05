@@ -2,7 +2,7 @@
 Base classes for a vector store whose collections a collection registry arbitrates.
 
 The registry mints each collection's incarnation and arbitrates creation,
-deletion and reclamation across processes. A collection's name is
+deletion, and reclamation across processes. A collection's name is
 reserved, its storage is prepared, and the reservation is confirmed, which
 makes the collection live; only a live collection is opened. The backend
 holds records, each carrying its collection's incarnation, and a subclass
@@ -70,7 +70,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
     purge reclaims.
 
     For subclasses: `_incarnation` is the incarnation the handle is bound to,
-    and a subclass implements the backend calls `_upsert`, `_query` and
+    and a subclass implements the backend calls `_upsert`, `_query`, and
     `_delete`.
     """
 
@@ -171,7 +171,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
         Search the handle's incarnation's records for each query vector.
 
         Called after a liveness check, with at least one query vector and a
-        positive limit, the vectors, threshold and filter already checked.
+        positive limit, the vectors, threshold, and filter already checked.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.
@@ -252,7 +252,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
 
     For subclasses: `_collection_registry` is the registry and `_tracker` times
     each operation, and a subclass implements `_prepare_storage`,
-    `_build_collection_handle` and `_purge_round`.
+    `_build_collection_handle`, and `_purge_round`.
     """
 
     def __init__(
@@ -471,7 +471,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         Args:
             registration (Registration):
                 The live collection's registration, which carries its
-                namespace, name, configuration and incarnation.
+                namespace, name, configuration, and incarnation.
 
         Returns:
             CollectionT:

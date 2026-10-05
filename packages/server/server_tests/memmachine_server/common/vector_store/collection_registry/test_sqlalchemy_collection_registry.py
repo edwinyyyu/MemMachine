@@ -148,7 +148,7 @@ async def _failed_rounds(
     async with registry._engine.connect() as connection:
         return (
             await connection.execute(
-                select(PurgeQueueRow.failed_rounds).where(
+                select(PurgeQueueRow.consecutive_failed_rounds).where(
                     PurgeQueueRow.incarnation == incarnation
                 )
             )
@@ -778,7 +778,7 @@ async def test_a_failure_counted_past_the_dead_letter_bound_is_reported(
         await connection.execute(
             update(PurgeQueueRow)
             .where(PurgeQueueRow.incarnation == incarnation)
-            .values(failed_rounds=_MAX_FAILED_PURGE_ROUNDS)
+            .values(consecutive_failed_rounds=_MAX_FAILED_PURGE_ROUNDS)
         )
 
     with caplog.at_level(logging.ERROR):
