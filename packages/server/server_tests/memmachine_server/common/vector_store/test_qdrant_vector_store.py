@@ -360,6 +360,82 @@ class TestUpsertAndQuery:
         assert len(all_results) == 0
 
 
+# A query, and vectors that each metric ranks in its own order, with no two
+# tied under any metric.
+_METRIC_QUERY = [1.0, 0.0, 0.0]
+_METRIC_VECTORS = [
+    [3.0, 3.0, 0.0],
+    [1.0, 0.2, 0.0],
+    [1.4, 0.4, 0.0],
+    [1.6, 0.0, 0.0],
+    [0.5, 0.05, 0.0],
+]
+
+
+def _metric_score(
+    metric: SimilarityMetric, query: list[float], vector: list[float]
+) -> float:
+    """The score QueryMatch defines for a vector matching a query under a metric."""
+    dot = sum(q * v for q, v in zip(query, vector, strict=True))
+    if metric is SimilarityMetric.COSINE:
+        return dot / (math.hypot(*query) * math.hypot(*vector))
+    if metric is SimilarityMetric.DOT:
+        return dot
+    if metric is SimilarityMetric.EUCLIDEAN:
+        return math.dist(query, vector)
+    return sum(abs(q - v) for q, v in zip(query, vector, strict=True))
+
+
+class TestSimilarityMetrics:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("metric", list(SimilarityMetric))
+    async def test_matches_are_ranked_scored_and_thresholded_by_the_metric(
+        self, store, metric
+    ):
+        """Matches come best first, each scored as QueryMatch defines for the
+        collection's metric, and a score threshold keeps the matches on its
+        better side: above it for a similarity, below it for a distance."""
+        name = f"metric_{metric.value}"
+        config = VectorStoreCollectionConfig(
+            vector_dimensions=VECTOR_DIM, similarity_metric=metric
+        )
+        await store.create_collection(namespace=NAMESPACE, name=name, config=config)
+        collection = await store.open_collection(namespace=NAMESPACE, name=name)
+        assert collection is not None
+        records = [_make_record(vector=vector) for vector in _METRIC_VECTORS]
+        await collection.upsert(records=records)
+
+        expected = sorted(
+            (
+                (_metric_score(metric, _METRIC_QUERY, record.vector), record.uuid)
+                for record in records
+            ),
+            reverse=metric.higher_is_better,
+        )
+        [result] = await collection.query(
+            query_vectors=[_METRIC_QUERY], limit=len(records)
+        )
+        assert [match.record_uuid for match in result.matches] == [
+            record_uuid for _, record_uuid in expected
+        ]
+        assert [match.score for match in result.matches] == pytest.approx(
+            [score for score, _ in expected], abs=1e-5
+        )
+
+        # Halfway between the second and third best scores.
+        threshold = (expected[1][0] + expected[2][0]) / 2
+        [kept] = await collection.query(
+            query_vectors=[_METRIC_QUERY],
+            limit=len(records),
+            score_threshold=threshold,
+        )
+        assert [match.record_uuid for match in kept.matches] == [
+            record_uuid for _, record_uuid in expected[:2]
+        ]
+
+        await store.delete_collection(namespace=NAMESPACE, name=name)
+
+
 @dataclass(frozen=True)
 class _CurrentRegistration(Registration):
     """A registration whose collection is never deleted."""
