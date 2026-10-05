@@ -165,18 +165,16 @@ async def _age_last_failure(
 
 
 async def _age_claim(
-    registry: SQLAlchemyVectorStoreCollectionRegistry, incarnation: UUID
+    registry: SQLAlchemyVectorStoreCollectionRegistry,
+    incarnation: UUID,
+    ago: timedelta = PURGE_LEASE + timedelta(seconds=1),
 ) -> None:
-    """Move the tombstone's claim back past the purge lease, on the database clock."""
+    """Move the tombstone's claim back to `ago` before now, past the purge lease unless given, on the database clock."""
     async with registry._engine.begin() as connection:
         await connection.execute(
             update(PurgeQueueRow)
             .where(PurgeQueueRow.incarnation == incarnation)
-            .values(
-                claimed_at=_database_time_ago(
-                    registry._engine, PURGE_LEASE + timedelta(seconds=1)
-                )
-            )
+            .values(claimed_at=_database_time_ago(registry._engine, ago))
         )
 
 
@@ -210,6 +208,30 @@ async def _start_held_round(
     task = asyncio.create_task(registry.run_purge_round(held))
     await asyncio.wait_for(held.running.wait(), 30)
     return held, task
+
+
+async def _abandon_claim(
+    registry: SQLAlchemyVectorStoreCollectionRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> UUID:
+    """Claim the oldest due tombstone and stop, as a purger that dies during its round: nothing after the claim reaches the database. The claimed incarnation."""
+    held, task = await _start_held_round(registry)
+
+    async def lost(incarnation: UUID, claim_generation: int) -> None:
+        raise ConnectionError("the purger is gone")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(registry, "_end_claim", lost)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    return held.ran[0]
+
+
+async def _no_round(
+    namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+) -> bool:
+    raise AssertionError("a round ran where none was due")
 
 
 async def _failing_round(registry: SQLAlchemyVectorStoreCollectionRegistry) -> UUID:
@@ -783,47 +805,134 @@ async def test_a_stored_configuration_that_no_longer_validates_counts_as_a_faile
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_round_is_not_a_failed_round(
-    sqlalchemy_engine, vector_store_name
+async def test_a_cancelled_round_ends_its_claim_without_counting_it(
+    sqlalchemy_engine, vector_store_name, caplog
 ):
+    """A cancelled round is not a failed round, and its tombstone is
+    claimable at once, without waiting out the lease."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
-    async def cancelled(
-        namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
-    ) -> bool:
-        raise asyncio.CancelledError
-
+    _, holding = await _start_held_round(registry)
+    holding.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await registry.run_purge_round(cancelled)
+        await holding
+
     assert await _failed_rounds(registry, incarnation) == 0
+    with caplog.at_level(logging.WARNING):
+        assert await _round(registry, any_records_found=False) == incarnation
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 @pytest.mark.asyncio
-async def test_a_claim_whose_round_never_ended_holds_its_tombstone_until_the_lease_ends(
-    sqlalchemy_engine, vector_store_name
+async def test_a_round_that_never_ended_counts_as_failed_once_its_lease_passes(
+    sqlalchemy_engine, vector_store_name, monkeypatch, caplog
 ):
-    """A round cut short by a cancellation, as by a crash, writes nothing
-    after its claim: the tombstone is claimed again once the lease has passed."""
+    """A purger that dies during its round writes nothing after its claim.
+    The tombstone stays claimed until the lease passes; the claim that then
+    finds it counts that round as failed, as of when it was claimed, and
+    reports it, rather than running a round of its own."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
-    async def cancelled(
-        namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
-    ) -> bool:
-        raise asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        await registry.run_purge_round(cancelled)
-
+    with caplog.at_level(logging.ERROR):
+        assert await _abandon_claim(registry, monkeypatch) == incarnation
+    assert [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR and str(incarnation) in r.getMessage()
+    ], "the lost end of the claim was not reported"
     assert await _round(registry, any_records_found=False) is None
+
     await _age_claim(registry, incarnation)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert await registry.run_purge_round(_no_round)
+    assert [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and str(incarnation) in r.getMessage()
+    ]
+    assert await _failed_rounds(registry, incarnation) == 1
+
+    # Backing off from when the abandoned round was claimed, which is past.
     assert await _round(registry, any_records_found=False) == incarnation
     assert await _queued(registry) == []
+
+
+@pytest.mark.asyncio
+async def test_rounds_that_never_end_dead_letter_the_tombstone(
+    sqlalchemy_engine, vector_store_name, monkeypatch, caplog
+):
+    """A tombstone whose rounds keep killing their purger is dead-lettered
+    like one whose rounds keep raising."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+    await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
+
+    with caplog.at_level(logging.ERROR):
+        for _ in range(_MAX_FAILED_PURGE_ROUNDS):
+            await _age_last_failure(registry, incarnation, timedelta(days=1))
+            assert await _abandon_claim(registry, monkeypatch) == incarnation
+            await _age_claim(registry, incarnation, timedelta(days=1))
+            assert await registry.run_purge_round(_no_round)
+
+    assert await _failed_rounds(registry, incarnation) == _MAX_FAILED_PURGE_ROUNDS
+    assert [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and str(incarnation) in r.getMessage()
+        and "dead-lettered" in r.getMessage()
+    ]
+    await _age_last_failure(registry, incarnation, timedelta(days=1))
+    assert await _round(registry, any_records_found=False) is None
+    assert await _queued(registry) == [incarnation]
+
+
+@pytest.mark.asyncio
+async def test_racing_purgers_count_a_round_that_never_ended_once(
+    sqlalchemy_engine, vector_store_name, monkeypatch, caplog
+):
+    """Purgers on separate engines that find the same unended claim at once
+    count its round once between them."""
+    engines = [create_async_engine(sqlalchemy_engine.url) for _ in range(4)]
+    try:
+        purgers = [await _registry(engine, vector_store_name) for engine in engines]
+        incarnation = (await purgers[0].reserve(NAMESPACE, "a", CONFIG)).incarnation
+        await purgers[0].unregister(NAMESPACE, "a")
+        await _age_deletion(purgers[0], incarnation)
+        await _abandon_claim(purgers[0], monkeypatch)
+        await _age_claim(purgers[0], incarnation)
+
+        async def records_found(
+            namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
+        ) -> bool:
+            return True
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(purger.run_purge_round(records_found) for purger in purgers)
+                ),
+                30,
+            )
+    finally:
+        for engine in engines:
+            await engine.dispose()
+
+    counted = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and str(incarnation) in r.getMessage()
+    ]
+    assert len(counted) == 1
 
 
 @pytest.mark.asyncio
@@ -861,9 +970,9 @@ async def test_a_claimed_tombstone_is_skipped_while_its_round_runs(
 async def test_a_round_that_outlasted_its_lease_leaves_the_claim_after_it(
     sqlalchemy_engine, vector_store_name, caplog, stale_outcome
 ):
-    """Once a round's lease has passed, another purger claims the tombstone.
-    The first round's end then changes nothing: the later claim holds, and a
-    failure is not counted against it."""
+    """Once a round's lease has passed, the tombstone is claimed again. The
+    first round's end then changes nothing: the later claim holds, and the
+    first round is counted once."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
@@ -873,9 +982,12 @@ async def test_a_round_that_outlasted_its_lease_leaves_the_claim_after_it(
     current_task = None
     try:
         await _age_claim(registry, incarnation)
+        # The stale round counts once, as failed, when its lease is found passed.
+        assert await registry.run_purge_round(_no_round)
         current, current_task = await _start_held_round(registry)
         assert current.ran == [incarnation]
 
+        caplog.clear()
         with caplog.at_level(logging.WARNING):
             if stale_outcome == "raised":
                 stale.fail(RuntimeError("the backend refused"))
@@ -889,7 +1001,7 @@ async def test_a_round_that_outlasted_its_lease_leaves_the_claim_after_it(
             for r in caplog.records
             if r.levelno == logging.WARNING and str(incarnation) in r.getMessage()
         ]
-        assert await _failed_rounds(registry, incarnation) == 0
+        assert await _failed_rounds(registry, incarnation) == 1
         assert await _round(registry, any_records_found=False) is None
 
         current.end(any_records_found=True)
@@ -917,6 +1029,7 @@ async def test_a_round_that_finds_nothing_removes_the_tombstone_under_any_claim(
     current_task = None
     try:
         await _age_claim(registry, incarnation)
+        assert await registry.run_purge_round(_no_round)
         current, current_task = await _start_held_round(registry)
         stale.end(any_records_found=False)
         assert await asyncio.wait_for(stale_task, 30)

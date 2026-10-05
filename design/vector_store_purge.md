@@ -111,9 +111,15 @@ transaction, holding back vacuum or meeting
   tombstone, where without it they would all take the oldest. A repeated round
   costs Qdrant a scroll and a filter-delete that matches nothing; on Milvus it
   repeats a listing and deletes keys already deleted.
-- **A round that dies ends with its lease.** A crash or a cancellation writes
-  nothing after the claim, and the tombstone is claimed again once the lease
-  has passed. A cancelled round is not a failed round.
+- **A cancelled round ends its claim; a round whose purger died is counted
+  when its lease passes.** A cancelled round ends its claim without counting
+  it, in a write shielded from the cancellation, so its tombstone is claimable
+  at once. A round whose purger died writes nothing after its claim. The claim
+  that finds its lease passed runs no round: it counts that round as failed,
+  as of when it was claimed, ends its claim, and logs a warning naming the
+  incarnation and that time. One `UPDATE` does both cases, since its `SET`
+  reads the row as it was: a claim that was still open leaves `claimed_at`
+  null and moves its time into `last_failed_at`, which `RETURNING` reports.
 - **The lease should exceed a round.** A round's remote calls run one after
   another, each bounded by the store's request timeout. A round that outlasts
   its lease may run beside a later round on the same tombstone, which is
@@ -140,7 +146,9 @@ transaction, holding back vacuum or meeting
 
 A round that raises counts against its tombstone, ending its claim, while the
 claim is the latest: `failed_rounds + 1`, and `last_failed_at = now()` on the
-database clock.
+database clock. A round that never ended counts the same way once its lease
+has passed, with `last_failed_at` the time it was claimed, so each round that
+does not finish is counted once, whether it raised or its purger died.
 
 - **Backoff.** After its f-th consecutive failure, a tombstone is claimed
   again once `min(base_purge_retry_backoff_seconds * 2^(f-1),
@@ -210,6 +218,16 @@ processes need no coordination: the claim arbitrates.
   dead-lettered tombstones, so the claim keeps `(enqueued_at)`.
 - **A separate dead-letter table.** A counter on the queue row does the same
   with no move between tables.
+- **Count every round when it is claimed**, resetting the count when a round
+  finds records, as job queues count attempts. It counts the same rounds, but
+  the count would include the round still running, and a round whose purger
+  died would have no failure time to back off from. Counting an unended round
+  when its lease is found passed keeps `failed_rounds` the number of rounds
+  that did not finish, and the backoff running from a recorded time.
+- **A column for the claim a round ended, or PostgreSQL's `RETURNING OLD`**,
+  to tell an unended claim from a fresh one. The claim's `SET` reads the row
+  as it was on both PostgreSQL and SQLite, so it records the difference in
+  columns `RETURNING` already returns.
 - **Batched deletes on Qdrant; one filter-delete on Milvus; listing Milvus
   keys by primary-key range.** Measured worse; see the per-backend documents.
 - **Hold the claim's transaction across the round**: a row lock on
@@ -257,7 +275,6 @@ processes need no coordination: the claim arbitrates.
   tombstone's records stay until someone resets its `failed_rounds`.
 - The purge loads the backend in bounded rounds from every process's sweeper,
   and the rounds of different tombstones proceed in parallel.
-- A tombstone whose round died is claimed again once its lease has passed.
-- A tombstone is dead-lettered after 10 consecutive failed rounds unless its
-  rounds end their purger's process, in which case no round is counted and the
-  tombstone is claimed again each time its lease passes.
+- A tombstone whose round died waits out the lease, then counts that round as
+  failed: a tombstone whose rounds keep killing their purger is dead-lettered
+  like one whose rounds keep raising.

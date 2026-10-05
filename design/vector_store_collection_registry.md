@@ -153,8 +153,8 @@ pair per vector store, keeps the schema static.
 | `name` | string | Kept for inspection; the purge does not read it. |
 | `config` | JSON | With `namespace`, locates the records in the store. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
-| `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised. |
-| `last_failed_at` | timestamp, nullable | When the last of them raised, on the database clock. |
+| `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
+| `last_failed_at` | timestamp, nullable | When the last of them raised or, if it never ended, was claimed, on the database clock. |
 | `claimed_at` | timestamp, nullable | When the tombstone's latest claim was taken, on the database clock; null once its round ended. |
 | `claim_generation` | integer | Incremented by each claim; a round's writes that end its claim are conditioned on it. |
 
