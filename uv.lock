@@ -36,10 +36,12 @@ constraints = [
 [manifest.dependency-groups]
 dev = [
     { name = "complexipy", specifier = ">=5.4.1" },
+    { name = "httpx", specifier = ">=0.25.1" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "python-dateutil", specifier = ">=2.9.0" },
     { name = "ruff", specifier = "==0.16.8" },
     { name = "testcontainers", extras = ["neo4j", "postgres", "qdrant"], specifier = ">=4.14.2" },
     { name = "tomli", specifier = ">=2.4.1" },
