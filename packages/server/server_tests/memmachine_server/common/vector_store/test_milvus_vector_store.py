@@ -50,9 +50,13 @@ from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collec
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStoreCollectionAlreadyExistsError,
     VectorStoreCollectionConfig,
     VectorStoreCollectionConfigMismatchError,
+    VectorStoreCollectionDeletedError,
+    VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
 )
 from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStore,
@@ -95,9 +99,16 @@ async def _settle(collection: MilvusVectorStoreCollection) -> None:
     returns only once the server has applied every earlier write, and with
     one replica the store's later reads start from that point.
     """
-    await collection._client.query(
-        collection_name=collection._native_collection_name,
-        filter=f'partition_key == "{collection._incarnation}"',
+    await _settle_native(collection._client, collection._native_collection_name)
+
+
+async def _settle_native(
+    client: AsyncMilvusClient, native_collection_name: str
+) -> None:
+    """Return once the store's reads of a native collection reflect every write made so far."""
+    await client.query(
+        collection_name=native_collection_name,
+        filter='id != ""',
         output_fields=["id"],
         limit=1,
         consistency_level="Strong",
@@ -144,6 +155,21 @@ async def _drain(store: MilvusVectorStore) -> None:
             pass
 
     await asyncio.wait_for(drain(), 60)
+
+
+def _with_purge_batch_size(
+    store: MilvusVectorStore, purge_batch_size: int
+) -> MilvusVectorStore:
+    """A store over the same client and registry, purging in batches of this size."""
+    return MilvusVectorStore(
+        MilvusVectorStoreParams(
+            client=store._client,
+            collection_registry=store._collection_registry,
+            request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+            max_varchar_length=MAX_VARCHAR_LENGTH,
+            purge_batch_size=purge_batch_size,
+        )
+    )
 
 
 # Properties of every type, declared and not, for the tests against a model.
@@ -1743,15 +1769,7 @@ class TestPurge:
         for name in handles:
             await store.delete_collection(namespace=namespace, name=name)
         purgers = [
-            MilvusVectorStore(
-                MilvusVectorStoreParams(
-                    client=purging._client,
-                    collection_registry=purging._collection_registry,
-                    request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-                    purge_batch_size=3,
-                )
-            )
-            for purging in (store, other_store)
+            _with_purge_batch_size(purging, 3) for purging in (store, other_store)
         ]
 
         await asyncio.gather(*(_drain(purger) for purger in purgers))
@@ -1774,6 +1792,279 @@ class TestPurge:
             False,
         ]
         await store.delete_collection(namespace=namespace, name="live")
+
+
+_CHURN_NAMESPACE = "churn"
+_CHURN_NAMES = ("churn_0", "churn_1", "churn_2")
+_CHURN_CONFIG = VectorStoreCollectionConfig(
+    vector_dimensions=VECTOR_DIM, indexed_properties_schema={"owner": str, "tag": str}
+)
+_CHURN_TAGS = ("red", "green", "blue")
+# The outcomes the store documents for an operation that loses a race.
+_DOMAIN_ERRORS = (
+    VectorStoreAttemptsExhaustedError,
+    VectorStoreCollectionAlreadyExistsError,
+    VectorStoreCollectionDeletedError,
+    VectorStoreCollectionHandleStaleError,
+    VectorStoreCollectionPendingError,
+)
+
+
+@dataclass(frozen=True)
+class _ChurnStep:
+    """A worker's step: the collection, the action, and the records it writes or deletes."""
+
+    name: str
+    action: str
+    records: list[Record]
+
+
+@dataclass
+class _ChurnLedger:
+    """What the churn's operations did, by the incarnation each reached."""
+
+    # The records each incarnation holds once every write has returned: those
+    # an upsert that returned wrote, less those a delete that returned removed.
+    held: dict[UUID, dict[UUID, Record]] = field(default_factory=dict)
+    # The record UUIDs any upsert sent to each incarnation.
+    sent: dict[UUID, set[UUID]] = field(default_factory=dict)
+    # The records of upserts to an incarnation deleted before they returned.
+    # Such a write can land after the incarnation's purge, which only the
+    # tombstone retention prevents.
+    raced_deletion: set[tuple[UUID, UUID]] = field(default_factory=set)
+
+
+def _churn_script(worker: int) -> tuple[str, set[UUID], list[_ChurnStep]]:
+    """A worker's owner name, its own record UUIDs, and its seeded steps."""
+    rng = random.Random(worker)
+    owner = f"worker_{worker}"
+    own = sorted(uuid4() for _ in range(6))
+    steps = []
+    for _ in range(40):
+        name = rng.choice(_CHURN_NAMES)
+        action = rng.choices(
+            ("upsert", "delete", "query", "recreate"), weights=(4, 2, 3, 1)
+        )[0]
+        records = [
+            Record(
+                uuid=record_uuid,
+                vector=_normalize([1.0, rng.random(), rng.random()]),
+                properties={
+                    "owner": owner,
+                    "tag": rng.choice(_CHURN_TAGS),
+                    "version": rng.randrange(1 << 30),
+                },
+            )
+            for record_uuid in rng.sample(own, k=rng.randint(1, 3))
+        ]
+        steps.append(_ChurnStep(name=name, action=action, records=records))
+    return owner, set(own), steps
+
+
+async def _churn_on(
+    handle: MilvusVectorStoreCollection,
+    step: _ChurnStep,
+    owner: str,
+    own: set[UUID],
+    ledger: _ChurnLedger,
+) -> None:
+    """Run an upsert, delete or query step through a handle, and record its outcome."""
+    incarnation = handle._incarnation
+    record_uuids = [record.uuid for record in step.records]
+    match step.action:
+        case "upsert":
+            ledger.sent.setdefault(incarnation, set()).update(record_uuids)
+            try:
+                await handle.upsert(records=step.records)
+            except VectorStoreCollectionHandleStaleError:
+                ledger.raced_deletion.update(
+                    (incarnation, record_uuid) for record_uuid in record_uuids
+                )
+                raise
+            ledger.held.setdefault(incarnation, {}).update(
+                {record.uuid: record for record in step.records}
+            )
+        case "delete":
+            await handle.delete(record_uuids=record_uuids)
+            for record_uuid in record_uuids:
+                ledger.held.get(incarnation, {}).pop(record_uuid, None)
+        case _:
+            matched = await _model_matches(
+                handle, Comparison(field="owner", op="=", value=owner)
+            )
+            # Only records this owner sent to this incarnation.
+            assert matched <= ledger.sent.get(incarnation, set()) & own
+
+
+async def _churn_worker(
+    store: MilvusVectorStore,
+    worker: int,
+    ledger: _ChurnLedger,
+    deleted: asyncio.Event,
+) -> None:
+    owner, own, steps = _churn_script(worker)
+    handles: dict[str, MilvusVectorStoreCollection] = {}
+    for step in steps:
+        try:
+            if step.action == "recreate":
+                handles.pop(step.name, None)
+                await store.delete_collection(
+                    namespace=_CHURN_NAMESPACE, name=step.name
+                )
+                deleted.set()
+                await store.create_collection(
+                    namespace=_CHURN_NAMESPACE, name=step.name, config=_CHURN_CONFIG
+                )
+                continue
+            if step.name not in handles:
+                handles[step.name] = await store.open_or_create_collection(
+                    namespace=_CHURN_NAMESPACE, name=step.name, config=_CHURN_CONFIG
+                )
+            await _churn_on(handles[step.name], step, owner, own, ledger)
+        except VectorStoreCollectionHandleStaleError:
+            handles.pop(step.name, None)
+        except _DOMAIN_ERRORS:
+            pass
+
+
+async def _churn(stores: tuple[MilvusVectorStore, ...], ledger: _ChurnLedger) -> None:
+    """Run six workers across the stores, each store's purger draining after
+    every collection deletion, until the workers finish."""
+    wakes = [asyncio.Event() for _ in stores]
+    deleted = asyncio.Event()
+    stopping = asyncio.Event()
+
+    async def purge(purging: MilvusVectorStore, wake: asyncio.Event) -> None:
+        while not stopping.is_set():
+            await wake.wait()
+            wake.clear()
+            await _drain(purging)
+
+    async def wake_purgers() -> None:
+        while not stopping.is_set():
+            await deleted.wait()
+            deleted.clear()
+            for wake in wakes:
+                wake.set()
+
+    background = [
+        asyncio.create_task(purge(purging, wake))
+        for purging, wake in zip(stores, wakes, strict=True)
+    ]
+    background.append(asyncio.create_task(wake_purgers()))
+    try:
+        await asyncio.gather(
+            *(
+                _churn_worker(stores[worker % len(stores)], worker, ledger, deleted)
+                for worker in range(6)
+            )
+        )
+    finally:
+        stopping.set()
+        deleted.set()
+        for wake in wakes:
+            wake.set()
+        await asyncio.gather(*background)
+
+
+async def _check_live_collection(
+    handle: MilvusVectorStoreCollection, held: dict[UUID, Record]
+) -> None:
+    """Check that a collection holds exactly these records, with their values."""
+    stored = await _incarnation_uuids(
+        handle._client, handle._native_collection_name, handle._incarnation
+    )
+    assert sorted(stored) == sorted(held)
+    rows = await _stored(handle, list(held)) if held else {}
+    assert {
+        record_uuid: decode_properties(row["properties"])["version"]
+        for record_uuid, row in rows.items()
+    } == {
+        record_uuid: record.properties["version"]
+        for record_uuid, record in held.items()
+    }
+    await _settle(handle)
+    owners = {record.properties["owner"] for record in held.values()}
+    for key, value in [("owner", owner) for owner in owners] + [
+        ("tag", tag) for tag in _CHURN_TAGS
+    ]:
+        assert await _model_matches(
+            handle, Comparison(field=key, op="=", value=value)
+        ) == {
+            record_uuid
+            for record_uuid, record in held.items()
+            if record.properties[key] == value
+        }, (key, value)
+
+
+def _settle_each_purge_round(store: MilvusVectorStore, monkeypatch) -> None:
+    """Begin each of the store's purge rounds once its reads reflect every
+    write that returned before the round.
+
+    A tombstone retention longer than the store's read delay gives a round
+    this; the tests' tombstones come due at once.
+    """
+    purge_round = store._purge_round
+
+    async def settled_purge_round(
+        namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        await _settle_native(
+            store._client,
+            MilvusVectorStore._build_native_collection_name(namespace, config),
+        )
+        return await purge_round(namespace, config, incarnation)
+
+    monkeypatch.setattr(store, "_purge_round", settled_purge_round)
+
+
+class TestChurn:
+    @pytest.mark.asyncio
+    async def test_churn_across_two_stores_with_purgers_keeps_every_collection_exact(
+        self, store, other_store, monkeypatch
+    ):
+        """Workers on two stores sharing a registry upsert, delete and query
+        records they alone own, and delete and recreate collections they
+        share, while each store's purger drains. Only the documented outcomes
+        of a lost race are raised, and nothing hangs. Once quiet, each live
+        collection holds exactly its records, with their latest values, and
+        no deleted collection keeps a record but one an upsert racing its
+        deletion sent."""
+        # Small batches, so a deleted collection takes several rounds.
+        stores = (
+            _with_purge_batch_size(store, 2),
+            _with_purge_batch_size(other_store, 2),
+        )
+        for purging in stores:
+            _settle_each_purge_round(purging, monkeypatch)
+        ledger = _ChurnLedger()
+
+        await asyncio.wait_for(_churn(stores, ledger), 300)
+        for purging in stores:
+            await _drain(purging)
+
+        live = set()
+        for name in _CHURN_NAMES:
+            handle = await store.open_collection(namespace=_CHURN_NAMESPACE, name=name)
+            if handle is not None:
+                live.add(handle._incarnation)
+                await _check_live_collection(
+                    handle, ledger.held.get(handle._incarnation, {})
+                )
+        left = await store._client.query(
+            collection_name=MilvusVectorStore._build_native_collection_name(
+                _CHURN_NAMESPACE, _CHURN_CONFIG
+            ),
+            filter='id != ""',
+            output_fields=["partition_key", "record_uuid"],
+            limit=16384,
+            consistency_level="Strong",
+        )
+        assert {
+            (UUID(row["partition_key"]), UUID(row["record_uuid"]))
+            for row in left
+            if UUID(row["partition_key"]) not in live
+        } <= ledger.raced_deletion
 
 
 class TestLifecycleContract(CollectionLifecycleContract):
