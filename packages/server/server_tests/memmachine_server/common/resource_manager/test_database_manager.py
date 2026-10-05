@@ -553,11 +553,20 @@ async def test_qdrant_close(tmp_path):
 # --- Milvus ---
 
 
-def _milvus_only_conf() -> MagicMock:
-    """Build a DatabasesConf mock with only a Milvus entry."""
+def _milvus_only_conf(registry_dir: Path) -> MagicMock:
+    """Build a DatabasesConf mock with only a Milvus entry.
+
+    Its collection registry is a SQLite file in `registry_dir`.
+    """
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
-    conf.relational_db_confs = {"registry": _REGISTRY_DB}
+    conf.relational_db_confs = {
+        "registry": SqlAlchemyConf(
+            dialect="sqlite",
+            driver="aiosqlite",
+            path=str(registry_dir / "registry.db"),
+        )
+    }
     conf.nebula_graph_confs = {}
     conf.qdrant_confs = {}
     conf.milvus_confs = {
@@ -572,9 +581,9 @@ def _milvus_only_conf() -> MagicMock:
 
 @pytest.mark.asyncio
 @requires_pymilvus
-async def test_milvus_client_kwargs_forwarded():
+async def test_milvus_client_kwargs_forwarded(tmp_path):
     """uri, token, db_name and the request timeout are forwarded to AsyncMilvusClient."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
         uri="https://example.zillizcloud.com",
@@ -609,9 +618,9 @@ async def test_milvus_client_kwargs_forwarded():
 
 @pytest.mark.asyncio
 @requires_pymilvus
-async def test_milvus_token_and_db_name_omitted_when_empty():
+async def test_milvus_token_and_db_name_omitted_when_empty(tmp_path):
     """Empty auth and database values are not forwarded."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
@@ -634,10 +643,12 @@ async def test_milvus_token_and_db_name_omitted_when_empty():
 
 @pytest.mark.asyncio
 @requires_pymilvus
-async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown():
+async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown(
+    tmp_path,
+):
     """The registry database is resolved before the client is opened, so a
     bad collection_registry leaves no client behind."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
     conf.milvus_confs["milvus1"] = MilvusConf(collection_registry="missing")
 
     with patch("pymilvus.AsyncMilvusClient") as mock_cls:
@@ -651,9 +662,9 @@ async def test_milvus_client_is_not_opened_when_the_registry_database_is_unknown
 
 @pytest.mark.asyncio
 @requires_pymilvus
-async def test_milvus_creates_vector_store():
+async def test_milvus_creates_vector_store(tmp_path):
     """async_get_milvus_client creates a MilvusVectorStore and stores it."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
     conf.milvus_confs["milvus1"] = MilvusConf(
         collection_registry="registry",
         tombstone_retention_seconds=3600,
@@ -704,9 +715,9 @@ async def test_milvus_creates_vector_store():
 
 @pytest.mark.asyncio
 @requires_pymilvus
-async def test_get_vector_store_milvus():
+async def test_get_vector_store_milvus(tmp_path):
     """get_vector_store returns the VectorStore for a Milvus config."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
 
     mock_client = AsyncMock()
     mock_client.list_collections = AsyncMock(return_value=[])
@@ -729,9 +740,9 @@ async def test_get_vector_store_milvus():
 
 
 @pytest.mark.asyncio
-async def test_milvus_config_not_found():
+async def test_milvus_config_not_found(tmp_path):
     """async_get_milvus_client raises ValueError for unknown names."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
     conf.milvus_confs = {}
     builder = DatabaseManager(conf)
     with pytest.raises(ValueError, match="Milvus config 'missing' not found"):
@@ -753,9 +764,9 @@ async def test_milvus_validation_failure():
 
 @pytest.mark.asyncio
 @requires_pymilvus
-async def test_milvus_close():
+async def test_milvus_close(tmp_path):
     """close() cleans up Milvus clients and vector stores."""
-    conf = _milvus_only_conf()
+    conf = _milvus_only_conf(tmp_path)
 
     mock_client = AsyncMock()
     mock_client.close = AsyncMock()
