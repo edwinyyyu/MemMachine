@@ -911,6 +911,64 @@ class TestScores:
         assert result.matches[0].score == pytest.approx(expected, abs=1e-3)
         await store.delete_collection(namespace=NAMESPACE, name=name)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("metric", "vectors", "threshold", "expected_scores"),
+        [
+            # Distances 1, 2 and 5; the threshold lies between 2 and its square.
+            (
+                SimilarityMetric.EUCLIDEAN,
+                [[2.0, 0.0, 0.0], [1.0, 2.0, 0.0], [1.0, 0.0, 5.0]],
+                3.0,
+                [1.0, 2.0],
+            ),
+            (
+                SimilarityMetric.DOT,
+                [[3.0, 0.0, 0.0], [2.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+                1.5,
+                [3.0, 2.0],
+            ),
+            (
+                SimilarityMetric.COSINE,
+                [[1.0, 0.0, 0.0], [0.6, 0.8, 0.0], [0.0, 1.0, 0.0]],
+                0.5,
+                [1.0, 0.6],
+            ),
+        ],
+        ids=["euclidean", "dot", "cosine"],
+    )
+    async def test_a_threshold_keeps_the_matches_within_it_best_first(
+        self, store, metric, vectors, threshold, expected_scores
+    ):
+        """Of three records at increasing distance from the query, the two
+        within the threshold match, best first, scored by the metric."""
+        name = f"threshold_{metric.value}"
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name=name,
+            config=VectorStoreCollectionConfig(
+                vector_dimensions=VECTOR_DIM, similarity_metric=metric
+            ),
+        )
+        collection = await store.open_collection(namespace=NAMESPACE, name=name)
+        assert collection is not None
+        nearest, middle, farthest = (_make_record(vector=vector) for vector in vectors)
+        await collection.upsert(records=[farthest, nearest, middle])
+        await _settle(collection)
+
+        [result] = await collection.query(
+            query_vectors=[[1.0, 0.0, 0.0]], limit=10, score_threshold=threshold
+        )
+
+        assert [match.record_uuid for match in result.matches] == [
+            nearest.uuid,
+            middle.uuid,
+        ]
+        assert [match.score for match in result.matches] == pytest.approx(
+            expected_scores, abs=1e-3
+        )
+        await store.delete_collection(namespace=NAMESPACE, name=name)
+
 
 class TestDelete:
     @pytest.mark.asyncio
