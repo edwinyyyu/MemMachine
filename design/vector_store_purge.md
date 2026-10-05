@@ -75,44 +75,72 @@ both SQLite stores, whose deletion reclaims physically, return `False`.
 
 `run_purge_round()` runs one round:
 
-1. **Claim.** One range on the `(vector_store_name, enqueued_at)` index: the
-   oldest due tombstone that is neither backing off nor dead-lettered,
-   `LIMIT 1`. On PostgreSQL it is selected `FOR UPDATE SKIP LOCKED`: a
-   concurrent purger skips a locked tombstone and takes the next, so purgers
-   on every process split a backlog without coordinating. SQLite has no row
-   locks, so there the claim is an `UPDATE` of the tombstone's row, which
-   opens SQLite's write transaction: purgers serialize at the claim, and
-   rounds run one at a time. SQLite's write lock covers the whole database
-   file and is then held across the round's remote calls, each bounded by the
-   store's request timeout (30 s by default). Every writer to that database
-   waits for it: the registry's, and those of every store sharing the
-   database, as the episode store, session manager, segment store and
-   configuration database do under the configuration wizard's defaults. Past
-   the driver's busy timeout (SQLite's 5 s default, which the server does not
-   change) they fail with a locked-database error.
+1. **Claim.** One `UPDATE ... RETURNING`, committed at once, takes the oldest
+   due tombstone that is neither backing off, dead-lettered, nor held by
+   another claim: it stamps the tombstone's `claimed_at` with the database's
+   `now()` and increments its `claim_generation`. The tombstone is picked by
+   one range on the `(vector_store_name, enqueued_at)` index, `LIMIT 1`. On
+   PostgreSQL the pick is `FOR UPDATE SKIP LOCKED`, so a concurrent claim
+   skips a row another claim is taking and purgers on every process split a
+   backlog without coordinating. SQLite drops the locking clause; there the
+   claim's write serializes claims, for one statement.
 2. **Round.** The registry calls the store's round with the tombstone's
-   namespace, configuration and incarnation. The round looks for records under
-   the incarnation where the namespace and configuration locate them, deletes
-   what it finds (per backend, below), and returns whether it found any.
-3. **Record.** In the claim's transaction: a round that found nothing removes
-   the tombstone, which frees the incarnation; a round that found records keeps
-   it due and clears its failed rounds.
+   namespace, configuration and incarnation, with no transaction open. The
+   round looks for records under the incarnation where the namespace and
+   configuration locate them, deletes what it finds (per backend, below), and
+   returns whether it found any.
+3. **Record.** In a short transaction: a round that found nothing removes the
+   tombstone, which frees the incarnation; a round that found records ends its
+   claim, keeping the tombstone due, and clears its failed rounds.
 
-The claim's transaction stays open for the whole round, holding the
-tombstone's row lock, and sits idle on PostgreSQL while the backend deletes. A
-deployment that sets PostgreSQL's `idle_in_transaction_session_timeout` (off by
-default) must set it above a round's duration. A shorter one ends the claim's
-session mid-round: the round fails, though its deletions in the backend stand,
-and a tombstone whose rounds keep outlasting the timeout is dead-lettered after
-10. The measured rounds take about 100 ms per Milvus batch and, on Qdrant,
-whose single filter-delete makes the longest round, about 1.3 s per million
-points (see the per-backend documents).
+### The lease
+
+A claim holds its tombstone until its round ends, or until
+`purge_lease_seconds` (a registry parameter; 300, five minutes, by default)
+has passed since `claimed_at` on the database clock. No transaction is open
+while the round runs, so no lock is held across its remote calls. On SQLite,
+whose write lock covers the whole database file, every store sharing the
+database can write during a round. On PostgreSQL, no session sits idle in a
+transaction, holding back vacuum or meeting
+`idle_in_transaction_session_timeout`.
+
+- **The lease spreads work; correctness does not rest on it.** A round is safe
+  to repeat and to run on two purgers at once, and a round that finds the
+  incarnation empty after the retention has finished its purge, under any
+  claim. The lease lets purgers split a backlog, each taking a different
+  tombstone, where without it they would all take the oldest. A repeated round
+  costs Qdrant a scroll and a filter-delete that matches nothing; on Milvus it
+  repeats a listing and deletes keys already deleted.
+- **A round that dies ends with its lease.** A crash or a cancellation writes
+  nothing after the claim, and the tombstone is claimed again once the lease
+  has passed. A cancelled round is not a failed round.
+- **The lease should exceed a round.** A round's remote calls run one after
+  another, each bounded by the store's request timeout. A round that outlasts
+  its lease may run beside a later round on the same tombstone, which is
+  harmless but repeats work. When it ends, it logs a warning naming the
+  incarnation and the lease. The measured rounds take about 100 ms per Milvus
+  batch and, on Qdrant, whose single filter-delete makes the longest round,
+  about 1.3 s per million points (see the per-backend documents).
+- **The generation fences the claim's own writes.** A round ends its claim, or
+  counts its failure, only while the tombstone's `claim_generation` is still
+  its claim's. So a round that outlasted its lease neither ends the claim
+  taken after it, which would let a third purger in during that claim's round,
+  nor counts a failure against it. A round that found nothing removes the
+  tombstone under any claim: what it found holds whoever found it. The fence
+  covers the registry's writes only: the backend cannot condition a delete on
+  a value held in the registry's database, so a round that outlasted its lease
+  still sends its deletes, which reach only its own dead incarnation.
+- **The lease runs on the database's clock.** `claimed_at` is the database's
+  `now()`, and the lease is applied by the database's arithmetic when a claim
+  is decided, as the retention and the backoff are, so a changed lease reaches
+  claims already held. The generation is assigned by the database too; a
+  purger supplies neither a time nor an identity.
 
 ### Failed rounds: backoff and dead-lettering
 
-A round that raises rolls back, then counts against its tombstone in a
-transaction of its own: `failed_rounds + 1`, and `last_failed_at = now()` on
-the database clock.
+A round that raises counts against its tombstone, ending its claim, while the
+claim is the latest: `failed_rounds + 1`, and `last_failed_at = now()` on the
+database clock.
 
 - **Backoff.** After its f-th consecutive failure, a tombstone is claimed
   again once `min(purge_retry_backoff_seconds * 2^(f-1),
@@ -155,15 +183,15 @@ processes need no coordination: the claim arbitrates.
   backing off and none that is not yet due. It took 0.3 / 1.3 / 11 ms on
   PostgreSQL and 0.3 / 2.1 / 21 ms on SQLite with 1k / 10k / 100k tombstones
   backing off, and 0.15-0.3 ms with none.
-- Interference (PostgreSQL 16, the claim's earlier two-statement form; 20,000
-  live collections and 20,000 tombstones): with two sweepers running rounds
-  back to back, about 78 per second, beside 16 interactive workers,
-  interactive throughput and the p99 of the handles' liveness lookup were
-  unchanged within run-to-run noise on PostgreSQL. On SQLite, where the
-  sweepers write in the same process, throughput dropped 2.5-14% at that
-  rate, as much as with sweepers
-  that only commit a one-row write per round, and not measurably at the
-  resource manager's pace.
+- Interference (PostgreSQL 16; earlier forms of the claim, which held a
+  transaction across the round; 20,000 live collections and 20,000
+  tombstones): with two sweepers running rounds back to back, about 78 per
+  second, beside 16 interactive workers, interactive throughput and the p99 of
+  the handles' liveness lookup were unchanged within run-to-run noise on
+  PostgreSQL. On SQLite, where the sweepers write in the same process,
+  throughput dropped 2.5-14% at that rate, as much as with sweepers that only
+  commit a one-row write per round, and not measurably at the resource
+  manager's pace.
 
 ## Alternatives considered
 
@@ -184,6 +212,38 @@ processes need no coordination: the claim arbitrates.
   with no move between tables.
 - **Batched deletes on Qdrant; one filter-delete on Milvus; listing Milvus
   keys by primary-key range.** Measured worse; see the per-backend documents.
+- **Hold the claim's transaction across the round**: a row lock on
+  PostgreSQL, SQLite's write lock on SQLite. Rejected: SQLite's lock covers the
+  whole database file, so every writer to the database waited out the round's
+  remote calls, each bounded by the request timeout, and failed past its busy
+  timeout (SQLite's 5 s by default) with a locked-database error. On
+  PostgreSQL the session sat idle in a transaction for the round, holding
+  back vacuum.
+- **Renew the lease while a round runs.** A round is bounded by its requests'
+  timeouts, and overlapping rounds are harmless, so renewal would add a task
+  per round to save work only when a round outlasts a lease set above that
+  bound.
+- **A token the purger mints for each claim**, in place of the generation.
+  Either fences the claim's writes; the generation needs nothing from the
+  purger, since the database assigns it.
+- **Fence the tombstone's removal too.** An incarnation found empty after the
+  retention needs no more rounds, whoever found it, so the fence would only
+  discard the finding and repeat the round.
+- **Store when the lease ends (`claimed_until`).** Rejected, as `retry_at` is,
+  in favor of computing from the recorded `claimed_at`, so a changed lease
+  reaches claims already held.
+- **A progress cursor on the tombstone**, as the segment store's queue keeps.
+  Qdrant's round deletes the whole incarnation at once and leaves nothing to
+  resume. Milvus lists the incarnation's keys by its field, and its rounds
+  stayed flat to the end of a 1M purge, where the segment store's batches
+  needed the cursor to avoid stepping over every row already purged; listing
+  Milvus keys by primary-key range, which a cursor needs, measured no faster.
+  A cursor would also make the round carry a backend-specific position.
+- **A lock service keyed by name.** It locks a key the caller already knows,
+  while the claim picks the oldest due tombstone no claim holds, in one
+  statement. With the lease in another table, picking and locking become
+  separate steps that race, and a round's writes could not check the fence in
+  the tombstone's own row.
 - **A stronger read level for the purge than for the store's other reads**
   (Strong on Milvus). It would let a round see the round before it, sparing a
   repeated listing, but the design needs no more than the retention already
@@ -195,5 +255,9 @@ processes need no coordination: the claim arbitrates.
   reclaimed a day after deletion by default.
 - An operator watches for the dead-letter error log. A dead-lettered
   tombstone's records stay until someone resets its `failed_rounds`.
-- The purge loads the backend in bounded rounds from every process's sweeper;
-  on PostgreSQL the rounds of different tombstones proceed in parallel.
+- The purge loads the backend in bounded rounds from every process's sweeper,
+  and the rounds of different tombstones proceed in parallel.
+- A tombstone whose round died is claimed again once its lease has passed.
+- A tombstone is dead-lettered after 10 consecutive failed rounds unless its
+  rounds end their purger's process, in which case no round is counted and the
+  tombstone is claimed again each time its lease passes.

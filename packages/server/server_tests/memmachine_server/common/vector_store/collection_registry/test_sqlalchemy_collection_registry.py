@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -44,6 +46,7 @@ CONFIG = VectorStoreCollectionConfig(
 OTHER_CONFIG = VectorStoreCollectionConfig(vector_dimensions=4)
 RETENTION = timedelta(days=1)
 RETENTION_SECONDS = int(RETENTION.total_seconds())
+PURGE_LEASE = timedelta(minutes=5)
 NAMESPACE = "ns"
 
 
@@ -63,6 +66,7 @@ async def _registry(
             engine=engine,
             vector_store_name=vector_store_name,
             tombstone_retention_seconds=tombstone_retention_seconds,
+            purge_lease_seconds=int(PURGE_LEASE.total_seconds()),
         )
     )
     await registry.startup()
@@ -158,6 +162,54 @@ async def _age_last_failure(
             .where(PurgeQueueRow.incarnation == incarnation)
             .values(last_failed_at=_database_time_ago(registry._engine, ago))
         )
+
+
+async def _age_claim(
+    registry: SQLAlchemyVectorStoreCollectionRegistry, incarnation: UUID
+) -> None:
+    """Move the tombstone's claim back past the purge lease, on the database clock."""
+    async with registry._engine.begin() as connection:
+        await connection.execute(
+            update(PurgeQueueRow)
+            .where(PurgeQueueRow.incarnation == incarnation)
+            .values(
+                claimed_at=_database_time_ago(
+                    registry._engine, PURGE_LEASE + timedelta(seconds=1)
+                )
+            )
+        )
+
+
+class _HeldRound:
+    """A purge round that reports its start and ends when released, with the outcome given."""
+
+    def __init__(self) -> None:
+        self.ran: list[UUID] = []
+        self.running = asyncio.Event()
+        self._outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+    async def __call__(
+        self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        self.ran.append(incarnation)
+        self.running.set()
+        return await self._outcome
+
+    def end(self, any_records_found: bool) -> None:
+        self._outcome.set_result(any_records_found)
+
+    def fail(self, error: Exception) -> None:
+        self._outcome.set_exception(error)
+
+
+async def _start_held_round(
+    registry: SQLAlchemyVectorStoreCollectionRegistry,
+) -> tuple[_HeldRound, asyncio.Task[bool]]:
+    """A purge round started on the oldest due tombstone, held until released."""
+    held = _HeldRound()
+    task = asyncio.create_task(registry.run_purge_round(held))
+    await asyncio.wait_for(held.running.wait(), 30)
+    return held, task
 
 
 async def _failing_round(registry: SQLAlchemyVectorStoreCollectionRegistry) -> UUID:
@@ -679,7 +731,7 @@ async def test_a_failure_counted_past_the_dead_letter_bound_is_reported(
         )
 
     with caplog.at_level(logging.ERROR):
-        await registry._count_failed_round(incarnation, RuntimeError("refused"))
+        await registry._count_failed_round(incarnation, 0, RuntimeError("refused"))
 
     assert await _failed_rounds(registry, incarnation) == _MAX_FAILED_PURGE_ROUNDS + 1
     assert [
@@ -750,6 +802,177 @@ async def test_a_cancelled_round_is_not_a_failed_round(
 
 
 @pytest.mark.asyncio
+async def test_a_claim_whose_round_never_ended_holds_its_tombstone_until_the_lease_ends(
+    sqlalchemy_engine, vector_store_name
+):
+    """A round cut short by a cancellation, as by a crash, writes nothing
+    after its claim: the tombstone is claimed again once the lease has passed."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+    await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
+
+    async def cancelled(
+        namespace: str, config: VectorStoreCollectionConfig, claimed: UUID
+    ) -> bool:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.run_purge_round(cancelled)
+
+    assert await _round(registry, any_records_found=False) is None
+    await _age_claim(registry, incarnation)
+    assert await _round(registry, any_records_found=False) == incarnation
+    assert await _queued(registry) == []
+
+
+@pytest.mark.asyncio
+async def test_a_claimed_tombstone_is_skipped_while_its_round_runs(
+    sqlalchemy_engine, vector_store_name
+):
+    """A second purger takes the next due tombstone, and finds none once the
+    rest are taken; the claimed one is not claimed again until its round ends."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    older = (await registry.reserve(NAMESPACE, "older", CONFIG)).incarnation
+    newer = (await registry.reserve(NAMESPACE, "newer", CONFIG)).incarnation
+    await registry.unregister(NAMESPACE, "older")
+    await registry.unregister(NAMESPACE, "newer")
+    await _age_deletion(registry, older, extra=timedelta(minutes=1))
+    await _age_deletion(registry, newer)
+
+    held, holding = await _start_held_round(registry)
+    try:
+        assert held.ran == [older]
+        assert await _round(registry, any_records_found=False) == newer
+        assert await _round(registry, any_records_found=False) is None
+        held.end(any_records_found=True)
+        assert await asyncio.wait_for(holding, 30)
+    finally:
+        if not holding.done():
+            holding.cancel()
+
+    # Ended with records found: the claim is over, and the tombstone is due.
+    assert await _round(registry, any_records_found=False) == older
+    assert await _queued(registry) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale_outcome", ["records found", "raised"])
+async def test_a_round_that_outlasted_its_lease_leaves_the_claim_after_it(
+    sqlalchemy_engine, vector_store_name, caplog, stale_outcome
+):
+    """Once a round's lease has passed, another purger claims the tombstone.
+    The first round's end then changes nothing: the later claim holds, and a
+    failure is not counted against it."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+    await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
+
+    stale, stale_task = await _start_held_round(registry)
+    current_task = None
+    try:
+        await _age_claim(registry, incarnation)
+        current, current_task = await _start_held_round(registry)
+        assert current.ran == [incarnation]
+
+        with caplog.at_level(logging.WARNING):
+            if stale_outcome == "raised":
+                stale.fail(RuntimeError("the backend refused"))
+                with pytest.raises(RuntimeError):
+                    await asyncio.wait_for(stale_task, 30)
+            else:
+                stale.end(any_records_found=True)
+                assert await asyncio.wait_for(stale_task, 30)
+        assert [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and str(incarnation) in r.getMessage()
+        ]
+        assert await _failed_rounds(registry, incarnation) == 0
+        assert await _round(registry, any_records_found=False) is None
+
+        current.end(any_records_found=True)
+        assert await asyncio.wait_for(current_task, 30)
+    finally:
+        for task in (stale_task, current_task):
+            if task is not None and not task.done():
+                task.cancel()
+
+    assert await _round(registry, any_records_found=False) == incarnation
+
+
+@pytest.mark.asyncio
+async def test_a_round_that_finds_nothing_removes_the_tombstone_under_any_claim(
+    sqlalchemy_engine, vector_store_name
+):
+    """An incarnation found empty after the retention stays empty, so a round
+    that outlasted its lease still removes the tombstone it found empty."""
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+    await registry.unregister(NAMESPACE, "a")
+    await _age_deletion(registry, incarnation)
+
+    stale, stale_task = await _start_held_round(registry)
+    current_task = None
+    try:
+        await _age_claim(registry, incarnation)
+        current, current_task = await _start_held_round(registry)
+        stale.end(any_records_found=False)
+        assert await asyncio.wait_for(stale_task, 30)
+        assert await _queued(registry) == []
+
+        current.end(any_records_found=True)
+        assert await asyncio.wait_for(current_task, 30)
+    finally:
+        for task in (stale_task, current_task):
+            if task is not None and not task.done():
+                task.cancel()
+
+    assert await _queued(registry) == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_purgers_claim_each_tombstone_once(
+    sqlalchemy_engine, vector_store_name
+):
+    """Purgers on separate engines, as in separate processes, split a backlog
+    between them: every tombstone is claimed once, whatever the interleaving."""
+    engines = [create_async_engine(sqlalchemy_engine.url) for _ in range(3)]
+    try:
+        purgers = [
+            await _registry(engine, vector_store_name, tombstone_retention_seconds=0)
+            for engine in engines
+        ]
+        incarnations = []
+        for index in range(12):
+            name = f"c{index}"
+            incarnations.append(
+                (await purgers[0].reserve(NAMESPACE, name, CONFIG)).incarnation
+            )
+            await purgers[0].unregister(NAMESPACE, name)
+        ran: list[UUID] = []
+
+        async def purge_round(
+            namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+        ) -> bool:
+            ran.append(incarnation)
+            await asyncio.sleep(0.01)
+            return False
+
+        async def drain(purger: SQLAlchemyVectorStoreCollectionRegistry) -> None:
+            while await purger.run_purge_round(purge_round):
+                pass
+
+        await asyncio.wait_for(asyncio.gather(*(drain(p) for p in purgers)), 60)
+    finally:
+        for engine in engines:
+            await engine.dispose()
+
+    assert sorted(ran) == sorted(incarnations)
+
+
+@pytest.mark.asyncio
 async def test_an_incarnation_awaiting_purge_is_never_reminted(
     sqlalchemy_engine, vector_store_name, monkeypatch
 ):
@@ -786,6 +1009,34 @@ async def test_creation_that_never_mints_a_free_incarnation_gives_up(
     assert await registry.resolve(NAMESPACE, "b") is None
 
 
+@asynccontextmanager
+async def _engine_ten_days_behind(
+    engine: AsyncEngine,
+) -> AsyncGenerator[AsyncEngine, None]:
+    """An engine on the same PostgreSQL database whose now() runs ten days behind the real clock."""
+    schema = f"skewed_{uuid4().hex[:12]}"
+    async with engine.begin() as connection:
+        await connection.execute(text(f"CREATE SCHEMA {schema}"))
+        await connection.execute(
+            text(
+                f"CREATE FUNCTION {schema}.now() RETURNS timestamptz LANGUAGE sql "
+                "STABLE AS $$ SELECT pg_catalog.now() - interval '10 days' $$"
+            )
+        )
+    skewed_engine = create_async_engine(
+        engine.url,
+        connect_args={
+            "server_settings": {"search_path": f"{schema}, public, pg_catalog"}
+        },
+    )
+    try:
+        yield skewed_engine
+    finally:
+        await skewed_engine.dispose()
+        async with engine.begin() as connection:
+            await connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+
+
 @pytest.mark.asyncio
 async def test_purge_rounds_keep_time_by_the_database_clock(
     sqlalchemy_engine, vector_store_name
@@ -799,22 +1050,7 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
     """
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite's clock cannot be shadowed")
-    schema = f"skewed_{uuid4().hex[:12]}"
-    async with sqlalchemy_engine.begin() as connection:
-        await connection.execute(text(f"CREATE SCHEMA {schema}"))
-        await connection.execute(
-            text(
-                f"CREATE FUNCTION {schema}.now() RETURNS timestamptz LANGUAGE sql "
-                "STABLE AS $$ SELECT pg_catalog.now() - interval '10 days' $$"
-            )
-        )
-    skewed_engine = create_async_engine(
-        sqlalchemy_engine.url,
-        connect_args={
-            "server_settings": {"search_path": f"{schema}, public, pg_catalog"}
-        },
-    )
-    try:
+    async with _engine_ten_days_behind(sqlalchemy_engine) as skewed_engine:
         registry = await _registry(skewed_engine, vector_store_name)
         incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
         await registry.unregister(NAMESPACE, "a")
@@ -830,17 +1066,86 @@ async def test_purge_rounds_keep_time_by_the_database_clock(
         assert row.real_now - row.enqueued_at > timedelta(days=9)
         assert await _round(registry, any_records_found=False) is None
         assert await _queued(registry) == [incarnation]
+
+
+@pytest.mark.asyncio
+async def test_a_purge_lease_runs_by_the_database_clock(
+    sqlalchemy_engine, vector_store_name
+):
+    """A claim is stamped, and its lease measured, by the database's clock.
+
+    By a clock ten days behind the real one, a claim taken just now still
+    holds, though by the real clock it was taken ten days ago.
+    """
+    if sqlalchemy_engine.dialect.name != "postgresql":
+        pytest.skip("SQLite's clock cannot be shadowed")
+    async with _engine_ten_days_behind(sqlalchemy_engine) as skewed_engine:
+        registry = await _registry(
+            skewed_engine, vector_store_name, tombstone_retention_seconds=0
+        )
+        incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
+        await registry.unregister(NAMESPACE, "a")
+
+        held, holding = await _start_held_round(registry)
+        try:
+            async with skewed_engine.connect() as connection:
+                row = (
+                    await connection.execute(
+                        select(
+                            PurgeQueueRow.claimed_at,
+                            text("pg_catalog.now() AS real_now"),
+                        ).where(PurgeQueueRow.incarnation == incarnation)
+                    )
+                ).one()
+            assert row.real_now - row.claimed_at > timedelta(days=9)
+            assert await _round(registry, any_records_found=False) is None
+            held.end(any_records_found=False)
+            assert await asyncio.wait_for(holding, 30)
+        finally:
+            if not holding.done():
+                holding.cancel()
+
+
+@pytest.mark.asyncio
+async def test_no_transaction_is_open_while_a_round_runs(
+    sqlalchemy_engine, vector_store_name
+):
+    """The claim commits before the round, so no backend sits idle in a
+    transaction, holding a row lock or vacuum's horizon, during its remote calls."""
+    if sqlalchemy_engine.dialect.name != "postgresql":
+        pytest.skip("pg_stat_activity is PostgreSQL's")
+    registry = await _registry(
+        sqlalchemy_engine, vector_store_name, tombstone_retention_seconds=0
+    )
+    await registry.reserve(NAMESPACE, "a", CONFIG)
+    await registry.unregister(NAMESPACE, "a")
+
+    held, holding = await _start_held_round(registry)
+    try:
+        async with sqlalchemy_engine.connect() as connection:
+            idle_in_transaction = (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE state LIKE 'idle in transaction%' "
+                        "AND datname = current_database() "
+                        "AND pid != pg_backend_pid()"
+                    )
+                )
+            ).scalar_one()
+        assert idle_in_transaction == 0
+        held.end(any_records_found=False)
+        assert await asyncio.wait_for(holding, 30)
     finally:
-        await skewed_engine.dispose()
-        async with sqlalchemy_engine.begin() as connection:
-            await connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+        if not holding.done():
+            holding.cancel()
 
 
 @pytest.mark.asyncio
 async def test_a_claim_skips_a_tombstone_another_purger_holds(
     sqlalchemy_engine, vector_store_name
 ):
-    """A purger never waits on another purger's claim: it takes the next due tombstone."""
+    """A purger never waits on a claim another purger is taking: it takes the next due tombstone."""
     if sqlalchemy_engine.dialect.name != "postgresql":
         pytest.skip("SQLite holds no row locks to skip")
     registry = await _registry(sqlalchemy_engine, vector_store_name)
@@ -871,55 +1176,38 @@ async def test_a_claim_skips_a_tombstone_another_purger_holds(
 
 
 @pytest.mark.asyncio
-async def test_sqlite_purge_rounds_run_one_at_a_time(tmp_path, vector_store_name):
-    """On SQLite the claim is a write: a second purger waits for the round under
-    way, then claims the next tombstone, never the same one."""
+async def test_sqlite_stays_writable_while_a_round_runs(tmp_path, vector_store_name):
+    """On SQLite the claim's write commits before the round, so while the
+    round runs, another connection writes at once, under a busy timeout far
+    shorter than the round, and another purger claims the next tombstone."""
     url = f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
-    # A busy timeout far past the held round, so the waiting purger never
-    # gives up on the lock, however slow the machine.
-    engines = [create_async_engine(url, connect_args={"timeout": 60}) for _ in range(2)]
+    purger_engine = create_async_engine(url)
+    impatient_engine = create_async_engine(url, connect_args={"timeout": 0.1})
     try:
-        first, second = [
-            await _registry(engine, vector_store_name) for engine in engines
-        ]
-        older = (await first.reserve(NAMESPACE, "older", CONFIG)).incarnation
-        newer = (await first.reserve(NAMESPACE, "newer", CONFIG)).incarnation
-        await first.unregister(NAMESPACE, "older")
-        await first.unregister(NAMESPACE, "newer")
-        await _age_deletion(first, older, extra=timedelta(minutes=1))
-        await _age_deletion(first, newer)
-        running = asyncio.Event()
-        release = asyncio.Event()
-        ran: list[UUID] = []
+        purger = await _registry(purger_engine, vector_store_name)
+        impatient = await _registry(impatient_engine, vector_store_name)
+        older = (await purger.reserve(NAMESPACE, "older", CONFIG)).incarnation
+        newer = (await purger.reserve(NAMESPACE, "newer", CONFIG)).incarnation
+        await purger.unregister(NAMESPACE, "older")
+        await purger.unregister(NAMESPACE, "newer")
+        await _age_deletion(purger, older, extra=timedelta(minutes=1))
+        await _age_deletion(purger, newer)
 
-        async def held_round(
-            namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
-        ) -> bool:
-            ran.append(incarnation)
-            running.set()
-            await release.wait()
-            return False
-
-        async def quick_round(
-            namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
-        ) -> bool:
-            ran.append(incarnation)
-            return False
-
-        holding = asyncio.create_task(first.run_purge_round(held_round))
-        await running.wait()
-        waiting = asyncio.create_task(second.run_purge_round(quick_round))
-        await asyncio.sleep(0.5)
-        assert not waiting.done(), "the second purger claimed during the first's round"
-
-        release.set()
-        assert await asyncio.wait_for(holding, 30)
-        assert await asyncio.wait_for(waiting, 30)
-        assert ran == [older, newer]
-        assert await _queued(first) == []
+        held, holding = await _start_held_round(purger)
+        try:
+            assert held.ran == [older]
+            await (await impatient.reserve(NAMESPACE, "c", CONFIG)).confirm()
+            await impatient.unregister(NAMESPACE, "c")
+            assert await _round(impatient, any_records_found=False) == newer
+            held.end(any_records_found=False)
+            assert await asyncio.wait_for(holding, 30)
+        finally:
+            if not holding.done():
+                holding.cancel()
+        assert len(await _queued(purger)) == 1
     finally:
-        for engine in engines:
-            await engine.dispose()
+        await purger_engine.dispose()
+        await impatient_engine.dispose()
 
 
 @pytest.mark.asyncio
