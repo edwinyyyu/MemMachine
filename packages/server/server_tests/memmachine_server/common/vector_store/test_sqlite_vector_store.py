@@ -209,7 +209,7 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_invalid_namespace_raises(self, store):
-        with pytest.raises(ValueError, match="Invalid namespace"):
+        with pytest.raises(ValueError, match="Namespace 'INVALID' must match"):
             await store.create_collection(
                 namespace="INVALID",
                 name="test",
@@ -218,7 +218,7 @@ class TestCollectionLifecycle:
 
     @pytest.mark.asyncio
     async def test_invalid_name_raises(self, store):
-        with pytest.raises(ValueError, match="Invalid namespace"):
+        with pytest.raises(ValueError, match="Name 'INVALID' must match"):
             await store.create_collection(
                 namespace="valid",
                 name="INVALID",

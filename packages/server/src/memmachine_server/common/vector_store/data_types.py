@@ -1,6 +1,7 @@
 """Data types for vector store."""
 
 from collections.abc import Mapping
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import (
@@ -91,6 +92,41 @@ class VectorStoreCollectionAlreadyExistsError(Exception):
         super().__init__(f"Collection ({namespace!r}, {name!r}) already exists.")
 
 
+class VectorStoreCollectionPendingError(Exception):
+    """Raised when opening a collection whose creation has not completed."""
+
+    def __init__(
+        self,
+        namespace: str,
+        name: str,
+        registered_at: datetime,
+        config: VectorStoreCollectionConfig,
+    ) -> None:
+        """Initialize with the pending collection's namespace, name, registration time, and configuration."""
+        self.namespace = namespace
+        self.name = name
+        self.registered_at = registered_at
+        self.config = config
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) has been pending since "
+            f"{registered_at.isoformat()}; if its creation was abandoned, "
+            "delete it to create it again."
+        )
+
+
+class VectorStoreCollectionDeletedError(Exception):
+    """Raised when a collection is deleted before its creation completes."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Initialize with the namespace and name of the deleted collection."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(
+            f"Collection ({namespace!r}, {name!r}) was deleted before its "
+            "creation completed"
+        )
+
+
 class VectorStoreCollectionConfigMismatchError(Exception):
     """Raised when opening a collection with a different configuration than it was created with."""
 
@@ -111,6 +147,23 @@ class VectorStoreCollectionConfigMismatchError(Exception):
             f"Existing config: {existing_config.model_dump_json()}, "
             f"requested config: {requested_config.model_dump_json()}."
         )
+
+
+class VectorStoreCollectionHandleStaleError(Exception):
+    """Raised when a handle is used after its collection was deleted."""
+
+    def __init__(self, namespace: str, name: str) -> None:
+        """Record the namespace and name the stale handle belonged to."""
+        self.namespace = namespace
+        self.name = name
+        super().__init__(
+            f"Stale handle for collection ({namespace!r}, {name!r}): the collection "
+            "was deleted (or re-created) after this handle was bound"
+        )
+
+
+class VectorStoreAttemptsExhaustedError(Exception):
+    """Raised when an operation gave up after repeated attempts that made no progress."""
 
 
 class Record(BaseModel):

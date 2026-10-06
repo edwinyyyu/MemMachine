@@ -53,11 +53,11 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_identifiers,
     require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
-    validate_identifier,
 )
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -359,7 +359,13 @@ class MilvusVectorStoreParams(BaseModel):
 
 
 class MilvusVectorStore(VectorStore):
-    """Asynchronous Milvus-based implementation of VectorStore."""
+    """
+    Asynchronous Milvus-based implementation of VectorStore.
+
+    One process at a time may manage a given collection. A handle used
+    after its collection is deleted acts on a collection created again
+    under its (namespace, name).
+    """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
         SimilarityMetric.COSINE: "COSINE",
@@ -661,14 +667,7 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> None:
         """Create a logical collection in the Milvus vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with (
             self._client_name_locks[(namespace, name)],
@@ -689,14 +688,7 @@ class MilvusVectorStore(VectorStore):
         config: VectorStoreCollectionConfig,
     ) -> MilvusVectorStoreCollection:
         """Open the collection if it exists, or create and return it."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
         async with (
             self._client_name_locks[(namespace, name)],
@@ -721,14 +713,7 @@ class MilvusVectorStore(VectorStore):
         self, *, namespace: str, name: str
     ) -> MilvusVectorStoreCollection | None:
         """Get a collection handle from the vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         entry = await self._get_registry_entry(namespace, name)
         if entry is None:
             return None
@@ -739,14 +724,7 @@ class MilvusVectorStore(VectorStore):
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
         """Delete a logical collection from the Milvus vector store."""
-        if not validate_identifier(namespace):
-            raise ValueError(
-                f"Namespace {namespace!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
-        if not validate_identifier(name):
-            raise ValueError(
-                f"Name {name!r} must match [a-z0-9_]+ and be at most 32 bytes"
-            )
+        require_identifiers(namespace, name)
         async with (
             self._client_name_locks[(namespace, name)],
             self._tracker("delete_collection"),
@@ -771,3 +749,8 @@ class MilvusVectorStore(VectorStore):
                 collection_name=registry_name,
                 ids=[name],
             )
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection deletes the entities itself.
+        return False

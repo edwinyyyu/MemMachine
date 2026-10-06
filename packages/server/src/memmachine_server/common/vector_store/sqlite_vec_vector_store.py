@@ -50,11 +50,11 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_identifiers,
     require_valid_limit,
     require_valid_query_vector,
     require_valid_score_threshold,
     validate_filter,
-    validate_identifier,
 )
 from .vector_store import VectorStore, VectorStoreCollection
 
@@ -360,6 +360,9 @@ class SQLiteVecVectorStore(VectorStore):
     Vector store backed by SQLite + sqlite-vec.
 
     Each logical collection gets its own records table and vec0 virtual table.
+    The database is a local file, so the processes sharing a collection
+    must run on one host. A handle used after its collection is deleted acts
+    on a collection created again under its (namespace, name).
     """
 
     _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {
@@ -404,8 +407,7 @@ class SQLiteVecVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> None:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
 
         async with self._create_session() as session, session.begin():
@@ -430,8 +432,7 @@ class SQLiteVecVectorStore(VectorStore):
         name: str,
         config: VectorStoreCollectionConfig,
     ) -> VectorStoreCollection:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
         self._validate_metric(config.similarity_metric)
 
         async with self._create_session() as session, session.begin():
@@ -474,8 +475,7 @@ class SQLiteVecVectorStore(VectorStore):
     async def open_collection(
         self, *, namespace: str, name: str
     ) -> VectorStoreCollection | None:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
 
         async with self._create_session() as session:
             existing = await self._get_stored_config(session, namespace, name)
@@ -493,8 +493,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     @override
     async def delete_collection(self, *, namespace: str, name: str) -> None:
-        if not validate_identifier(namespace) or not validate_identifier(name):
-            raise ValueError(f"Invalid namespace {namespace!r} or name {name!r}")
+        require_identifiers(namespace, name)
 
         async with self._create_session() as session, session.begin():
             existing = await self._get_stored_config(session, namespace, name)
@@ -515,6 +514,11 @@ class SQLiteVecVectorStore(VectorStore):
             )
 
             self._sa_metadata.remove(records_table)
+
+    @override
+    async def purge_deleted_collections(self) -> bool:
+        # delete_collection drops the tables itself.
+        return False
 
     # Helpers.
 
