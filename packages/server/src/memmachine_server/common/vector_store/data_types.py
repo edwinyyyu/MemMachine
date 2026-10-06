@@ -85,10 +85,10 @@ def validate_vector_store_name(name: str) -> None:
 
 class PartitionSchema(BaseModel):
     """
-    What a partition was created under: its store's dimensions, metric and schema.
+    What a partition was created under: its store's dimensions, metric, and schema.
 
     Recorded beside the partition so a store built with other dimensions,
-    another metric or another declared schema fails loudly instead of
+    another metric, or another declared schema fails loudly instead of
     reading columns or vectors that are not there.
     """
 
@@ -120,7 +120,7 @@ class VectorStorePartitionPendingError(Exception):
         registered_at: datetime,
         schema: PartitionSchema,
     ) -> None:
-        """Initialize with the pending partition's vector store, key, registration time and schema."""
+        """Initialize with the pending partition's vector store, key, registration time, and schema."""
         self.vector_store_name = vector_store_name
         self.partition_key = partition_key
         self.registered_at = registered_at

@@ -80,7 +80,7 @@ class _PartitionRow(BaseSQLiteVecVectorStore):
         String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
     partition_key: MappedColumn[str] = mapped_column(String(255), primary_key=True)
-    # The dimensions, metric and declared schema the partition was created
+    # The dimensions, metric, and declared schema the partition was created
     # under, so a store built with others fails loudly instead of reading
     # columns and vectors that are not there.
     schema: MappedColumn[dict[str, JsonValue]] = mapped_column(JSON, nullable=False)

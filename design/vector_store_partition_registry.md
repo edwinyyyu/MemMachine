@@ -38,7 +38,7 @@ through SQLAlchemy. The backend keeps only records, each carrying the
 
 - `VectorStorePartitionRegistry` (`common/vector_store/partition_registry/`)
   is the ABC. A registry belongs to one store and is addressed by partition
-  key. Its operations are `startup`, `reserve`, `resolve`, `unregister` and
+  key. Its operations are `startup`, `reserve`, `resolve`, `unregister`, and
   `run_purge_round`.
 - `Reservation` and `Registration` are handles on one life of a partition (see
   [Reservations and registrations](#reservations-and-registrations)).
@@ -48,8 +48,8 @@ through SQLAlchemy. The backend keeps only records, each carrying the
   SQLite.
 - `RegistryBackedVectorStore` (`common/vector_store/registry_backed_vector_store.py`)
   is the base of the Qdrant and Milvus stores and makes every registry call
-  they make: create, open-or-create, get and delete, the purge claim, and a
-  handle's liveness fence. Its handle's `upsert`, `query` and `delete` check
+  they make: create, open-or-create, get, delete, the purge round, and a
+  handle's liveness fence. Its handle's `upsert`, `query`, and `delete` check
   their inputs and the handle's liveness around the backend call. A subclass
   supplies the backend steps: preparing the storage the store's partitions
   share, at startup; preparing the storage a new partition needs of its own;
@@ -58,7 +58,7 @@ through SQLAlchemy. The backend keeps only records, each carrying the
   backend lays records out. Qdrant and Milvus keep every partition of a store
   in its one native collection, so a partition needs no storage of its own. A
   backend with a unit per tenant, such as a Pinecone or turbopuffer
-  namespace, a Chroma collection or a Weaviate tenant, would make the
+  namespace, a Chroma collection, or a Weaviate tenant, would make the
   partition's unit when it prepares the partition's storage, which runs after
   the reservation that mints the incarnation naming it, and its purge round
   would drop it.
@@ -115,9 +115,9 @@ reservation, or a registration.
   known patterns: Try-Confirm/Cancel for the creator (reserve, then confirm
   or cancel), and the stale handle for everyone else (`require_current`,
   `VectorStorePartitionHandleStaleError`).
-- **Why no state fields.** A handle's fields (partition key, schema,
+- **Why no state fields.** A handle's fields (partition key, schema, and
   incarnation) belong to its life and never change. Whether the partition is
-  pending, live or deleted changes under every holder: a `live` field would
+  pending, live, or deleted changes under every holder: a `live` field would
   be a snapshot, made stale by the creator's own `confirm`. The state is
   conveyed instead by the outcome of each call. `reserve` answers a
   reservation, and `confirm` a registration. `resolve` answers a registration
@@ -144,7 +144,7 @@ column, rather than a table pair per vector store, keeps the schema static.
 |---|---|---|
 | `vector_store_name`, `partition_key` | string, primary key | The partition's identity. The primary key arbitrates creation. |
 | `incarnation` | UUID, unique | The partition's current life. Its records carry it. |
-| `schema` | JSON (JSONB on PostgreSQL) | The dimensions, metric and declared schema the partition was created under. A store built with others refuses the partition. |
+| `schema` | JSON (JSONB on PostgreSQL) | The dimensions, metric, and declared schema the partition was created under. A store built with others refuses the partition. |
 | `live` | boolean | Whether the partition's storage is prepared. A pending partition holds its key; only a live one is opened. |
 | `registered_at` | timestamp | When the partition was registered, on the database clock. An operator finds a partition stuck pending by it, and opening a pending partition reports it. |
 
@@ -157,7 +157,7 @@ column, rather than a table pair per vector store, keeps the schema static.
 | `vector_store_name` | string | Whose purge claims the tombstone. |
 | `partition_key` | string | Kept for inspection; the purge does not read it. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
-| `failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
+| `consecutive_failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
 | `last_failed_at` | timestamp, nullable | When the last of them raised or, if it never ended, was claimed, on the database clock. |
 | `claimed_at` | timestamp, nullable | When the tombstone's latest claim was taken, on the database clock; null once its round ended. |
 | `claim_generation` | integer | Incremented by each claim; a round's writes that end its claim are conditioned on it. |
@@ -317,7 +317,7 @@ the backend is remote:
 ## Decisions
 
 - **A store is one collection.** The composition root builds one store per
-  collection it needs, with its dimensions, metric and declared schema fixed
+  collection it needs, with its dimensions, metric, and declared schema fixed
   at construction, and partitions it by tenant. A partition key is all a
   caller names; the store, not each call, carries what the records share.
 - **`unregister` is keyed by partition key.** Callers delete partitions by
@@ -332,7 +332,7 @@ the backend is remote:
 ## Alternatives considered
 
 - **Keep the catalog in the backend.** Rejected: neither backend can arbitrate
-  a create, a delete or a claim.
+  a create, a delete, or a claim.
 - **Process-local locks.** They serialize one process only; the goal is any
   process serving any partition.
 - **Storage first, registry last**, with no pending state. It suits storage a

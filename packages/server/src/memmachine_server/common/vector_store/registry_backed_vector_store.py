@@ -2,12 +2,13 @@
 Base classes for a vector store whose partitions a partition registry arbitrates.
 
 The registry mints each partition's incarnation and arbitrates creation,
-deletion and reclamation across processes. A partition's key is reserved,
+deletion, and reclamation across processes. A partition's key is reserved,
 its storage is prepared, and the reservation is confirmed, which makes the
-partition live; only a live partition is opened. The backend holds records, each carrying its partition's incarnation,
-and a subclass decides how: it prepares the storage the store's partitions
-share and the storage a new partition needs of its own, builds a handle for
-one partition, and purges a deleted incarnation's records.
+partition live; only a live partition is opened. The backend holds records,
+each carrying its partition's incarnation, and a subclass decides how: it
+prepares the storage the store's partitions share and the storage a new
+partition needs of its own, builds a handle for one partition, and purges a
+deleted incarnation's records.
 """
 
 import asyncio
@@ -75,7 +76,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
 
     For subclasses: `_vector_store_name` is the store's name and
     `_incarnation` the incarnation the handle is bound to, and a subclass
-    implements the backend calls `_upsert`, `_query` and `_delete`.
+    implements the backend calls `_upsert`, `_query`, and `_delete`.
     """
 
     def __init__(
@@ -194,7 +195,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Search the handle's incarnation's records for each query vector.
 
         Called after a liveness check, with at least one query vector and a
-        positive limit, the vectors, threshold and filter already checked.
+        positive limit, the vectors, threshold, and filter already checked.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.
@@ -311,7 +312,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
 
     For subclasses: `_partition_registry` is the registry and `_tracker` times
     each operation, and a subclass implements `_prepare_storage`,
-    `_prepare_partition_storage`, `_partition_handle` and `_purge_round`.
+    `_prepare_partition_storage`, `_partition_handle`, and `_purge_round`.
     """
 
     def __init__(
@@ -328,7 +329,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         # Reservations cancelled after a failed preparation, held until done
         # so the garbage collector cannot drop one whose creation was
         # cancelled.
-        self._cancellations: set[asyncio.Task[None]] = set()
+        self._reservation_cancellations: set[asyncio.Task[None]] = set()
 
     @property
     @override
@@ -452,10 +453,10 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
             # reports its own failure, since a creation cancelled again stops
             # awaiting it before it ends.
             cancellation = asyncio.create_task(reservation.cancel())
-            self._cancellations.add(cancellation)
+            self._reservation_cancellations.add(cancellation)
 
             def finish(task: asyncio.Task[None]) -> None:
-                self._cancellations.discard(task)
+                self._reservation_cancellations.discard(task)
                 if not task.cancelled() and task.exception() is not None:
                     logger.exception(
                         "Could not cancel the reservation of partition %r of "
@@ -591,7 +592,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         Args:
             registration (Registration):
                 The live partition's registration, which carries its key,
-                schema and incarnation.
+                schema, and incarnation.
 
         Returns:
             PartitionT:
