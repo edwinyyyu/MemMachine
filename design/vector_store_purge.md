@@ -77,20 +77,22 @@ both SQLite stores, whose deletion reclaims physically, return `False`.
 
 1. **Claim.** One `UPDATE ... RETURNING`, committed at once, takes the oldest
    due tombstone that is neither backing off, dead-lettered, nor held by another
-   claim: it counts the attempt, stamps the tombstone's `claimed_at` with the
-   database's `now()`, and increments its `claim_generation`. The tombstone is
-   picked by one range on the `(vector_store_name, enqueued_at)` index,
-   `LIMIT 1`. On PostgreSQL the pick is `FOR UPDATE SKIP LOCKED`, so a
-   concurrent claim skips a row another claim is taking and purgers on every
-   process split a backlog without coordinating. SQLite drops the locking
-   clause; there the claim's write serializes claims, for one statement.
+   claim: it counts an attempt without progress, stamps the tombstone's
+   `claimed_at` with the database's `now()`, and increments its
+   `claim_generation`. The tombstone is picked by one range on the
+   `(vector_store_name, enqueued_at)` index, `LIMIT 1`. On PostgreSQL the pick
+   is `FOR UPDATE SKIP LOCKED`, so a concurrent claim skips a row another claim
+   is taking and purgers on every process split a backlog without coordinating.
+   SQLite drops the locking clause; there the claim's write serializes claims,
+   for one statement.
 2. **Round.** The registry calls the store's round with the tombstone's
    incarnation, with no transaction open. The round looks for records under
    the incarnation in the store's native collection, deletes what it finds (per
    backend, below), and returns whether it found any.
 3. **Record.** In a short transaction: a round that found nothing removes the
    tombstone, which frees the incarnation; a round that found records ends its
-   claim, keeping the tombstone due, and clears its attempts.
+   claim, keeping the tombstone due, and resets its attempts without
+   progress.
 
 ### The lease
 
@@ -141,13 +143,13 @@ transaction, holding back vacuum or meeting
 
 ### Failed rounds: backoff and dead-lettering
 
-Each claim counts an attempt, `consecutive_attempts + 1`, which a round that
-finds records resets to 0. So every round that does not finish uses an
-attempt, whether it raised or its purger died, as job queues count attempts
-when work is taken. A round that raises ends its claim, while the claim is the
-latest, and sets `last_failed_at = now()` on the database clock; its error
-carries a note naming the incarnation and the attempt. A round that never
-ended writes nothing.
+Each claim counts an attempt, `attempts_without_progress + 1`. A round that
+finds records and deletes them made progress, and resets the count to 0. So
+every round that does not finish uses an attempt, whether it raised or its
+purger died, as job queues count attempts when work is taken. A round that
+raises ends its claim, while the claim is the latest, and sets
+`last_failed_at = now()` on the database clock; its error carries a note naming
+the incarnation and the attempt. A round that never ended writes nothing.
 
 - **Backoff.** After its a-th attempt fails, a tombstone is claimed again once
   `min(base_purge_retry_backoff_seconds * 2^(a-1),
@@ -160,18 +162,17 @@ ended writes nothing.
   naming the incarnation and the attempt ("attempt 3 of 10"). Each log line
   is about the event at its time: nothing is logged later about an attempt
   that never ended.
-- **Dead-lettering.** After 10 attempts, about 3 hours of retries, claims skip
-  the tombstone: it is kept, and its incarnation reserved. A last attempt that
-  raises is reported by an error log naming the incarnation, the last error,
-  and the table. A last attempt whose purger died is not, since nothing runs
-  on the tombstone after it; its claim's warning, "attempt 10 of 10", is the
-  last line about it. Setting its `consecutive_attempts` back to 0 returns it
-  to the purge at once.
-- The backoff is computed from recorded facts (the attempts, and when the
-  last failure raised or its claim was taken), not stored as a time to retry
-  at. Both durations are registry
-  parameters in seconds with those defaults, so they can become configuration
-  without changing the schema.
+- **Dead-lettering.** After 10 attempts without progress, about 3 hours of
+  retries, claims skip the tombstone: it is kept, and its incarnation reserved.
+  A last attempt that raises is reported by an error log naming the incarnation,
+  the last error, and the table. A last attempt whose purger died is not, since
+  nothing runs on the tombstone after it; its claim's warning, "attempt 10 of
+  10", is the last line about it. Setting its `attempts_without_progress` back
+  to 0 returns it to the purge at once.
+- The backoff is computed from recorded facts (the attempts, and when the last
+  failure raised or its claim was taken), not stored as a time to retry at. Both
+  durations are registry parameters in seconds with those defaults, so they can
+  become configuration without changing the schema.
 
 A dead-letter bound, rather than retrying forever, makes a tombstone that
 never purges a visible problem instead of garbage that is quietly retried.
@@ -223,7 +224,7 @@ processes need no coordination: the claim arbitrates.
 - **Count the backoff from when the tombstone came due**, with no new column.
   Measured: a tombstone due for days retries at once, its backoff spent before
   it first fails, so after an outage it fails as fast as before.
-- **An index on `(enqueued_at, consecutive_attempts)`.** It helps only
+- **An index on `(enqueued_at, attempts_without_progress)`.** It helps only
   skipping dead-lettered tombstones, so the claim keeps `(enqueued_at)`.
 - **A separate dead-letter table.** A counter on the queue row does the same
   with no move between tables.
@@ -281,7 +282,7 @@ processes need no coordination: the claim arbitrates.
   reclaimed a day after deletion by default.
 - An operator watches for the dead-letter error log and for repeated retry
   warnings. A dead-lettered tombstone's records stay until someone resets its
-  `consecutive_attempts`.
+  `attempts_without_progress`.
 - The purge loads the backend in bounded rounds from every process's sweeper,
   and the rounds of different tombstones proceed in parallel.
 - A tombstone whose round died waits out the lease and the backoff, its
