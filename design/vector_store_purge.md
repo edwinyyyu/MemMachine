@@ -196,20 +196,26 @@ processes need no coordination: the claim arbitrates.
 
 ### Measured cost of the claim
 
-- Backoff (PostgreSQL 18.6 and SQLite 3.50.4; 1,000,000 tombstones not yet
-  due; median of 30 claims): the claim reads each due tombstone that is
-  backing off and none that is not yet due. It took 0.3 / 1.3 / 11 ms on
-  PostgreSQL and 0.3 / 2.1 / 21 ms on SQLite with 1k / 10k / 100k tombstones
-  backing off, and 0.15-0.3 ms with none.
-- Interference (PostgreSQL 16; earlier forms of the claim, which held a
-  transaction across the round; 20,000 live registry rows and 20,000
-  tombstones): with two sweepers running rounds back to back, about 78 per
-  second, beside 16 interactive workers, interactive throughput and the p99 of
-  the handles' liveness lookup were unchanged within run-to-run noise on
-  PostgreSQL. On SQLite, where the sweepers write in the same process,
-  throughput dropped 2.5-14% at that rate, as much as with sweepers that only
-  commit a one-row write per round, and not measurably at the resource
-  manager's pace.
+Measured 2026-10-06 on AC power, against PostgreSQL in a container capped at
+2 CPUs and SQLite in a file.
+
+- Backoff (the claim of #1734's commit 96a8b5bf6, which this registry ports;
+  PostgreSQL 18.6 and SQLite 3.50.4; 1,000,000 tombstones not yet due; median
+  of 50 calls): a call that claims nothing reads each due tombstone that is
+  backing off and none that is not yet due. It took 1.5 / 2.9 / 20 ms on
+  PostgreSQL and 1.0 / 4.5 / 40 ms on SQLite with 1k / 10k / 100k tombstones
+  backing off, and 1.3 ms on PostgreSQL and 0.7 ms on SQLite with none due.
+- Interference (the lease of #1734's commit 503687c35, whose rounds cost the
+  same database time as 96a8b5bf6's; 20,000 live registry rows and 20,000 due
+  tombstones; 16 interactive workers checking handles' liveness beside two
+  sweepers, three phases each): on PostgreSQL 16, with rounds back to back
+  (about 520 per second) or of 20 ms (about 70 per second), interactive
+  throughput and the p99 of the liveness lookup were unchanged within
+  run-to-run noise. On SQLite, where the sweepers write in the same process,
+  20 ms rounds (about 60 per second) left throughput unchanged and raised the
+  p99 from 6-8 ms to 8-9 ms; rounds back to back (about 110 per second)
+  lowered throughput about 7% and raised the p99 to 13-15 ms. The resource
+  manager's sweepers run at most one round a second.
 
 ## Alternatives considered
 
