@@ -157,9 +157,9 @@ column, rather than a table pair per vector store, keeps the schema static.
 | `vector_store_name` | string | Whose purge claims the tombstone. |
 | `partition_key` | string | Kept for inspection; the purge does not read it. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
-| `consecutive_failed_rounds` | integer | Consecutive purge rounds on the tombstone that raised or never ended. |
-| `last_failed_at` | timestamp, nullable | When the last of them raised or, if it never ended, was claimed, on the database clock. |
-| `claimed_at` | timestamp, nullable | When the tombstone's latest claim was taken, on the database clock; null once its round ended. |
+| `consecutive_attempts` | integer | Purge rounds claimed since a round last found records, the open one included; a cancelled round's attempt is taken back. |
+| `last_failed_at` | timestamp, nullable | When a purge round last raised, on the database clock. |
+| `claimed_at` | timestamp, nullable | When the open claim was taken, on the database clock; null when no claim is open. |
 | `claim_generation` | integer | Incremented by each claim; a round's writes that end its claim are conditioned on it. |
 
 Index `partition_registry_gc__vs_ea` on (`vector_store_name`, `enqueued_at`)
