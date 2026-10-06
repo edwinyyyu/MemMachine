@@ -98,8 +98,9 @@ class VectorStoreCollection(ABC):
                 Maximum number of matching records to return per query vector;
                 positive.
             score_threshold (float | None):
-                Score threshold to consider a match
-                (default: None).
+                The worst score a match may have, by the collection's
+                similarity metric; a match scoring exactly the threshold is
+                returned (default: None).
             property_filter (FilterExpr | None):
                 Filter expression tree.
                 If None or empty, no property filtering is applied
