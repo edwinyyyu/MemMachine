@@ -48,6 +48,7 @@ from sqlalchemy.orm import (
     MappedColumn,
     mapped_column,
 )
+from sqlalchemy.pool import StaticPool
 
 from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store.data_types import (
@@ -248,6 +249,19 @@ class SQLAlchemyVectorStoreCollectionRegistryParams(BaseModel):
             raise ValueError(
                 f"Engine uses the {engine.dialect.name} dialect, which the "
                 "registry does not support. Use PostgreSQL or SQLite."
+            )
+        # The registry's arbitration rests on transactions of their own.
+        engine_shares_one_connection = isinstance(engine.pool, StaticPool)
+        if engine_shares_one_connection:
+            raise ValueError(
+                "Engine uses StaticPool, which shares one connection across "
+                "sessions. Use a multi-connection pool instead."
+            )
+        database = engine.url.database
+        if engine.dialect.name == "sqlite" and database in (None, "", ":memory:"):
+            raise ValueError(
+                "Engine uses in-memory SQLite, where each connection gets a "
+                "separate database. Use a file path instead."
             )
         if (
             engine.dialect.name == "sqlite"
