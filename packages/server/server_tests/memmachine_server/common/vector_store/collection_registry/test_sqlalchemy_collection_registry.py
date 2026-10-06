@@ -32,6 +32,7 @@ from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collec
     PurgeQueueRow,
     SQLAlchemyVectorStoreCollectionRegistry,
     SQLAlchemyVectorStoreCollectionRegistryParams,
+    _TombstoneClaim,
 )
 from memmachine_server.common.vector_store.data_types import (
     VectorStoreAttemptsExhaustedError,
@@ -222,11 +223,11 @@ async def _abandon_claim(
     """Claim the oldest due tombstone and stop, as a purger that dies during its round: nothing after the claim reaches the database. The claimed incarnation."""
     held, task = await _start_held_round(registry)
 
-    async def lost(incarnation: UUID, claim_generation: int) -> None:
+    async def lost(claim: _TombstoneClaim) -> None:
         raise ConnectionError("the purger is gone")
 
     with monkeypatch.context() as patch:
-        patch.setattr(registry, "_end_claim", lost)
+        patch.setattr(registry, "_end_tombstone_claim", lost)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -782,7 +783,15 @@ async def test_a_failure_counted_past_the_dead_letter_bound_is_reported(
         )
 
     with caplog.at_level(logging.ERROR):
-        await registry._count_failed_round(incarnation, 0, RuntimeError("refused"))
+        await registry._count_failed_purge_round(
+            _TombstoneClaim(
+                incarnation=incarnation,
+                namespace=NAMESPACE,
+                config=CONFIG.model_dump(mode="json"),
+                claim_generation=0,
+            ),
+            RuntimeError("refused"),
+        )
 
     assert await _failed_rounds(registry, incarnation) == _MAX_FAILED_PURGE_ROUNDS + 1
     assert [
@@ -1697,8 +1706,9 @@ async def test_the_same_name_in_two_namespaces_is_two_collections(
         given.append((namespace, incarnation))
         return False
 
-    while await registry.run_purge_round(purge_round):
-        pass
+    for _ in range(10):
+        if not await registry.run_purge_round(purge_round):
+            break
     assert given == [("ns_a", first.incarnation)]
     await second.require_current()
 

@@ -265,7 +265,7 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
         # Reservations cancelled after a failed preparation, held until done
         # so the garbage collector cannot drop one whose creation was
         # cancelled.
-        self._cancellations: set[asyncio.Task[None]] = set()
+        self._reservation_cancellations: set[asyncio.Task[None]] = set()
 
     @override
     async def startup(self) -> None:
@@ -382,10 +382,10 @@ class RegistryBackedVectorStore[CollectionT: RegistryBackedVectorStoreCollection
             # reports its own failure, since a creation cancelled again stops
             # awaiting it before it ends.
             cancellation = asyncio.create_task(reservation.cancel())
-            self._cancellations.add(cancellation)
+            self._reservation_cancellations.add(cancellation)
 
             def finish(task: asyncio.Task[None]) -> None:
-                self._cancellations.discard(task)
+                self._reservation_cancellations.discard(task)
                 if not task.cancelled() and task.exception() is not None:
                     logger.exception(
                         "Could not cancel the reservation of collection (%r, %r) "

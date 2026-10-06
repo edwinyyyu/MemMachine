@@ -321,7 +321,7 @@ async def test_cancelling_the_reservation_after_a_cancelled_preparation_survives
         await creating
 
     release.set()
-    await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
+    await asyncio.wait_for(asyncio.gather(*store._reservation_cancellations), 5)
     assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
 
 
@@ -386,7 +386,7 @@ async def test_a_cancel_that_fails_after_its_creation_stopped_waiting_is_still_r
     with caplog.at_level(logging.ERROR):
         release.set()
         await asyncio.wait_for(
-            asyncio.gather(*store._cancellations, return_exceptions=True), 5
+            asyncio.gather(*store._reservation_cancellations, return_exceptions=True), 5
         )
         await asyncio.sleep(0)
     assert [
@@ -396,7 +396,7 @@ async def test_a_cancel_that_fails_after_its_creation_stopped_waiting_is_still_r
         and repr(NAME) in r.getMessage()
         and isinstance(r.exc_info[1], ConnectionError)
     ]
-    assert not store._cancellations
+    assert not store._reservation_cancellations
 
 
 @pytest.mark.asyncio
@@ -438,7 +438,7 @@ async def test_a_cancelled_confirmation_frees_the_name(store, monkeypatch):
         creating.cancel()
         with pytest.raises(asyncio.CancelledError):
             await creating
-        await asyncio.wait_for(asyncio.gather(*store._cancellations), 5)
+        await asyncio.wait_for(asyncio.gather(*store._reservation_cancellations), 5)
 
     assert await store.open_collection(namespace=NAMESPACE, name=NAME) is None
 
