@@ -1,5 +1,5 @@
 """
-Abstract base classes for a partition registry, its reservations and registrations.
+Abstract base classes for a partition registry, its reservations, and registrations.
 
 The catalog of a vector store whose backend cannot arbitrate one: which
 partitions exist, under which incarnation and schema, and which deleted
@@ -147,7 +147,7 @@ class VectorStorePartitionRegistry(ABC):
             partition_key (str): The key of the partition.
             schema (PartitionSchema):
                 What the partition is created under: its store's
-                dimensions, metric and declared schema.
+                dimensions, metric, and declared schema.
 
         Returns:
             Reservation: The new partition's reservation.

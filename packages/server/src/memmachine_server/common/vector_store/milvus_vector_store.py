@@ -111,23 +111,25 @@ _VECTOR_INDEX_PARAMS: dict[str, Any] = {
 _SEARCH_REFINE_K = 8
 
 
-def _expr_string(value: str) -> str:
+def _expression_string_literal(value: str) -> str:
     """Return a Milvus expression string literal."""
     return json.dumps(value)
 
 
-def _literal(value: PropertyValue) -> str:
+def _property_value_literal(value: PropertyValue) -> str:
     """Return a Milvus expression literal for a property value."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int | float):
         return repr(value)
     if isinstance(value, datetime):
-        return _expr_string(ensure_tz_aware(value).astimezone(UTC).isoformat())
-    return _expr_string(value)
+        return _expression_string_literal(
+            ensure_tz_aware(value).astimezone(UTC).isoformat()
+        )
+    return _expression_string_literal(value)
 
 
-def _declared_literal(value: PropertyValue) -> str:
+def _declared_property_value_literal(value: PropertyValue) -> str:
     """Return a Milvus expression literal for a declared property's value.
 
     A datetime is a TIMESTAMPTZ instant literal, which compares instants
@@ -135,10 +137,12 @@ def _declared_literal(value: PropertyValue) -> str:
     """
     if isinstance(value, datetime):
         return f"ISO '{ensure_tz_aware(value).astimezone(UTC).isoformat()}'"
-    return _literal(value)
+    return _property_value_literal(value)
 
 
-def _fits(value: PropertyValue, declared_type: type[PropertyValue]) -> bool:
+def _is_comparable_with_declared_type(
+    value: PropertyValue, declared_type: type[PropertyValue]
+) -> bool:
     """Whether a filter value can be compared with a declared property."""
     if isinstance(value, bool):
         return declared_type is bool
@@ -147,14 +151,16 @@ def _fits(value: PropertyValue, declared_type: type[PropertyValue]) -> bool:
     return isinstance(value, declared_type)
 
 
-def _absent(key: str, declared: Mapping[str, type[PropertyValue]]) -> str:
+def _property_absent_expression(
+    key: str, declared: Mapping[str, type[PropertyValue]]
+) -> str:
     """A Milvus expression true exactly where the property has no value."""
     if key in declared:
         return f"{_DECLARED_FIELD_PREFIX}{key} is null"
-    return f"not exists {_PROPERTIES_FIELD}[{_expr_string(key)}]"
+    return f"not exists {_PROPERTIES_FIELD}[{_expression_string_literal(key)}]"
 
 
-def _condition(
+def _condition_expression(
     expr: FilterComparison | FilterIn,
     declared: Mapping[str, type[PropertyValue]],
 ) -> str:
@@ -163,15 +169,19 @@ def _condition(
     declared_type = declared.get(expr.field)
     if declared_type is None:
         target = (
-            f"{_PROPERTIES_FIELD}[{_expr_string(expr.field)}]"
-            f"[{_expr_string(PROPERTY_VALUE_KEY)}]"
+            f"{_PROPERTIES_FIELD}[{_expression_string_literal(expr.field)}]"
+            f"[{_expression_string_literal(PROPERTY_VALUE_KEY)}]"
         )
-        render = _literal
+        render = _property_value_literal
     else:
         # A value of another type never equals or orders against the property.
-        values = [value for value in values if _fits(value, declared_type)]
+        values = [
+            value
+            for value in values
+            if _is_comparable_with_declared_type(value, declared_type)
+        ]
         target = f"{_DECLARED_FIELD_PREFIX}{expr.field}"
-        render = _declared_literal
+        render = _declared_property_value_literal
     if not values:
         return _FALSE_EXPR
     match expr:
@@ -183,7 +193,7 @@ def _condition(
             return f"{target} {op} {render(values[0])}"
 
 
-def _milvus_filter(
+def _filter_expression(
     expr: FilterExpr,
     declared: Mapping[str, type[PropertyValue]],
     *,
@@ -197,23 +207,23 @@ def _milvus_filter(
     """
     match expr:
         case FilterNot(operand):
-            return _milvus_filter(operand, declared, negate=not negate)
+            return _filter_expression(operand, declared, negate=not negate)
         case FilterAnd(left, right) | FilterOr(left, right):
             operator = "&&" if isinstance(expr, FilterAnd) != negate else "||"
             return f" {operator} ".join(
-                f"({_milvus_filter(operand, declared, negate=negate)})"
+                f"({_filter_expression(operand, declared, negate=negate)})"
                 for operand in (left, right)
             )
         case FilterIsNull(field):
-            absent = _absent(field, declared)
+            absent = _property_absent_expression(field, declared)
             return f"not ({absent})" if negate else absent
         case FilterComparison(field, "!=", value):
             equal = FilterComparison(field=field, op="=", value=value)
-            return _milvus_filter(equal, declared, negate=not negate)
+            return _filter_expression(equal, declared, negate=not negate)
         case FilterComparison() | FilterIn():
-            condition = _condition(expr, declared)
+            condition = _condition_expression(expr, declared)
             if negate:
-                return f"(not ({condition})) || ({_absent(expr.field, declared)})"
+                return f"(not ({condition})) || ({_property_absent_expression(expr.field, declared)})"
             return condition
         case _:
             raise TypeError(f"Unsupported filter expression type: {type(expr)}")
@@ -235,7 +245,7 @@ def _require_every_key_accepted(result: Mapping[str, int], sent: int) -> None:
 
 def _incarnation_filter(incarnation: UUID) -> str:
     """A Milvus expression matching the entities of one partition incarnation."""
-    return f"{_PARTITION_KEY_FIELD} == {_expr_string(str(incarnation))}"
+    return f"{_PARTITION_KEY_FIELD} == {_expression_string_literal(str(incarnation))}"
 
 
 class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
@@ -315,7 +325,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
 
-    def _score(self, distance: float) -> float:
+    def _score_from_distance(self, distance: float) -> float:
         """The store's score for a distance Milvus returned.
 
         Milvus returns cosine similarity and inner product as they are, and
@@ -361,7 +371,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
     ) -> list[QueryResult]:
         filter_expr = _incarnation_filter(self._incarnation)
         if property_filter is not None:
-            property_expr = _milvus_filter(property_filter, self.indexed_properties)
+            property_expr = _filter_expression(property_filter, self.indexed_properties)
             filter_expr = f"({filter_expr}) && ({property_expr})"
 
         raw_results = await self._client.search(
@@ -380,7 +390,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
             matches: list[QueryMatch] = []
             for raw_match in raw_matches:
                 entity = cast(Mapping[str, Any], raw_match["entity"])
-                score = self._score(raw_match["distance"])
+                score = self._score_from_distance(raw_match["distance"])
                 if not self._passes_threshold(
                     score, score_threshold, self.similarity_metric
                 ):

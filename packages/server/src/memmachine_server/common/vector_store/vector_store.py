@@ -248,7 +248,7 @@ class VectorStore(ABC):
         Raises:
             VectorStorePartitionSchemaMismatchError:
                 If the partition exists and was created under other
-                dimensions, another metric or another declared schema
+                dimensions, another metric, or another declared schema
                 than this store's.
             VectorStorePartitionPendingError: If the partition's creation, by
                 another caller, did not complete within the store's attempts
@@ -276,7 +276,7 @@ class VectorStore(ABC):
         Raises:
             VectorStorePartitionSchemaMismatchError:
                 If the partition was created under other dimensions,
-                another metric or another declared schema than this store's.
+                another metric, or another declared schema than this store's.
             VectorStorePartitionPendingError: If the partition's creation
                 has not completed.
         """

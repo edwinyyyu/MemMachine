@@ -144,7 +144,7 @@ shipped: it has no graphless layout or exact-search workaround.
 One filter-delete of the whole incarnation per round: the round scrolls for
 one point under the incarnation and, when it finds one, deletes by filter.
 Measured (Qdrant 1.18.3, 1.19.0 and 1.19.1; 2.11M points in this layout, dead
-incarnations of 10k to 1M among live tenants under search, upsert and scroll
+incarnations of 10k to 1M among live tenants under search, upsert, and scroll
 traffic; 2 CPUs / 4 GB): the delete stalls writes and scrolls on the shard,
 never searches, for its duration, about 1.3 s per 1M points on 1.19.1 at 3
 segments per shard (7.3 s at 101), with no errors. Deleting in batches instead

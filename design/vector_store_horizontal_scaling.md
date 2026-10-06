@@ -8,7 +8,7 @@ anything, and the Qdrant and Milvus stores relied on that sentence for
 correctness:
 
 - their catalogs lived inside the backend, which cannot arbitrate a create, a
-  delete or a purge between processes;
+  delete, or a purge between processes;
 - they serialized their own operations with process-local locks;
 - a collection's name was the tenant discriminator on its records, so deleting
   and re-creating a name did not end the old life (#1563).
@@ -34,7 +34,7 @@ one dimensionality, one similarity metric and one declared schema, named at
 construction by its vector store name. The composition root builds one store
 per collection it needs, and the name keeps two stores over one backend
 apart. Within a store, a partition holds one tenant's records, addressed by a
-string key. Every partition of a store shares its dimensions, metric and
+string key. Every partition of a store shares its dimensions, metric, and
 schema; the registry records them beside each partition, so a store built
 with others refuses the partition instead of reading what is not there.
 
