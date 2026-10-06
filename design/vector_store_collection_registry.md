@@ -153,7 +153,7 @@ pair per vector store, keeps the schema static.
 | `name` | string | Kept for inspection; the purge does not read it. |
 | `config` | JSON | With `namespace`, locates the records in the store. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
-| `consecutive_attempts` | integer | Purge rounds claimed since a round last found records, the open one included; a cancelled round's attempt is taken back. |
+| `attempts_without_progress` | integer | Purge rounds claimed since a round last found records and deleted them, the open one included; a cancelled round's attempt is taken back. |
 | `last_failed_at` | timestamp, nullable | When a purge round last raised, on the database clock. |
 | `claimed_at` | timestamp, nullable | When the open claim was taken, on the database clock; null when no claim is open. |
 | `claim_generation` | integer | Incremented by each claim; a round's writes that end its claim are conditioned on it. |

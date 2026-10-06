@@ -27,7 +27,7 @@ from memmachine_server.common.vector_store.collection_registry import (
     Reservation,
 )
 from memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry import (
-    _MAX_PURGE_ATTEMPTS,
+    _MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS,
     CollectionRow,
     PurgeQueueRow,
     SQLAlchemyVectorStoreCollectionRegistry,
@@ -145,11 +145,11 @@ async def _blocked_or_done(engine: AsyncEngine, task: asyncio.Task) -> str:
 async def _attempts(
     registry: SQLAlchemyVectorStoreCollectionRegistry, incarnation: UUID
 ) -> int:
-    """The tombstone's count of consecutive purge attempts."""
+    """The tombstone's count of purge attempts without progress."""
     async with registry._engine.connect() as connection:
         return (
             await connection.execute(
-                select(PurgeQueueRow.consecutive_attempts).where(
+                select(PurgeQueueRow.attempts_without_progress).where(
                     PurgeQueueRow.incarnation == incarnation
                 )
             )
@@ -667,7 +667,8 @@ async def test_a_round_that_raises_keeps_the_tombstone_and_names_it_in_the_error
     assert [
         note
         for note in raised.value.__notes__
-        if str(incarnation) in note and f"attempt 1 of {_MAX_PURGE_ATTEMPTS}" in note
+        if str(incarnation) in note
+        and f"attempt 1 of {_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS}" in note
     ]
     assert await _queued(registry) == [incarnation]
     assert await _attempts(registry, incarnation) == 1
@@ -755,7 +756,7 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
     await _age_deletion(registry, later)
 
     with caplog.at_level(logging.ERROR):
-        for _ in range(_MAX_PURGE_ATTEMPTS):
+        for _ in range(_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS):
             # Past its backoff, so it is the oldest tombstone claimable.
             await _age_last_failure(registry, failing, timedelta(days=1))
             assert await _failing_round(registry) == failing
@@ -775,13 +776,14 @@ async def test_a_tombstone_whose_rounds_keep_failing_is_dead_lettered_and_report
 async def test_resetting_a_dead_lettered_tombstones_attempts_returns_it_to_the_purge(
     sqlalchemy_engine, vector_store_name
 ):
-    """Setting the count of attempts back to 0, as the dead-letter report
-    says, makes the tombstone claimable at once, its last failure just now."""
+    """Setting the attempts without progress back to 0, as the dead-letter
+    report says, makes the tombstone claimable at once, its last failure just
+    now."""
     registry = await _registry(sqlalchemy_engine, vector_store_name)
     incarnation = (await registry.reserve(NAMESPACE, "a", CONFIG)).incarnation
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
-    for _ in range(_MAX_PURGE_ATTEMPTS):
+    for _ in range(_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS):
         await _age_last_failure(registry, incarnation, timedelta(days=1))
         assert await _failing_round(registry) == incarnation
     assert await _round(registry, any_records_found=False) is None
@@ -790,14 +792,14 @@ async def test_resetting_a_dead_lettered_tombstones_attempts_returns_it_to_the_p
         await connection.execute(
             update(PurgeQueueRow)
             .where(PurgeQueueRow.incarnation == incarnation)
-            .values(consecutive_attempts=0)
+            .values(attempts_without_progress=0)
         )
 
     assert await _round(registry, any_records_found=False) == incarnation
 
 
 @pytest.mark.asyncio
-async def test_a_round_that_finds_points_clears_the_attempts(
+async def test_a_round_that_finds_points_resets_the_attempts_without_progress(
     sqlalchemy_engine, vector_store_name
 ):
     registry = await _registry(sqlalchemy_engine, vector_store_name)
@@ -805,7 +807,7 @@ async def test_a_round_that_finds_points_clears_the_attempts(
     await registry.unregister(NAMESPACE, "a")
     await _age_deletion(registry, incarnation)
 
-    for _ in range(_MAX_PURGE_ATTEMPTS - 1):
+    for _ in range(_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS - 1):
         await _failing_round(registry)
         await _age_last_failure(registry, incarnation, timedelta(days=1))
     assert await _round(registry, any_records_found=True) == incarnation
@@ -895,7 +897,7 @@ async def test_a_round_that_never_ended_is_retried_once_its_lease_and_the_backof
         for r in caplog.records
         if r.levelno == logging.WARNING
         and str(incarnation) in r.getMessage()
-        and f"attempt 2 of {_MAX_PURGE_ATTEMPTS}" in r.getMessage()
+        and f"attempt 2 of {_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS}" in r.getMessage()
     ]
     assert await _queued(registry) == []
 
@@ -912,17 +914,20 @@ async def test_rounds_that_never_end_dead_letter_the_tombstone(
     await _age_deletion(registry, incarnation)
 
     with caplog.at_level(logging.WARNING):
-        for _ in range(_MAX_PURGE_ATTEMPTS):
+        for _ in range(_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS):
             assert await _abandon_claim(registry, monkeypatch) == incarnation
             await _age_claim(registry, incarnation, timedelta(days=1))
 
-    assert await _attempts(registry, incarnation) == _MAX_PURGE_ATTEMPTS
+    assert (
+        await _attempts(registry, incarnation) == _MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS
+    )
     assert [
         r
         for r in caplog.records
         if r.levelno == logging.WARNING
         and str(incarnation) in r.getMessage()
-        and f"attempt {_MAX_PURGE_ATTEMPTS} of {_MAX_PURGE_ATTEMPTS}" in r.getMessage()
+        and f"attempt {_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS} of {_MAX_PURGE_ATTEMPTS_WITHOUT_PROGRESS}"
+        in r.getMessage()
     ]
     assert await _round(registry, any_records_found=False) is None
     assert await _queued(registry) == [incarnation]
