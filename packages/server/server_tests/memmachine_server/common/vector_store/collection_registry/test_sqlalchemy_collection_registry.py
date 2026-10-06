@@ -21,6 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool, StaticPool
 
 from memmachine_server.common.vector_store.collection_registry import (
     Registration,
@@ -440,8 +441,8 @@ async def test_any_string_of_at_most_255_characters_names_a_registry(
     assert resolved.incarnation == pending.incarnation
 
 
-def test_an_engine_of_another_dialect_is_refused(monkeypatch):
-    engine = create_async_engine("sqlite+aiosqlite://")
+def test_an_engine_of_another_dialect_is_refused(monkeypatch, tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}")
     monkeypatch.setattr(engine.dialect, "name", "mssql")
     with pytest.raises(ValueError, match="mssql"):
         SQLAlchemyVectorStoreCollectionRegistryParams(
@@ -451,14 +452,42 @@ def test_an_engine_of_another_dialect_is_refused(monkeypatch):
         )
 
 
-def test_a_sqlite_runtime_without_returning_is_refused(monkeypatch):
+def test_a_sqlite_runtime_without_returning_is_refused(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "memmachine_server.common.vector_store.collection_registry.sqlalchemy_collection_registry.sqlite3.sqlite_version_info",
         (3, 34, 1),
     )
     with pytest.raises(ValueError, match="RETURNING"):
         SQLAlchemyVectorStoreCollectionRegistryParams(
-            engine=create_async_engine("sqlite+aiosqlite://"),
+            engine=create_async_engine(
+                f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}"
+            ),
+            vector_store_name="store",
+            tombstone_retention_seconds=RETENTION_SECONDS,
+        )
+
+
+def test_an_engine_sharing_one_connection_is_refused(tmp_path):
+    """Every session would share one connection, so concurrent operations
+    would run inside one another's transactions."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}", poolclass=StaticPool
+    )
+    with pytest.raises(ValueError, match="StaticPool"):
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=engine,
+            vector_store_name="store",
+            tombstone_retention_seconds=RETENTION_SECONDS,
+        )
+
+
+@pytest.mark.parametrize("url", ["sqlite+aiosqlite://", "sqlite+aiosqlite:///:memory:"])
+def test_an_in_memory_sqlite_engine_is_refused(url):
+    """Each connection to in-memory SQLite gets a separate database, so the
+    registry's state would not be shared, even within one process."""
+    with pytest.raises(ValueError, match="in-memory"):
+        SQLAlchemyVectorStoreCollectionRegistryParams(
+            engine=create_async_engine(url, poolclass=NullPool),
             vector_store_name="store",
             tombstone_retention_seconds=RETENTION_SECONDS,
         )
