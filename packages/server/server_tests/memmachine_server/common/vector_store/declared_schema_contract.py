@@ -205,6 +205,18 @@ class DeclaredSchemaContract:
         }
 
     @pytest.mark.asyncio
+    async def test_the_last_record_sharing_a_uuid_is_the_one_written(self, collection):
+        first = _record([1.0, 0.0, 0.0], name="first", age=1)
+        last = Record(
+            uuid=first.uuid, vector=_unit([1.0, 0.1, 0.0]), properties={"age": 2}
+        )
+        await self._store(collection, [first, last])
+
+        assert await _admitted(collection, Equals(field="age", value=2)) == {last.uuid}
+        assert await _admitted(collection, Equals(field="age", value=1)) == set()
+        assert await _admitted(collection, IsNull(field="name")) == {last.uuid}
+
+    @pytest.mark.asyncio
     async def test_query_rejects_an_undeclared_key(self, collection):
         with pytest.raises(UndeclaredPropertyKeyError, match="color"):
             await _admitted(collection, Equals(field="color", value="red"))

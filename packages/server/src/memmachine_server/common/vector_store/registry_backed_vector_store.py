@@ -111,9 +111,13 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         async with self._tracker("upsert"):
-            records = [
-                bind_record(record, self._indexed_properties) for record in records
-            ]
+            # The last of records sharing a UUID is the one written.
+            records = list(
+                {
+                    record.uuid: bind_record(record, self._indexed_properties)
+                    for record in records
+                }.values()
+            )
             for record in records:
                 require_dimensions(record.vector, self._vector_dimensions)
             await self._registration.require_current()
@@ -171,7 +175,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Called between two liveness checks, with at least one record, each
         the one `bind_record` returns and already checked: its keys are
         declared, each value is of its key's declared type, and its vector
-        has the store's dimensions.
+        has the store's dimensions. No two records share a UUID.
         A record replaces the one with its UUID. The records are durable when
         it returns; a call that raises may have written some of them.
 

@@ -78,6 +78,7 @@ class VectorStorePartition(ABC):
 
         Insert records with new UUIDs,
         and update records with existing UUIDs.
+        Of records sharing a UUID, the last is the one written.
 
         Args:
             records (Iterable[Record]):

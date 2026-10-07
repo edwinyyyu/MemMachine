@@ -155,7 +155,13 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
-        records = [bind_record(record, self._indexed_properties) for record in records]
+        # The last of records sharing a UUID is the one written.
+        records = list(
+            {
+                record.uuid: bind_record(record, self._indexed_properties)
+                for record in records
+            }.values()
+        )
         if not records:
             return
         for record in records:
