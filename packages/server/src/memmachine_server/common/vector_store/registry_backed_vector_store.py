@@ -42,6 +42,7 @@ from .utils import (
     require_declared_types,
     require_dimensions,
     require_distinct_record_uuids,
+    require_finite_properties,
     require_identifiers,
     require_valid_limit,
     require_valid_query_vector,
@@ -97,6 +98,7 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
                 require_declared_types(
                     record.properties, self._config.indexed_properties_schema
                 )
+                require_finite_properties(record.properties)
                 require_dimensions(record.vector, self._config.vector_dimensions)
             require_distinct_record_uuids(record.uuid for record in records)
             await self._registration.require_current()
@@ -149,7 +151,8 @@ class RegistryBackedVectorStoreCollection(VectorStoreCollection):
 
         Called between two liveness checks, with at least one record and no
         two records of the same UUID, each already checked against the
-        collection's configuration. A record replaces the one with its UUID.
+        collection's configuration and holding only finite float property
+        values. A record replaces the one with its UUID.
         The records are durable when it returns; a call that raises may have
         written some of them.
 

@@ -1247,6 +1247,20 @@ class TestFilters:
         assert await _stored_uuids(collection) == set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["score", "rating"], ids=["declared", "undeclared"])
+    @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+    async def test_a_property_value_that_is_not_finite_is_refused(
+        self, collection, key, value
+    ):
+        finite = _make_record(vector=_normalize([1.0, 0.0, 0.0]), properties={key: 1.0})
+        not_finite = _make_record(
+            vector=_normalize([1.0, 0.1, 0.0]), properties={key: value}
+        )
+        with pytest.raises(ValueError, match=f"{key!r} is not finite"):
+            await collection.upsert(records=[finite, not_finite])
+        assert await _stored_uuids(collection) == set()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
     async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
         self, collection, coordinate

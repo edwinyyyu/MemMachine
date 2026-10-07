@@ -72,9 +72,9 @@ class VectorStoreCollection(ABC):
         Raises:
             ValueError:
                 If two records share a UUID, a record's declared property
-                holds a value of another type, or a record's vector does
-                not have the collection's dimensions; no record is
-                written.
+                holds a value of another type, a record's float property
+                value is not finite, or a record's vector does not have
+                the collection's dimensions; no record is written.
         """
         raise NotImplementedError
 
