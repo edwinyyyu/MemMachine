@@ -65,7 +65,7 @@ from .data_types import (
     indexed_property_names,
     validate_vector_store_name,
 )
-from .declared_properties import bind_filter, require_declared_properties
+from .declared_properties import bind_filter, bind_record
 from .sql_columns import (
     compile_property_filter,
     property_column_values,
@@ -331,11 +331,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
-        records = list(records)
+        records = [bind_record(record, self._indexed_properties) for record in records]
         if not records:
             return
         for record in records:
-            require_declared_properties(record.properties, self._indexed_properties)
             require_dimensions(record.vector, self._vector_dimensions)
 
         async with self._create_session() as session, session.begin():
