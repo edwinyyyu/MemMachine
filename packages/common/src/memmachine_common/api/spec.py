@@ -88,6 +88,9 @@ def _validate_property_datetime(value: datetime) -> datetime:
 PropertyStr = Annotated[str, AfterValidator(_validate_property_str)]
 """Type for strings stored as property values or property keys."""
 
+PropertyDatetime = Annotated[datetime, AfterValidator(_validate_property_datetime)]
+"""Type for datetimes stored as property values."""
+
 # Canonical type-name set accepted in `properties_schema`. Mirrors
 # `memmachine_server.common.data_types.PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE` but
 # lives here so the API contract validates types at request time rather than
@@ -516,23 +519,23 @@ class MemoryMessage(BaseModel):
         str,
         Field(..., description=SpecDoc.MEMORY_CONTENT),
     ]
-    producer: str = Field(
+    producer: PropertyStr = Field(
         default="user",
         description=SpecDoc.MEMORY_PRODUCER,
     )
-    produced_for: str = Field(
+    produced_for: PropertyStr = Field(
         default="",
         description=SpecDoc.MEMORY_PRODUCE_FOR,
     )
-    timestamp: datetime = Field(
+    timestamp: PropertyDatetime = Field(
         default_factory=lambda: datetime.now(UTC),
         description=SpecDoc.MEMORY_TIMESTAMP,
     )
-    role: str = Field(
+    role: PropertyStr = Field(
         default="",
         description=SpecDoc.MEMORY_ROLE,
     )
-    metadata: dict[str, str] = Field(
+    metadata: dict[PropertyStr, PropertyStr] = Field(
         default_factory=dict,
         description=SpecDoc.MEMORY_METADATA,
     )

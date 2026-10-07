@@ -450,6 +450,32 @@ def test_timestamp_invalid_type():
         )
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param({"metadata": {"key": "a\x00b"}}, id="metadata-value-nul"),
+        pytest.param(
+            {"metadata": {"key": "a\ud800b"}}, id="metadata-value-lone-surrogate"
+        ),
+        pytest.param({"metadata": {"a\x00b": "value"}}, id="metadata-key-nul"),
+        pytest.param({"producer": "a\x00b"}, id="producer-nul"),
+        pytest.param({"produced_for": "a\x00b"}, id="produced-for-nul"),
+        pytest.param({"role": "a\x00b"}, id="role-nul"),
+        pytest.param(
+            {"timestamp": "0001-01-01T00:00:00+05:00"},
+            id="timestamp-before-year-1-in-utc",
+        ),
+        pytest.param(
+            {"timestamp": "2026-01-01T12:00:00+05:30:45"},
+            id="timestamp-offset-seconds",
+        ),
+    ],
+)
+def test_memory_message_refuses_property_values_outside_the_domain(fields):
+    with pytest.raises(ValidationError):
+        MemoryMessage.model_validate({"content": "hello", **fields})
+
+
 @pytest.mark.parametrize("top_k", [0, -1])
 def test_search_top_k_must_be_positive(top_k):
     """A non-positive top_k is refused by the schema, not by the store.
