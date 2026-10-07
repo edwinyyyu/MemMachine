@@ -164,9 +164,7 @@ async def test_public_lease_renewal_and_release(tmp_path: Path) -> None:
         first = SQLLeaseLockService(first_engine)
         second = SQLLeaseLockService(second_engine)
         await first.startup()
-        lease = await first.try_acquire(
-            "resource", lease_duration=timedelta(milliseconds=300)
-        )
+        lease = await first.try_acquire("resource", lease_duration=timedelta(seconds=2))
         assert lease is not None
         original_expiry = lease.expires_at
         await asyncio.sleep(0.15)
@@ -597,7 +595,7 @@ async def test_context_waits_for_in_flight_renewal_before_release(
 
         async def use_context() -> None:
             async with service.lock(
-                "resource", lease_duration=timedelta(milliseconds=120)
+                "resource", lease_duration=timedelta(seconds=2)
             ) as lease:
                 real_renew = lease.renew
 
@@ -611,7 +609,7 @@ async def test_context_waits_for_in_flight_renewal_before_release(
 
         task = asyncio.create_task(use_context())
         await renewing.wait()
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.2)
         assert not task.done()
         finish_renewal.set()
         await task
@@ -825,23 +823,36 @@ async def test_cleanup_wait_has_deadline(monkeypatch: pytest.MonkeyPatch) -> Non
 async def test_repeated_cancellation_does_not_extend_cleanup_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(lease_service_module, "_CLEANUP_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(lease_service_module, "_CLEANUP_TIMEOUT_SECONDS", 0.5)
     finish = asyncio.Event()
     cleanup = asyncio.create_task(finish.wait())
-    cancellations: list[bool] = []
+    processed: asyncio.Queue[None] = asyncio.Queue()
+
+    class CancellationLog(list[bool]):
+        def append(self, value: bool) -> None:
+            super().append(value)
+            processed.put_nowait(None)
+
+    cancellations = CancellationLog()
     owner = asyncio.create_task(
         lease_service_module._await_cleanup(cleanup, cancellations)
     )
     try:
-        for _ in range(3):
-            await asyncio.sleep(0.005)
+        await asyncio.sleep(0)  # Let the owner start waiting for cleanup.
+        for expected in range(1, 4):
+            await asyncio.sleep(0.1)
             owner.cancel()
+            await asyncio.wait_for(processed.get(), timeout=0.15)
+            assert len(cancellations) == expected
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(owner, timeout=0.1)
+            await asyncio.wait_for(asyncio.shield(owner), timeout=0.65)
+        assert owner.done()
         assert len(cancellations) == 3
     finally:
         finish.set()
         await cleanup
+        if not owner.done():
+            await owner
 
 
 @pytest.mark.asyncio
