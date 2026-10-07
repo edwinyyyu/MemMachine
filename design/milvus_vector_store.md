@@ -53,7 +53,9 @@ registry](vector_store_collection_registry.md),
   `quotaAndLimits.limits.maxQueryResultWindow`); both are settings, not
   constants. A native collection keeps the VARCHAR length it was created
   with, so a changed `max_varchar_length` applies to native collections
-  created afterward.
+  created afterward. A record's undeclared properties share one JSON field,
+  which the server refuses above `common.JSONMaxLength` bytes (65,536 unless
+  configured).
 - **Creation converges:** the collection and its indexes (named by their
   fields) are created only when missing, and the collection is loaded, a
   no-op when it is loaded already.
