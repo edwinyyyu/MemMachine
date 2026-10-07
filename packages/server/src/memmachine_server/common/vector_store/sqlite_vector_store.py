@@ -59,6 +59,7 @@ from .data_types import (
 from .utils import (
     require_declared_types,
     require_dimensions,
+    require_distinct_record_uuids,
     require_identifiers,
     require_valid_limit,
     require_valid_query_vector,
@@ -288,6 +289,7 @@ class SQLiteVectorStoreCollection(VectorStoreCollection):
                 record.properties, self._config.indexed_properties_schema
             )
             require_dimensions(record.vector, self._config.vector_dimensions)
+        require_distinct_record_uuids(record.uuid for record in records)
 
         async with self._create_session() as session, session.begin():
             upsert_records = (
