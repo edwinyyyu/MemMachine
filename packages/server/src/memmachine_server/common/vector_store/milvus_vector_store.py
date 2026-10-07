@@ -466,12 +466,6 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
     }
 
     @staticmethod
-    def _is_already_exists_error(error: Exception) -> bool:
-        """Check if an exception indicates a resource already exists."""
-        message = str(error).lower()
-        return "already exist" in message or "already exists" in message
-
-    @staticmethod
     def _build_native_collection_name(
         namespace: str, config: VectorStoreCollectionConfig
     ) -> str:
@@ -590,15 +584,13 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
                 timeout=self._request_timeout_seconds,
             )
 
+        # Milvus answers a create of an existing collection with the same
+        # schema with success, so racing creators both go on.
         if not await self._client.has_collection(
             native_collection_name,
             timeout=self._request_timeout_seconds,
         ):
-            try:
-                await _create_collection()
-            except MilvusException as exc:
-                if not MilvusVectorStore._is_already_exists_error(exc):
-                    raise
+            await _create_collection()
         await self._index_and_load(native_collection_name, config)
 
     @override

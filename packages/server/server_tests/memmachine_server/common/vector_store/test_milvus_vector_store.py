@@ -689,49 +689,6 @@ class TestConcurrentPreparation:
         }
 
 
-@pytest.mark.asyncio
-async def test_a_creation_that_loses_the_native_collection_to_another_completes_it(
-    registry_url,
-):
-    """A creation whose create request Milvus refuses as existing, because
-    another creator made the native collection after this one checked, still
-    indexes and loads the native collection, and the collection opens."""
-    indexed: set[str] = set()
-    loaded: list[str] = []
-
-    async def list_indexes(collection_name: str, **kwargs) -> list[str]:
-        return sorted(indexed)
-
-    async def create_index(collection_name: str, index_params, **kwargs) -> None:
-        indexed.update(index.field_name for index in index_params)
-
-    async def load_collection(collection_name: str, **kwargs) -> None:
-        loaded.append(collection_name)
-
-    client = MagicMock(spec=AsyncMilvusClient)
-    client.prepare_index_params = AsyncMilvusClient.prepare_index_params
-    client.create_schema = AsyncMilvusClient.create_schema
-    client.has_collection = AsyncMock(return_value=False)
-    client.create_collection = AsyncMock(
-        side_effect=pymilvus.MilvusException(message="collection already exists")
-    )
-    client.list_indexes = AsyncMock(side_effect=list_indexes)
-    client.create_index = AsyncMock(side_effect=create_index)
-    client.load_collection = AsyncMock(side_effect=load_collection)
-    registry_engine = create_async_engine(registry_url)
-    store = await _started_store(client, registry_engine)
-    config = VectorStoreCollectionConfig(
-        vector_dimensions=VECTOR_DIM, indexed_properties_schema={"name": str}
-    )
-
-    await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
-
-    assert await store.open_collection(namespace=NAMESPACE, name=NAME) is not None
-    assert indexed == {"vector", "_p_name"}
-    assert loaded
-    await registry_engine.dispose()
-
-
 class TestUpsertAndQuery:
     @pytest.mark.asyncio
     async def test_a_query_may_ask_for_hundreds_of_results(self, collection):
