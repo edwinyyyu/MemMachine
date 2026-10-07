@@ -353,7 +353,8 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         description=(
             "Bytes a declared string property can hold: the length of its "
             "VARCHAR field. Milvus refuses a length above its "
-            "proxy.maxVarCharLength, 65535 unless the server sets it otherwise."
+            "proxy.maxVarCharLength, 65535 unless the server sets it otherwise. "
+            "A native collection keeps the length it was created with."
         ),
     )
     purge_batch_size: int = Field(

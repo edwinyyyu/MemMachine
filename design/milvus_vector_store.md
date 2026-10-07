@@ -51,7 +51,9 @@ registry](vector_store_collection_registry.md),
   within `proxy.maxVarCharLength`), and a purge batch `purge_batch_size`
   (10,000 unless configured, within
   `quotaAndLimits.limits.maxQueryResultWindow`); both are settings, not
-  constants.
+  constants. A native collection keeps the VARCHAR length it was created
+  with, so a changed `max_varchar_length` applies to native collections
+  created afterward.
 - **Creation converges:** the collection and its indexes (named by their
   fields) are created only when missing, and the collection is loaded, a
   no-op when it is loaded already.
