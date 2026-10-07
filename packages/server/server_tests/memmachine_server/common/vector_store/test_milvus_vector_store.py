@@ -26,7 +26,7 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 AsyncMilvusClient = pymilvus.AsyncMilvusClient
 
-from pymilvus.client.types import ConsistencyLevel
+from pymilvus.client.types import ConsistencyLevel, LoadState
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
@@ -1837,6 +1837,38 @@ class TestPurge:
 
         await _drain(store)
         assert await store.purge_deleted_collections() is False
+
+    @pytest.mark.asyncio
+    async def test_a_purge_round_completes_a_native_collection_left_unindexed(
+        self, store, monkeypatch
+    ):
+        """A creation that fails after creating the native collection leaves it
+        unindexed and unloaded; the cancelled collection's purge round indexes
+        and loads it, and removes the tombstone."""
+        namespace = "left_unindexed"
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+
+        async def refuse(*args, **kwargs) -> None:
+            raise pymilvus.MilvusException(message="index creation refused")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store._client, "create_index", refuse)
+            with pytest.raises(pymilvus.MilvusException):
+                await store.create_collection(
+                    namespace=namespace, name="partial", config=config
+                )
+        native_collection_name = MilvusVectorStore._build_native_collection_name(
+            namespace, config
+        )
+        assert (await store._client.get_load_state(native_collection_name))[
+            "state"
+        ] is LoadState.NotLoad
+
+        await _drain(store)
+        assert await store.purge_deleted_collections() is False
+        assert (await store._client.get_load_state(native_collection_name))[
+            "state"
+        ] is LoadState.Loaded
 
     @pytest.mark.asyncio
     async def test_purgers_on_two_stores_reclaim_the_deleted_collections_alone(

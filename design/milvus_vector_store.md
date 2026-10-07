@@ -157,7 +157,10 @@ variation.
 
 Bounded batches. A round lists up to `purge_batch_size` of the incarnation's
 primary keys, by a query on the incarnation field at the store's read level,
-and deletes them by key. Measured (Milvus 3.0.2; 2.11M points in this layout,
+and deletes them by key. It first creates the native collection's missing
+indexes and loads it, as a creation does: a creation that failed partway can
+leave it unindexed and unloaded, and only a loaded collection answers the
+listing. Measured (Milvus 3.0.2; 2.11M points in this layout,
 dead incarnations of 10k to 1M among live tenants under search, upsert, and
 scroll traffic; 2 CPUs / 4 GB): rounds stayed flat at about 100 ms to the end
 of a 1M purge, with at most a 0.3 s stall for other tenants; one filter-delete

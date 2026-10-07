@@ -528,22 +528,6 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )
-        index_params = self._client.prepare_index_params()
-        index_params.add_index(
-            field_name=_VECTOR_FIELD,
-            index_name=_VECTOR_FIELD,
-            index_type=_VECTOR_INDEX_TYPE,
-            metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                config.similarity_metric
-            ],
-            params=_VECTOR_INDEX_PARAMS,
-        )
-        for key in config.indexed_properties_schema:
-            index_params.add_index(
-                field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
-                index_name=f"{_DECLARED_FIELD_PREFIX}{key}",
-                index_type="AUTOINDEX",
-            )
 
         async def _create_collection() -> None:
             schema = self._client.create_schema(
@@ -615,7 +599,64 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
             except MilvusException as exc:
                 if not MilvusVectorStore._is_already_exists_error(exc):
                     raise
+        await self._index_and_load(native_collection_name, config)
 
+    @override
+    async def _purge_round(
+        self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
+    ) -> bool:
+        # Deletes the incarnation's entities by primary key, one listed batch
+        # per round, keeping each delete short for every tenant of the native
+        # collection.
+        native_collection_name = MilvusVectorStore._build_native_collection_name(
+            namespace, config
+        )
+        if not await self._client.has_collection(
+            native_collection_name,
+            timeout=self._request_timeout_seconds,
+        ):
+            # The native collection is gone with everything in it.
+            return False
+        # A failed or interrupted preparation may have left it unindexed or
+        # unloaded, and only a loaded collection answers the listing.
+        await self._index_and_load(native_collection_name, config)
+        listed = await self._client.query(
+            collection_name=native_collection_name,
+            filter=_incarnation_filter(incarnation),
+            output_fields=[_ID_FIELD],
+            limit=self._purge_batch_size,
+            timeout=self._request_timeout_seconds,
+        )
+        primary_ids = [entity[_ID_FIELD] for entity in listed]
+        if primary_ids:
+            result = await self._client.delete(
+                collection_name=native_collection_name,
+                ids=primary_ids,
+                timeout=self._request_timeout_seconds,
+            )
+            _require_every_key_accepted(result, len(primary_ids))
+        return bool(primary_ids)
+
+    async def _index_and_load(
+        self, native_collection_name: str, config: VectorStoreCollectionConfig
+    ) -> None:
+        """Create the native collection's missing indexes, and load it."""
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(
+            field_name=_VECTOR_FIELD,
+            index_name=_VECTOR_FIELD,
+            index_type=_VECTOR_INDEX_TYPE,
+            metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
+                config.similarity_metric
+            ],
+            params=_VECTOR_INDEX_PARAMS,
+        )
+        for key in config.indexed_properties_schema:
+            index_params.add_index(
+                field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                index_name=f"{_DECLARED_FIELD_PREFIX}{key}",
+                index_type="AUTOINDEX",
+            )
         # Index names are their field names, so the ones present say which
         # fields are indexed. An index a racing creator made is created again
         # without error.
@@ -640,36 +681,3 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
             native_collection_name,
             timeout=self._request_timeout_seconds,
         )
-
-    @override
-    async def _purge_round(
-        self, namespace: str, config: VectorStoreCollectionConfig, incarnation: UUID
-    ) -> bool:
-        # Deletes the incarnation's entities by primary key, one listed batch
-        # per round, keeping each delete short for every tenant of the native
-        # collection.
-        native_collection_name = MilvusVectorStore._build_native_collection_name(
-            namespace, config
-        )
-        if not await self._client.has_collection(
-            native_collection_name,
-            timeout=self._request_timeout_seconds,
-        ):
-            # The native collection is gone with everything in it.
-            return False
-        listed = await self._client.query(
-            collection_name=native_collection_name,
-            filter=_incarnation_filter(incarnation),
-            output_fields=[_ID_FIELD],
-            limit=self._purge_batch_size,
-            timeout=self._request_timeout_seconds,
-        )
-        primary_ids = [entity[_ID_FIELD] for entity in listed]
-        if primary_ids:
-            result = await self._client.delete(
-                collection_name=native_collection_name,
-                ids=primary_ids,
-                timeout=self._request_timeout_seconds,
-            )
-            _require_every_key_accepted(result, len(primary_ids))
-        return bool(primary_ids)
