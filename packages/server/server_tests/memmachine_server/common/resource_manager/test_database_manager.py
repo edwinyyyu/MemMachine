@@ -707,6 +707,7 @@ async def test_milvus_creates_vector_store(tmp_path):
         request_timeout_seconds=7,
         max_varchar_length=2048,
         purge_batch_size=500,
+        metrics_factory=conf.milvus_confs["milvus1"].get_metrics_factory(),
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
     mock_store_cls.return_value.startup.assert_awaited_once()

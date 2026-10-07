@@ -750,6 +750,7 @@ class DatabaseManager:
                 request_timeout_seconds=conf.request_timeout_seconds,
                 max_varchar_length=conf.max_varchar_length,
                 purge_batch_size=conf.purge_batch_size,
+                metrics_factory=conf.get_metrics_factory(),
             )
             try:
                 store = MilvusVectorStore(params)

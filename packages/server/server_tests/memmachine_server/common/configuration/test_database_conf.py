@@ -330,7 +330,7 @@ def test_milvus_conf_rejects_a_milvus_lite_file():
 @pytest.mark.parametrize("setting", ["max_varchar_length", "purge_batch_size"])
 def test_milvus_conf_rejects_a_length_or_batch_size_that_is_not_positive(setting):
     with pytest.raises(ValueError, match=setting):
-        MilvusConf(collection_registry="db", **{setting: 0})
+        MilvusConf.model_validate({"collection_registry": "db", setting: 0})
 
 
 def test_milvus_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():

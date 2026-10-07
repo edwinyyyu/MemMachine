@@ -307,7 +307,7 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         return self
 
 
-class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
+class MilvusConf(MetricsFactoryIdMixin, YamlSerializableMixin, WithValueFromEnv):
     """Configuration options for a Milvus instance."""
 
     uri: str = Field(
