@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta, timezone
 from typing import cast
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from memmachine_common.api.spec import (
     SearchMemoriesSpec,
     SearchResult,
     _is_valid_name,
+    validate_property_value,
 )
 from pydantic import ValidationError
 
@@ -477,3 +479,64 @@ def test_search_top_k_accepts_one_and_the_default():
         ).top_k
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(True, id="bool"),
+        pytest.param(2**63 - 1, id="int64-max"),
+        pytest.param(-(2**63), id="int64-min"),
+        pytest.param(1.5, id="float"),
+        pytest.param("emoji \U0001f600", id="str"),
+        pytest.param(datetime(1, 1, 1, tzinfo=UTC), id="datetime-year-1"),
+        pytest.param(
+            datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+            id="datetime-year-9999",
+        ),
+        pytest.param(
+            datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+            id="datetime-offset-minutes",
+        ),
+        pytest.param(
+            datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None), id="datetime-naive"
+        ),
+    ],
+)
+def test_validate_property_value_accepts_the_domain(value):
+    assert validate_property_value(value) is value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(2**63, id="int-above-int64"),
+        pytest.param(-(2**63) - 1, id="int-below-int64"),
+        pytest.param(math.nan, id="nan"),
+        pytest.param(math.inf, id="inf"),
+        pytest.param(-math.inf, id="negative-inf"),
+        pytest.param("a\x00b", id="nul"),
+        pytest.param("a\ud800b", id="lone-surrogate"),
+        pytest.param(
+            datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=5))),
+            id="datetime-before-year-1-in-utc",
+        ),
+        pytest.param(
+            datetime(9999, 12, 31, 23, tzinfo=timezone(timedelta(hours=-5))),
+            id="datetime-after-year-9999-in-utc",
+        ),
+        pytest.param(
+            datetime(
+                2026, 1, 1, tzinfo=timezone(timedelta(hours=5, minutes=30, seconds=45))
+            ),
+            id="datetime-offset-seconds",
+        ),
+        pytest.param(
+            datetime(2026, 1, 1, tzinfo=timezone(timedelta(microseconds=1))),
+            id="datetime-offset-microseconds",
+        ),
+    ],
+)
+def test_validate_property_value_refuses_values_outside_the_domain(value):
+    with pytest.raises(ValueError, match="A property"):
+        validate_property_value(value)
