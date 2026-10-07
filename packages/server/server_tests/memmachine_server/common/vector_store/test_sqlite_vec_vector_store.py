@@ -518,17 +518,53 @@ class TestFilters:
         assert len(uuids) == 1
 
     @pytest.mark.asyncio
-    async def test_datetime_timezone_roundtrip(self, collection):
+    @pytest.mark.parametrize(
+        "key", ["created_at", "seen"], ids=["declared", "undeclared"]
+    )
+    async def test_datetime_timezone_roundtrip(self, collection, key):
         """Original timezone is preserved through storage."""
         v1 = _normalize([1.0, 0.0, 0.0])
         est = timezone(timedelta(hours=-5))
         dt = datetime(2024, 6, 15, 7, 0, 0, tzinfo=est)
-        r1 = _make_record(vector=v1, properties={"name": "tz", "created_at": dt})
+        r1 = _make_record(vector=v1, properties={"name": "tz", key: dt})
         await collection.upsert(records=[r1])
 
-        got = (await _stored(collection))[r1.uuid]["created_at"]
+        got = (await _stored(collection))[r1.uuid][key]
         assert got == dt
         assert got.utcoffset() == timedelta(hours=-5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["created_at", "seen"], ids=["declared", "undeclared"]
+    )
+    async def test_a_datetime_matches_a_filter_at_another_offset_by_its_instant(
+        self, collection, key
+    ):
+        """Equality and ordering compare instants, whatever either offset."""
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await collection.upsert(records=[record])
+
+        minus8 = timezone(timedelta(hours=-8))
+        same_instant = written.astimezone(minus8)
+        # A later instant whose wall-clock time is earlier, and an earlier
+        # instant whose wall-clock time is later.
+        later = datetime(2024, 6, 15, 9, 0, tzinfo=minus8)
+        earlier = datetime(2024, 6, 15, 20, 0, tzinfo=timezone(timedelta(hours=14)))
+        for op, value in [
+            ("=", same_instant),
+            ("<=", same_instant),
+            (">=", same_instant),
+            ("<", later),
+            (">", earlier),
+        ]:
+            assert await self._query(collection, record.vector, key, op, value) == {
+                record.uuid
+            }, op
 
     # ── In / And / Or / Not ──
 
