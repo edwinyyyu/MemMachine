@@ -1590,13 +1590,16 @@ _BOUNDED_OR_STRONGER = {
 class TestConsistency:
     @pytest.mark.asyncio
     async def test_the_store_reads_at_bounded_or_stronger(self, store, monkeypatch):
-        """The native collection reads at Bounded, and no read of the store
-        names a weaker level, so a read lags writes by at most
-        common.gracefulTime: the purge and the tombstone retention rely on it."""
+        """The store creates the native collection at Bounded by name, and no
+        read of the store names a weaker level, so a read lags writes by at
+        most common.gracefulTime: the purge and the tombstone retention rely
+        on it."""
         spies = {}
         for name in _CLIENT_READS:
             spies[name] = MagicMock(wraps=getattr(store._client, name))
             monkeypatch.setattr(store._client, name, spies[name])
+        create = MagicMock(wraps=store._client.create_collection)
+        monkeypatch.setattr(store._client, "create_collection", create)
         # A name of its own, so the store creates the native collection.
         bounded = await _started_store(
             store._client,
@@ -1616,6 +1619,7 @@ class TestConsistency:
 
         description = await store._client.describe_collection(bounded._collection_name)
         assert description["consistency_level"] == ConsistencyLevel.Bounded
+        assert create.call_args.kwargs["consistency_level"] == "Bounded"
         calls = [
             (name, call) for name, spy in spies.items() for call in spy.call_args_list
         ]

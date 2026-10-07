@@ -228,7 +228,7 @@ behind, the read waits rather than reads staler, and fails over to another
 replica if the node's tsafe stalls for 3 s (`queryNode.waitTsafeStallTimeout`,
 from 2.6.15).
 
-**The store reads at Bounded**: it creates each native collection at Bounded
+**The store reads at Bounded**: it creates its native collection at Bounded
 by name, rather than at whatever level pymilvus defaults to, and names no
 level on a read, so every read runs at the collection's level. The level is not configurable:
 the stated delay of at most `common.gracefulTime` and the tombstone retention
