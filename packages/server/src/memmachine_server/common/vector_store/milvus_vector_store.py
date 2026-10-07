@@ -458,9 +458,9 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
     A logical collection is the entities carrying its incarnation in the
     partition-key field.
 
-    Reads run at Milvus's default consistency level, Bounded: a query
-    reflects every write that returned at least the server's
-    `common.gracefulTime` before it began.
+    Reads run at Bounded, the consistency level the store creates its
+    native collections at: a query reflects every write that returned at
+    least the server's `common.gracefulTime` before it began.
     """
 
     _SIMILARITY_METRIC_TO_MILVUS_METRIC: ClassVar[dict[SimilarityMetric, str]] = {
@@ -610,6 +610,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
                 collection_name=native_collection_name,
                 schema=schema,
                 properties={"partitionkey.isolation": True},
+                consistency_level="Bounded",
                 timeout=self._request_timeout_seconds,
             )
 
