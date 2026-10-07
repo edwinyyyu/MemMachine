@@ -12,7 +12,11 @@ from pydantic import Field, InstanceOf
 from pymilvus import AsyncMilvusClient, DataType
 from pymilvus.exceptions import MilvusException
 
-from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyValue,
+    SimilarityMetric,
+)
 from memmachine_server.common.filter.filter_parser import (
     And as FilterAnd,
 )
@@ -36,6 +40,7 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import (
+    PROPERTY_TYPE_KEY,
     PROPERTY_VALUE_KEY,
     encode_properties,
 )
@@ -134,15 +139,15 @@ def _declared_property_value_literal(value: PropertyValue) -> str:
     return _property_value_literal(value)
 
 
-def _is_comparable_with_declared_type(
-    value: PropertyValue, declared_type: type[PropertyValue]
+def _is_comparable_with_type(
+    value: PropertyValue, property_type: type[PropertyValue]
 ) -> bool:
-    """Whether a filter value can be compared with a declared property."""
+    """Whether a filter value can be compared with a property of the type."""
     if isinstance(value, bool):
-        return declared_type is bool
+        return property_type is bool
     if isinstance(value, int | float):
-        return declared_type in (int, float)
-    return isinstance(value, declared_type)
+        return property_type in (int, float)
+    return isinstance(value, property_type)
 
 
 def _property_absent_expression(
@@ -161,30 +166,37 @@ def _condition_expression(
     """A Milvus expression for one condition; false or null where the property has no value."""
     values = list(expr.values) if isinstance(expr, FilterIn) else [expr.value]
     declared_type = declared.get(expr.field)
+    # A value of another type never equals or orders against the property.
     if declared_type is None:
-        target = (
-            f"{_PROPERTIES_FIELD}[{_expression_string_literal(expr.field)}]"
-            f"[{_expression_string_literal(PROPERTY_VALUE_KEY)}]"
+        entry = f"{_PROPERTIES_FIELD}[{_expression_string_literal(expr.field)}]"
+        target = f"{entry}[{_expression_string_literal(PROPERTY_VALUE_KEY)}]"
+        type_names = ", ".join(
+            _expression_string_literal(type_name)
+            for property_type, type_name in PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME.items()
+            if any(_is_comparable_with_type(value, property_type) for value in values)
+        )
+        type_check = (
+            f"{entry}[{_expression_string_literal(PROPERTY_TYPE_KEY)}] "
+            f"in [{type_names}] && "
         )
         render = _property_value_literal
     else:
-        # A value of another type never equals or orders against the property.
         values = [
-            value
-            for value in values
-            if _is_comparable_with_declared_type(value, declared_type)
+            value for value in values if _is_comparable_with_type(value, declared_type)
         ]
         target = f"{_DECLARED_FIELD_PREFIX}{expr.field}"
+        type_check = ""
         render = _declared_property_value_literal
     if not values:
         return _FALSE_EXPR
     match expr:
         case FilterIn():
-            return f"{target} in [{', '.join(render(value) for value in values)}]"
+            literals = ", ".join(render(value) for value in values)
+            return f"{type_check}{target} in [{literals}]"
         case FilterComparison(op="="):
-            return f"{target} == {render(values[0])}"
+            return f"{type_check}{target} == {render(values[0])}"
         case FilterComparison(op=op):
-            return f"{target} {op} {render(values[0])}"
+            return f"{type_check}{target} {op} {render(values[0])}"
 
 
 def _filter_expression(

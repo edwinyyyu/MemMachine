@@ -1130,6 +1130,31 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
+    async def test_an_undeclared_property_matches_only_values_of_a_comparable_type(
+        self, collection
+    ):
+        """A string equal to an undeclared datetime's stored text matches
+        nothing, and its complement keeps the record; an int still compares
+        with an undeclared float."""
+        seen = datetime(2024, 6, 15, 12, tzinfo=UTC)
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"seen": seen, "rank": 2.0}
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        assert (
+            await self._query(collection, record.vector, "seen", "=", seen.isoformat())
+            == set()
+        )
+        assert await self._query(
+            collection, record.vector, "seen", "!=", seen.isoformat()
+        ) == {record.uuid}
+        assert await self._query(collection, record.vector, "rank", "=", 2) == {
+            record.uuid
+        }
+
+    @pytest.mark.asyncio
     async def test_a_character_outside_the_basic_multilingual_plane_matches(
         self, collection
     ):
