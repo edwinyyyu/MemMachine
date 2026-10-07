@@ -429,8 +429,6 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
             return error.status_code == 409
         if isinstance(error, grpc.aio.AioRpcError):
             return error.code() == grpc.StatusCode.ALREADY_EXISTS
-        if isinstance(error, ValueError):
-            return "already exists" in str(error).lower()
         return False
 
     @staticmethod
@@ -440,8 +438,6 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
             return error.status_code == 404
         if isinstance(error, grpc.aio.AioRpcError):
             return error.code() == grpc.StatusCode.NOT_FOUND
-        if isinstance(error, ValueError):
-            return "not found" in str(error).lower()
         return False
 
     @staticmethod
@@ -499,7 +495,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
                     payload_m=self._hnsw_m,
                 ),
             )
-        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+        except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
                 raise
 
@@ -524,7 +520,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
                     field_name=field_name,
                     field_schema=field_schema,
                 )
-            except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+            except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
                 if not QdrantVectorStore._is_already_exists_error(e):
                     raise
 
@@ -545,7 +541,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
                 with_payload=False,
                 with_vectors=False,
             )
-        except (UnexpectedResponse, grpc.aio.AioRpcError, ValueError) as e:
+        except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
             # The native collection is gone with everything in it.
             if not QdrantVectorStore._is_not_found_error(e):
                 raise
