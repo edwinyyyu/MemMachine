@@ -84,6 +84,17 @@ async def _stored_uuids(collection) -> set[UUID]:
     return {UUID(str((point.payload or {})[_PAYLOAD_RECORD_UUID])) for point in points}
 
 
+async def _stored_payload(collection, record_uuid: UUID) -> dict:
+    """The payload Qdrant holds for a record, read past the store."""
+    [point] = await collection._client.retrieve(
+        collection_name=collection._native_collection_name,
+        ids=[str(collection._point_id(record_uuid))],
+        with_payload=True,
+        with_vectors=False,
+    )
+    return point.payload or {}
+
+
 async def _count_stored(
     store: QdrantVectorStore, namespace: str, config: VectorStoreCollectionConfig
 ) -> int:
@@ -968,6 +979,58 @@ class TestFilters:
         assert r1.uuid not in uuids
         assert r2.uuid in uuids
         assert r3.uuid in uuids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["created_at", "seen"], ids=["declared", "undeclared"]
+    )
+    async def test_a_datetime_is_stored_with_its_offset(self, collection, key):
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await collection.upsert(records=[record])
+
+        stored = datetime.fromisoformat(
+            (await _stored_payload(collection, record.uuid))[key]
+        )
+        assert stored == written
+        assert stored.utcoffset() == written.utcoffset()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["created_at", "seen"], ids=["declared", "undeclared"]
+    )
+    async def test_a_datetime_matches_a_filter_at_another_offset_by_its_instant(
+        self, collection, key
+    ):
+        """Equality and ordering compare instants, whatever either offset."""
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await collection.upsert(records=[record])
+
+        minus8 = timezone(timedelta(hours=-8))
+        same_instant = written.astimezone(minus8)
+        # A later instant whose wall-clock time is earlier, and an earlier
+        # instant whose wall-clock time is later.
+        later = datetime(2024, 6, 15, 9, 0, tzinfo=minus8)
+        earlier = datetime(2024, 6, 15, 20, 0, tzinfo=timezone(timedelta(hours=14)))
+        for op, value in [
+            ("=", same_instant),
+            ("<=", same_instant),
+            (">=", same_instant),
+            ("<", later),
+            (">", earlier),
+        ]:
+            assert await self._query(collection, record.vector, key, op, value) == {
+                record.uuid
+            }, op
 
     @pytest.mark.asyncio
     async def test_eq_naive_datetime(self, collection):
