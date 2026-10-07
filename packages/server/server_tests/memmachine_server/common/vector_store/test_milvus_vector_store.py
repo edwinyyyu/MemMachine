@@ -1093,6 +1093,21 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
+    async def test_ints_compare_with_float_properties_and_floats_not_with_int_ones(
+        self, collection
+    ):
+        """An int filter value compares with a declared float property by
+        value; a float filter value matches no declared int property."""
+        r1, _, r3, v1 = await self._setup(collection)
+
+        assert await self._query(collection, v1, "score", ">=", 8) == {
+            r1.uuid,
+            r3.uuid,
+        }
+        assert await self._query(collection, v1, "age", "=", 30.0) == set()
+        assert await self._query(collection, v1, "age", ">", 29.5) == set()
+
+    @pytest.mark.asyncio
     async def test_an_undeclared_property_matches_only_values_of_a_comparable_type(
         self, collection
     ):

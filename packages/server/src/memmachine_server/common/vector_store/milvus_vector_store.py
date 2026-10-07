@@ -142,11 +142,17 @@ def _declared_property_value_literal(value: PropertyValue) -> str:
 def _is_comparable_with_type(
     value: PropertyValue, property_type: type[PropertyValue]
 ) -> bool:
-    """Whether a filter value can be compared with a property of the type."""
+    """Whether a filter value can be compared with a property of the type.
+
+    An int compares with an int or a float, and a float only with a float:
+    Milvus refuses a float literal against an INT64 field.
+    """
     if isinstance(value, bool):
         return property_type is bool
-    if isinstance(value, int | float):
+    if isinstance(value, int):
         return property_type in (int, float)
+    if isinstance(value, float):
+        return property_type is float
     return isinstance(value, property_type)
 
 
