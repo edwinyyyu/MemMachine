@@ -1130,6 +1130,26 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
+    async def test_a_character_outside_the_basic_multilingual_plane_matches(
+        self, collection
+    ):
+        """A string filter value with a character outside the Basic
+        Multilingual Plane matches, on a declared property and an undeclared
+        one."""
+        text = "café 😀"
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]),
+            properties={"name": text, "nickname": text},
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        for field_name in ("name", "nickname"):
+            assert await self._query(
+                collection, record.vector, field_name, "=", text
+            ) == {record.uuid}
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("key", "value"),
         [("age", "old"), ("age", 30.5), ("age", True), ("score", 3), ("score", "high")],

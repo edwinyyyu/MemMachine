@@ -102,8 +102,12 @@ _SEARCH_REFINE_K = 8
 
 
 def _expression_string_literal(value: str) -> str:
-    """Return a Milvus expression string literal."""
-    return json.dumps(value)
+    """Return a Milvus expression string literal.
+
+    Characters stay UTF-8: Milvus's parser refuses the surrogate pair an
+    ASCII escape writes for a character outside the Basic Multilingual Plane.
+    """
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _property_value_literal(value: PropertyValue) -> str:
