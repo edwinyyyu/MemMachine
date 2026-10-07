@@ -367,6 +367,8 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
             timeout=self._request_timeout_seconds,
         )
 
+        # Milvus returns each query's hits best first, and the square root
+        # taken of a Euclidean distance keeps their order.
         results: list[QueryResult] = []
         for raw_matches in raw_results:
             matches: list[QueryMatch] = []
@@ -385,10 +387,6 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
                     )
                 )
 
-            matches.sort(
-                key=lambda match: match.score,
-                reverse=self.config.similarity_metric.higher_is_better,
-            )
             results.append(QueryResult(matches=matches))
 
         return results
