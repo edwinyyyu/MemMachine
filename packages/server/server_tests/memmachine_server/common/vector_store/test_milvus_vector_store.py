@@ -1638,14 +1638,16 @@ async def test_a_purge_round_milvus_does_not_accept_in_full_raises(registry_url)
     client.query = AsyncMock(return_value=[{"id": "listed_a"}, {"id": "listed_b"}])
     client.delete = AsyncMock(return_value={"delete_count": 1})
     registry_engine = create_async_engine(registry_url)
-    store = await _started_store(client, registry_engine)
-    config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-    await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
-    await store.delete_collection(namespace=NAMESPACE, name=NAME)
+    try:
+        store = await _started_store(client, registry_engine)
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
 
-    with pytest.raises(pymilvus.MilvusException):
-        await store.purge_deleted_collections()
-    await registry_engine.dispose()
+        with pytest.raises(pymilvus.MilvusException):
+            await store.purge_deleted_collections()
+    finally:
+        await registry_engine.dispose()
 
 
 class TestPartitionIsolation:
