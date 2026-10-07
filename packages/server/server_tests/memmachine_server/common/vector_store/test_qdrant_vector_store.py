@@ -1185,6 +1185,17 @@ class TestFilters:
             await collection.query(query_vectors=[vector], limit=1)
 
     @pytest.mark.asyncio
+    async def test_a_batch_repeating_a_record_uuid_is_refused(self, collection):
+        other = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        first = _make_record(vector=_normalize([1.0, 0.1, 0.0]), properties={"age": 1})
+        repeated = _make_record(
+            uuid=first.uuid, vector=_normalize([1.0, 0.2, 0.0]), properties={"age": 2}
+        )
+        with pytest.raises(ValueError, match=str(first.uuid)):
+            await collection.upsert(records=[other, first, repeated])
+        assert await _stored_uuids(collection) == set()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
     async def test_a_query_vector_with_a_coordinate_that_is_not_finite_is_refused(
         self, collection, coordinate
