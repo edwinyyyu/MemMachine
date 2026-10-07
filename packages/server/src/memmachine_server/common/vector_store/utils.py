@@ -70,6 +70,13 @@ def require_declared_types(
             )
 
 
+def require_finite_properties(properties: Mapping[str, PropertyValue]) -> None:
+    """Raise ValueError if a float property value is not finite."""
+    for key, value in properties.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"Property {key!r} is not finite: {value}")
+
+
 def require_distinct_record_uuids(record_uuids: Iterable[UUID]) -> None:
     """Raise ValueError if a record UUID occurs more than once."""
     seen: set[UUID] = set()
