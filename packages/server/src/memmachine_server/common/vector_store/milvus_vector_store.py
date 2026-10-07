@@ -496,7 +496,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
     partition-key field.
 
     Reads run at Bounded, the consistency level the store creates its
-    native collections at: a query reflects every write that returned at
+    native collection at: a query reflects every write that returned at
     least the server's `common.gracefulTime` before it began.
     """
 
