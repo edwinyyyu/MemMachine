@@ -1034,6 +1034,33 @@ class TestFilters:
         assert stored["_tz_created_at"] == 5 * 3600 + 30 * 60
 
     @pytest.mark.asyncio
+    async def test_a_declared_datetime_with_a_seconds_offset_is_stored_and_matched(
+        self, collection
+    ):
+        """A datetime whose offset has a seconds component, as local mean time
+        does, is stored with that offset and matched by its instant."""
+        written = datetime(
+            2024, 6, 15, 12, 0, tzinfo=timezone(timedelta(minutes=19, seconds=32))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"created_at": written}
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        stored = (await _stored(collection, [record.uuid]))[record.uuid]
+        assert datetime.fromisoformat(stored["_p_created_at"]) == written
+        assert stored["_tz_created_at"] == 19 * 60 + 32
+        [result] = await collection.query(
+            query_vectors=[record.vector],
+            limit=10,
+            property_filter=Comparison(
+                field="created_at", op="=", value=written.astimezone(UTC)
+            ),
+        )
+        assert [match.record_uuid for match in result.matches] == [record.uuid]
+
+    @pytest.mark.asyncio
     async def test_datetime_filters_compare_instants_across_offsets(self, collection):
         base = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
         plus5 = timezone(timedelta(hours=5))

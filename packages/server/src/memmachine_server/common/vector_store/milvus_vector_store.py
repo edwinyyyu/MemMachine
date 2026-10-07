@@ -317,9 +317,11 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
         for key, declared_type in declared.items():
             value = record.properties.get(key)
             if isinstance(value, datetime):
-                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = ensure_tz_aware(
-                    value
-                ).isoformat()
+                # The instant in UTC: Milvus refuses an offset with a seconds
+                # component, and the offset field keeps the one written.
+                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = (
+                    ensure_tz_aware(value).astimezone(UTC).isoformat()
+                )
                 entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = utc_offset_seconds(value)
             elif declared_type is datetime:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
