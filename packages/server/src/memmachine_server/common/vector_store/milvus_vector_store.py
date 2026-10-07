@@ -497,6 +497,32 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         self._purge_batch_size = params.purge_batch_size
 
     @override
+    async def create_collection(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        config: VectorStoreCollectionConfig,
+    ) -> None:
+        # Refused before the registry reserves the name.
+        self._validate_metric(config.similarity_metric)
+        await super().create_collection(namespace=namespace, name=name, config=config)
+
+    @override
+    async def open_or_create_collection(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        config: VectorStoreCollectionConfig,
+    ) -> MilvusVectorStoreCollection:
+        # Refused before the registry reserves the name.
+        self._validate_metric(config.similarity_metric)
+        return await super().open_or_create_collection(
+            namespace=namespace, name=name, config=config
+        )
+
+    @override
     def _build_collection_handle(
         self, registration: Registration
     ) -> MilvusVectorStoreCollection:
@@ -518,7 +544,6 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
         incarnation: UUID,
     ) -> None:
         # Created, indexed, and loaded as separate steps, each when missing.
-        self._validate_metric(config.similarity_metric)
         native_collection_name = MilvusVectorStore._build_native_collection_name(
             namespace, config
         )

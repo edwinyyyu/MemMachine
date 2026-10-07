@@ -609,9 +609,14 @@ class TestCollectionLifecycle:
         await store.delete_collection(namespace=NAMESPACE, name="schema")
 
     @pytest.mark.asyncio
-    async def test_unsupported_metric_raises(self, store):
+    @pytest.mark.parametrize(
+        "operation", ["create_collection", "open_or_create_collection"]
+    )
+    async def test_unsupported_metric_raises_before_reserving(self, store, operation):
+        """An unsupported metric is refused before the registry reserves the
+        name, so the refusal leaves nothing to purge."""
         with pytest.raises(ValueError, match="Milvus only supports"):
-            await store.create_collection(
+            await getattr(store, operation)(
                 namespace=NAMESPACE,
                 name="bad_metric",
                 config=VectorStoreCollectionConfig(
@@ -619,6 +624,7 @@ class TestCollectionLifecycle:
                     similarity_metric=SimilarityMetric.MANHATTAN,
                 ),
             )
+        assert await store.purge_deleted_collections() is False
 
 
 async def _require_usable(collection: MilvusVectorStoreCollection) -> None:
