@@ -1129,6 +1129,22 @@ class TestFilters:
         assert [match.record_uuid for match in result.matches] == [record.uuid]
 
     @pytest.mark.asyncio
+    async def test_an_undeclared_datetime_is_stored_with_its_offset(self, collection):
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"seen": written}
+        )
+        await collection.upsert(records=[record])
+
+        stored = (await _stored(collection, [record.uuid]))[record.uuid]
+        kept = decode_properties(stored["properties"])["seen"]
+        assert isinstance(kept, datetime)
+        assert kept == written
+        assert kept.utcoffset() == written.utcoffset()
+
+    @pytest.mark.asyncio
     async def test_datetime_filters_compare_instants_across_offsets(self, collection):
         base = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
         plus5 = timezone(timedelta(hours=5))
@@ -1165,6 +1181,40 @@ class TestFilters:
         assert await uuids(
             Comparison(field="created_at", op="<", value=same_instant)
         ) == {records[2].uuid}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["created_at", "seen"], ids=["declared", "undeclared"]
+    )
+    async def test_a_datetime_matches_a_filter_at_another_offset_by_its_instant(
+        self, collection, key
+    ):
+        """Equality and ordering compare instants, whatever either offset."""
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        minus8 = timezone(timedelta(hours=-8))
+        same_instant = written.astimezone(minus8)
+        # A later instant whose wall-clock time is earlier, and an earlier
+        # instant whose wall-clock time is later.
+        later = datetime(2024, 6, 15, 9, 0, tzinfo=minus8)
+        earlier = datetime(2024, 6, 15, 20, 0, tzinfo=timezone(timedelta(hours=14)))
+        for op, value in [
+            ("=", same_instant),
+            ("<=", same_instant),
+            (">=", same_instant),
+            ("<", later),
+            (">", earlier),
+        ]:
+            assert await self._query(collection, record.vector, key, op, value) == {
+                record.uuid
+            }, op
 
     @pytest.mark.asyncio
     async def test_a_value_of_another_type_matches_nothing(self, collection):
