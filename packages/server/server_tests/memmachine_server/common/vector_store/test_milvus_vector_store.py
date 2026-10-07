@@ -705,48 +705,6 @@ class TestConcurrentPreparation:
         }
 
 
-@pytest.mark.asyncio
-async def test_a_startup_that_loses_the_native_collection_to_another_completes_it(
-    registry_url,
-):
-    """A startup whose create request Milvus refuses as existing, because
-    another store made the native collection after this one checked, still
-    indexes and loads the native collection, and a partition opens."""
-    indexed: set[str] = set()
-    loaded: list[str] = []
-
-    async def list_indexes(collection_name: str, **kwargs) -> list[str]:
-        return sorted(indexed)
-
-    async def create_index(collection_name: str, index_params, **kwargs) -> None:
-        indexed.update(index.field_name for index in index_params)
-
-    async def load_collection(collection_name: str, **kwargs) -> None:
-        loaded.append(collection_name)
-
-    client = MagicMock(spec=AsyncMilvusClient)
-    client.prepare_index_params = AsyncMilvusClient.prepare_index_params
-    client.create_schema = AsyncMilvusClient.create_schema
-    client.has_collection = AsyncMock(return_value=False)
-    client.create_collection = AsyncMock(
-        side_effect=pymilvus.MilvusException(message="collection already exists")
-    )
-    client.list_indexes = AsyncMock(side_effect=list_indexes)
-    client.create_index = AsyncMock(side_effect=create_index)
-    client.load_collection = AsyncMock(side_effect=load_collection)
-    registry_engine = create_async_engine(registry_url)
-    store = await _started_store(
-        client, registry_engine, indexed_properties={"name": str}
-    )
-
-    await store.create_partition(NAME)
-
-    assert await store.get_partition(NAME) is not None
-    assert indexed == {"vector", "_p_name"}
-    assert loaded
-    await registry_engine.dispose()
-
-
 class TestUpsertAndQuery:
     @pytest.mark.asyncio
     async def test_a_query_may_ask_for_hundreds_of_results(self, collection):
@@ -1170,6 +1128,51 @@ class TestFilters:
             r2.uuid,
             r3.uuid,
         }
+
+    @pytest.mark.asyncio
+    async def test_an_undeclared_property_matches_only_values_of_a_comparable_type(
+        self, collection
+    ):
+        """A string equal to an undeclared datetime's stored text matches
+        nothing, and its complement keeps the record; an int still compares
+        with an undeclared float."""
+        seen = datetime(2024, 6, 15, 12, tzinfo=UTC)
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"seen": seen, "rank": 2.0}
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        assert (
+            await self._query(collection, record.vector, "seen", "=", seen.isoformat())
+            == set()
+        )
+        assert await self._query(
+            collection, record.vector, "seen", "!=", seen.isoformat()
+        ) == {record.uuid}
+        assert await self._query(collection, record.vector, "rank", "=", 2) == {
+            record.uuid
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_character_outside_the_basic_multilingual_plane_matches(
+        self, collection
+    ):
+        """A string filter value with a character outside the Basic
+        Multilingual Plane matches, on a declared property and an undeclared
+        one."""
+        text = "café 😀"
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]),
+            properties={"name": text, "nickname": text},
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        for field_name in ("name", "nickname"):
+            assert await self._query(
+                collection, record.vector, field_name, "=", text
+            ) == {record.uuid}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1685,13 +1688,15 @@ async def test_a_purge_round_milvus_does_not_accept_in_full_raises(registry_url)
     client.query = AsyncMock(return_value=[{"id": "listed_a"}, {"id": "listed_b"}])
     client.delete = AsyncMock(return_value={"delete_count": 1})
     registry_engine = create_async_engine(registry_url)
-    store = await _started_store(client, registry_engine, indexed_properties={})
-    await store.create_partition(NAME)
-    await store.delete_partition(NAME)
+    try:
+        store = await _started_store(client, registry_engine, indexed_properties={})
+        await store.create_partition(NAME)
+        await store.delete_partition(NAME)
 
-    with pytest.raises(pymilvus.MilvusException):
-        await store.purge_deleted_partitions()
-    await registry_engine.dispose()
+        with pytest.raises(pymilvus.MilvusException):
+            await store.purge_deleted_partitions()
+    finally:
+        await registry_engine.dispose()
 
 
 class TestPartitionIsolation:

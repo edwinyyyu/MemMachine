@@ -14,6 +14,7 @@ from pymilvus import AsyncMilvusClient, DataType
 from pymilvus.exceptions import MilvusException
 
 from memmachine_server.common.data_types import (
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyType,
     PropertyValue,
     SimilarityMetric,
@@ -41,6 +42,7 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.metrics_factory import OperationTracker
 from memmachine_server.common.properties_json import (
+    PROPERTY_TYPE_KEY,
     PROPERTY_VALUE_KEY,
     encode_properties,
 )
@@ -112,8 +114,12 @@ _SEARCH_REFINE_K = 8
 
 
 def _expression_string_literal(value: str) -> str:
-    """Return a Milvus expression string literal."""
-    return json.dumps(value)
+    """Return a Milvus expression string literal.
+
+    Characters stay UTF-8: Milvus's parser refuses the surrogate pair an
+    ASCII escape writes for a character outside the Basic Multilingual Plane.
+    """
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _property_value_literal(value: PropertyValue) -> str:
@@ -140,15 +146,15 @@ def _declared_property_value_literal(value: PropertyValue) -> str:
     return _property_value_literal(value)
 
 
-def _is_comparable_with_declared_type(
-    value: PropertyValue, declared_type: type[PropertyValue]
+def _is_comparable_with_type(
+    value: PropertyValue, property_type: type[PropertyValue]
 ) -> bool:
-    """Whether a filter value can be compared with a declared property."""
+    """Whether a filter value can be compared with a property of the type."""
     if isinstance(value, bool):
-        return declared_type is bool
+        return property_type is bool
     if isinstance(value, int | float):
-        return declared_type in (int, float)
-    return isinstance(value, declared_type)
+        return property_type in (int, float)
+    return isinstance(value, property_type)
 
 
 def _property_absent_expression(
@@ -167,30 +173,37 @@ def _condition_expression(
     """A Milvus expression for one condition; false or null where the property has no value."""
     values = list(expr.values) if isinstance(expr, FilterIn) else [expr.value]
     declared_type = declared.get(expr.field)
+    # A value of another type never equals or orders against the property.
     if declared_type is None:
-        target = (
-            f"{_PROPERTIES_FIELD}[{_expression_string_literal(expr.field)}]"
-            f"[{_expression_string_literal(PROPERTY_VALUE_KEY)}]"
+        entry = f"{_PROPERTIES_FIELD}[{_expression_string_literal(expr.field)}]"
+        target = f"{entry}[{_expression_string_literal(PROPERTY_VALUE_KEY)}]"
+        type_names = ", ".join(
+            _expression_string_literal(type_name)
+            for property_type, type_name in PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME.items()
+            if any(_is_comparable_with_type(value, property_type) for value in values)
+        )
+        type_check = (
+            f"{entry}[{_expression_string_literal(PROPERTY_TYPE_KEY)}] "
+            f"in [{type_names}] && "
         )
         render = _property_value_literal
     else:
-        # A value of another type never equals or orders against the property.
         values = [
-            value
-            for value in values
-            if _is_comparable_with_declared_type(value, declared_type)
+            value for value in values if _is_comparable_with_type(value, declared_type)
         ]
         target = f"{_DECLARED_FIELD_PREFIX}{expr.field}"
+        type_check = ""
         render = _declared_property_value_literal
     if not values:
         return _FALSE_EXPR
     match expr:
         case FilterIn():
-            return f"{target} in [{', '.join(render(value) for value in values)}]"
+            literals = ", ".join(render(value) for value in values)
+            return f"{type_check}{target} in [{literals}]"
         case FilterComparison(op="="):
-            return f"{target} == {render(values[0])}"
+            return f"{type_check}{target} == {render(values[0])}"
         case FilterComparison(op=op):
-            return f"{target} {op} {render(values[0])}"
+            return f"{type_check}{target} {op} {render(values[0])}"
 
 
 def _filter_expression(
@@ -385,6 +398,8 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
             timeout=self._request_timeout_seconds,
         )
 
+        # Milvus returns each query's hits best first, and the square root
+        # taken of a Euclidean distance keeps their order.
         results: list[QueryResult] = []
         for raw_matches in raw_results:
             matches: list[QueryMatch] = []
@@ -403,10 +418,6 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
                     )
                 )
 
-            matches.sort(
-                key=lambda match: match.score,
-                reverse=self.similarity_metric.higher_is_better,
-            )
             results.append(QueryResult(matches=matches))
 
         return results
@@ -488,12 +499,6 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
         SimilarityMetric.DOT: "IP",
         SimilarityMetric.EUCLIDEAN: "L2",
     }
-
-    @staticmethod
-    def _is_already_exists_error(error: Exception) -> bool:
-        """Check if an exception indicates a resource already exists."""
-        message = str(error).lower()
-        return "already exist" in message or "already exists" in message
 
     @staticmethod
     def _validate_metric(similarity_metric: SimilarityMetric) -> None:
@@ -597,15 +602,13 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
                 timeout=self._request_timeout_seconds,
             )
 
+        # Milvus answers a create of an existing collection with the same
+        # schema with success, so racing creators both go on.
         if not await self._client.has_collection(
             self._collection_name,
             timeout=self._request_timeout_seconds,
         ):
-            try:
-                await _create_collection()
-            except MilvusException as exc:
-                if not MilvusVectorStore._is_already_exists_error(exc):
-                    raise
+            await _create_collection()
 
         # Index names are their field names, so the ones present say which
         # fields are indexed. An index a racing creator made is created again
