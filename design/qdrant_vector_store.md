@@ -20,7 +20,8 @@ registry](vector_store_collection_registry.md),
   on one tenant walks that tenant's graph.
 - **The incarnation:** payload field `sys-incarnation`, a keyword index with
   `is_tenant=true`, which also has Qdrant keep a tenant's points together.
-  Every search, scroll, and delete of a handle filters on it.
+  A handle's searches filter on it, as do the purge's scrolls and deletes. A
+  handle's deletes name its points' ids instead (see [Point ids](#point-ids)).
 - **Declared properties:** a payload index per property of the collection's
   schema, typed by the property's type.
 - **Creation converges:** the collection and each payload index are created

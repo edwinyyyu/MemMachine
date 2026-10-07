@@ -533,6 +533,7 @@ class CollectionLifecycleContract:
                             namespace=LIFECYCLE_NAMESPACE, name=name
                         )
                 except (
+                    VectorStoreAttemptsExhaustedError,
                     VectorStoreCollectionAlreadyExistsError,
                     VectorStoreCollectionConfigMismatchError,
                     VectorStoreCollectionDeletedError,
