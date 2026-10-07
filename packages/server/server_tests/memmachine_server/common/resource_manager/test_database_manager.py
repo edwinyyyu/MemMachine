@@ -1,7 +1,7 @@
 import importlib.util
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from pydantic import SecretStr
@@ -757,9 +757,47 @@ async def test_milvus_validation_failure():
     mock_client.close = AsyncMock()
 
     with pytest.raises(MilvusConfigurationError, match="failed verification"):
-        await DatabaseManager.validate_milvus_client("milvus1", mock_client)
+        await DatabaseManager.validate_milvus_client(
+            "milvus1", mock_client, request_timeout_seconds=7
+        )
 
     mock_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@requires_pymilvus
+async def test_milvus_validation_is_bounded_by_the_request_timeout(tmp_path):
+    """The connectivity check carries the configured request timeout, which
+    the client's own timeout bounds only for connecting."""
+    conf = _milvus_only_conf(tmp_path)
+    conf.milvus_confs["milvus1"] = MilvusConf(
+        collection_registry="registry",
+        uri="http://milvus.example.com:19530",
+        request_timeout_seconds=7,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.list_collections = AsyncMock(return_value=[])
+    mock_client.close = AsyncMock()
+
+    with (
+        patch(
+            "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStoreParams",
+        ),
+        patch(
+            "memmachine_server.common.vector_store.milvus_vector_store.MilvusVectorStore",
+        ) as mock_store_cls,
+        patch("pymilvus.AsyncMilvusClient", return_value=mock_client),
+    ):
+        mock_store_cls.return_value.startup = AsyncMock()
+        builder = DatabaseManager(conf)
+        await builder.async_get_milvus_client("milvus1", validate=True)
+        await builder._validate_milvus_clients()
+
+    assert mock_client.list_collections.await_args_list == [
+        call(timeout=7),
+        call(timeout=7),
+    ]
 
 
 @pytest.mark.asyncio

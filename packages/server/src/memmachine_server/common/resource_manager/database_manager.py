@@ -733,7 +733,11 @@ class DatabaseManager:
             client = AsyncMilvusClient(**client_kwargs)
 
             if validate:
-                await self.validate_milvus_client(name, client)
+                await self.validate_milvus_client(
+                    name,
+                    client,
+                    request_timeout_seconds=conf.request_timeout_seconds,
+                )
 
             from memmachine_server.common.vector_store.milvus_vector_store import (
                 MilvusVectorStore,
@@ -760,11 +764,13 @@ class DatabaseManager:
             return client
 
     @staticmethod
-    async def validate_milvus_client(name: str, client: "AsyncMilvusClient") -> None:
-        """Validate connectivity to a Milvus instance."""
+    async def validate_milvus_client(
+        name: str, client: "AsyncMilvusClient", *, request_timeout_seconds: int
+    ) -> None:
+        """Validate connectivity to a Milvus instance, within the request timeout."""
         try:
             logger.info("Validating Milvus client '%s'", name)
-            await client.list_collections()
+            await client.list_collections(timeout=request_timeout_seconds)
             logger.info("Milvus client '%s' validated successfully", name)
         except Exception as e:
             await client.close()
@@ -775,7 +781,13 @@ class DatabaseManager:
     async def _validate_milvus_clients(self) -> None:
         """Validate connectivity to each Milvus instance."""
         for name, client in self.milvus_clients.items():
-            await self.validate_milvus_client(name, client)
+            await self.validate_milvus_client(
+                name,
+                client,
+                request_timeout_seconds=self.conf.milvus_confs[
+                    name
+                ].request_timeout_seconds,
+            )
 
     # --- SQLite-backed VectorStores ---
 
