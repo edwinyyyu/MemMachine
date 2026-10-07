@@ -322,9 +322,24 @@ def test_milvus_conf_rejects_invalid_values():
         MilvusConf(collection_registry="db", uri="")
 
 
-def test_milvus_conf_rejects_a_milvus_lite_file():
-    with pytest.raises(ValueError, match="Milvus Lite files are not supported"):
-        MilvusConf(collection_registry="db", uri="./milvus.db")
+@pytest.mark.parametrize(
+    "uri", ["./milvus.db", "milvus.db", "file:///var/lib/milvus.db"]
+)
+def test_milvus_conf_rejects_a_milvus_lite_file(uri):
+    with pytest.raises(ValueError, match="Milvus Lite file"):
+        MilvusConf(collection_registry="db", uri=uri)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://localhost:19530",
+        "https://example.zillizcloud.com",
+        "unix:/tmp/milvus.sock",
+    ],
+)
+def test_milvus_conf_accepts_a_server_uri(uri):
+    assert MilvusConf(collection_registry="db", uri=uri).uri == uri
 
 
 @pytest.mark.parametrize("setting", ["max_varchar_length", "purge_batch_size"])

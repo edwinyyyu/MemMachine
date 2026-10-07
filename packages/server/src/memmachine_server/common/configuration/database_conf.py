@@ -375,13 +375,12 @@ class MilvusConf(MetricsFactoryIdMixin, YamlSerializableMixin, WithValueFromEnv)
         resolved = cls._resolve_env(v)
         if not isinstance(resolved, str):
             raise TypeError("Milvus URI must be a string")
-        # pymilvus reads a URI without a scheme as a Milvus Lite file, a
-        # separate engine with its own behavior, so only server URLs are
-        # accepted.
-        if resolved and "://" not in resolved:
+        # pymilvus serves a URI ending in .db with Milvus Lite, a separate
+        # engine with its own behavior, so such a URI is refused.
+        if resolved.endswith(".db"):
             raise ValueError(
-                f"Milvus URI {resolved!r} must be a server URL such as "
-                "http://localhost:19530; Milvus Lite files are not supported"
+                f"Milvus URI {resolved!r} names a Milvus Lite file, which is not "
+                "supported; use a server URI such as http://localhost:19530"
             )
         return resolved
 

@@ -64,8 +64,8 @@ registry](vector_store_collection_registry.md),
   pymilvus's async client returns that count for a delete Milvus rejected, so
   the store compares it with the keys it sent.
 - **Milvus Lite is not supported.** It is a separate embedded engine that
-  scores, indexes, and enforces collection properties differently; a URI with
-  no scheme, which pymilvus reads as a Lite file, is refused. Every call the
+  scores, indexes, and enforces collection properties differently; a URI
+  ending in `.db`, which pymilvus serves with Lite, is refused. Every call the
   store makes exists in Milvus 2.6.8 and later; CI tests against 2.6.24, and
   the store's tests pass against 2.6.8 and 3.0.2.
 
