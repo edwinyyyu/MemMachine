@@ -15,9 +15,9 @@ registry](vector_store_collection_registry.md),
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
   `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
-  nullable typed field per declared property, `_p_<name>`, plus `_tz_<name>`
-  for a datetime's UTC offset. Dynamic fields are off, so each property is
-  stored once.
+  nullable typed field per declared property, `_p_<name>`, plus
+  `_tz_offset_seconds_<name>` for a datetime's UTC offset in seconds. Dynamic
+  fields are off, so each property is stored once.
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
@@ -55,6 +55,9 @@ registry](vector_store_collection_registry.md),
   with, so a changed `max_varchar_length` applies to native collections
   created afterward. A record's undeclared properties share one JSON field,
   which the server refuses above `common.JSONMaxLength` bytes (65,536 unless
+  configured). A declared property's field names are its key, at most 32
+  bytes, under a prefix of at most 19 characters (`_p_`,
+  `_tz_offset_seconds_`), within `proxy.maxNameLength` (255 unless
   configured).
 - **Creation converges:** the collection and its indexes (named by their
   fields) are created only when missing, and the collection is loaded, a

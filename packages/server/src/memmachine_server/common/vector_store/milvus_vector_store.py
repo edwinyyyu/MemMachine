@@ -74,7 +74,7 @@ _PROPERTIES_FIELD = "properties"
 """A JSON field holding the properties the collection's schema does not declare."""
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
-_OFFSET_FIELD_PREFIX = "_tz_"
+_TZ_OFFSET_SECONDS_FIELD_PREFIX = "_tz_offset_seconds_"
 """The prefix of the field holding a declared datetime's UTC offset in seconds, which TIMESTAMPTZ drops."""
 
 _UUID_LENGTH = 36
@@ -324,10 +324,12 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = (
                     ensure_tz_aware(value).astimezone(UTC).isoformat()
                 )
-                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = utc_offset_seconds(value)
+                entity[f"{_TZ_OFFSET_SECONDS_FIELD_PREFIX}{key}"] = utc_offset_seconds(
+                    value
+                )
             elif declared_type is datetime:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
-                entity[f"{_OFFSET_FIELD_PREFIX}{key}"] = None
+                entity[f"{_TZ_OFFSET_SECONDS_FIELD_PREFIX}{key}"] = None
             else:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
@@ -620,7 +622,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
                     )
                 if declared_type is datetime:
                     schema.add_field(
-                        field_name=f"{_OFFSET_FIELD_PREFIX}{key}",
+                        field_name=f"{_TZ_OFFSET_SECONDS_FIELD_PREFIX}{key}",
                         datatype=DataType.INT32,
                         nullable=True,
                     )

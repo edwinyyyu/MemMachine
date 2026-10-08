@@ -589,7 +589,7 @@ class TestCollectionLifecycle:
             "_p_score": DataType.DOUBLE,
             "_p_active": DataType.BOOL,
             "_p_created_at": DataType.TIMESTAMPTZ,
-            "_tz_created_at": DataType.INT32,
+            "_tz_offset_seconds_created_at": DataType.INT32,
         }
         for field_name, data_type in expected.items():
             assert fields[field_name]["type"] == data_type
@@ -609,6 +609,40 @@ class TestCollectionLifecycle:
         }
 
         await store.delete_collection(namespace=NAMESPACE, name="schema")
+
+    @pytest.mark.asyncio
+    async def test_the_longest_declared_key_names_fields_milvus_accepts(self, store):
+        """A declared datetime's two fields are named by its key under a
+        prefix, within the server's proxy.maxNameLength."""
+        key = "k" * 32  # the longest property key
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name="longest_key",
+            config=VectorStoreCollectionConfig(
+                vector_dimensions=VECTOR_DIM,
+                indexed_properties_schema={key: datetime},
+            ),
+        )
+        coll = await store.open_collection(namespace=NAMESPACE, name="longest_key")
+        assert coll is not None
+        written = datetime(2024, 6, 15, 12, 0, tzinfo=timezone(timedelta(hours=9)))
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await coll.upsert(records=[record])
+        await _settle(coll)
+
+        stored = (await _stored(coll, [record.uuid]))[record.uuid]
+        assert datetime.fromisoformat(stored[f"_p_{key}"]) == written
+        assert stored[f"_tz_offset_seconds_{key}"] == 9 * 3600
+        [result] = await coll.query(
+            query_vectors=[record.vector],
+            limit=10,
+            property_filter=Comparison(field=key, op="=", value=written),
+        )
+        assert [match.record_uuid for match in result.matches] == [record.uuid]
+
+        await store.delete_collection(namespace=NAMESPACE, name="longest_key")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1057,7 +1091,7 @@ class TestFilters:
 
         stored = (await _stored(collection, [record.uuid]))[record.uuid]
         assert datetime.fromisoformat(stored["_p_created_at"]) == written
-        assert stored["_tz_created_at"] == 5 * 3600 + 30 * 60
+        assert stored["_tz_offset_seconds_created_at"] == 5 * 3600 + 30 * 60
 
     @pytest.mark.asyncio
     async def test_a_declared_datetime_with_a_seconds_offset_is_stored_and_matched(
@@ -1076,7 +1110,7 @@ class TestFilters:
 
         stored = (await _stored(collection, [record.uuid]))[record.uuid]
         assert datetime.fromisoformat(stored["_p_created_at"]) == written
-        assert stored["_tz_created_at"] == 19 * 60 + 32
+        assert stored["_tz_offset_seconds_created_at"] == 19 * 60 + 32
         [result] = await collection.query(
             query_vectors=[record.vector],
             limit=10,
