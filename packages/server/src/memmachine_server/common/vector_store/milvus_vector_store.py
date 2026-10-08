@@ -46,7 +46,7 @@ from memmachine_server.common.properties_json import (
     PROPERTY_VALUE_KEY,
     encode_properties,
 )
-from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
+from memmachine_server.common.utils import ensure_tz_aware
 
 from .collection_registry import Registration
 from .data_types import (
@@ -74,8 +74,6 @@ _PROPERTIES_FIELD = "properties"
 """A JSON field holding the properties the collection's schema does not declare."""
 _DECLARED_FIELD_PREFIX = "_p_"
 """The prefix of the typed field holding a declared property."""
-_TZ_OFFSET_SECONDS_FIELD_PREFIX = "_tz_offset_seconds_"
-"""The prefix of the field holding a declared datetime's UTC offset in seconds, which TIMESTAMPTZ drops."""
 
 _UUID_LENGTH = 36
 """The length of a UUID's hyphenated text form (RFC 9562), the form stored."""
@@ -316,20 +314,14 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
                 }
             ),
         }
-        for key, declared_type in declared.items():
+        for key in declared:
             value = record.properties.get(key)
             if isinstance(value, datetime):
-                # The instant in UTC: Milvus refuses an offset with a seconds
-                # component, and the offset field keeps the one written.
+                # The instant in UTC, which is all a filter compares: Milvus
+                # refuses an offset with a seconds component.
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = (
                     ensure_tz_aware(value).astimezone(UTC).isoformat()
                 )
-                entity[f"{_TZ_OFFSET_SECONDS_FIELD_PREFIX}{key}"] = utc_offset_seconds(
-                    value
-                )
-            elif declared_type is datetime:
-                entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = None
-                entity[f"{_TZ_OFFSET_SECONDS_FIELD_PREFIX}{key}"] = None
             else:
                 entity[f"{_DECLARED_FIELD_PREFIX}{key}"] = value
         return entity
@@ -618,12 +610,6 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStoreCollection]):
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                         datatype=_DECLARED_DATA_TYPES[declared_type],
-                        nullable=True,
-                    )
-                if declared_type is datetime:
-                    schema.add_field(
-                        field_name=f"{_TZ_OFFSET_SECONDS_FIELD_PREFIX}{key}",
-                        datatype=DataType.INT32,
                         nullable=True,
                     )
 

@@ -15,9 +15,8 @@ registry](vector_store_collection_registry.md),
 - **Fields:** `id` (VARCHAR primary key, `"{incarnation}:{record_uuid}"`),
   `record_uuid` (VARCHAR), `partition_key` (VARCHAR, the incarnation,
   `is_partition_key`), `vector` (FLOAT_VECTOR), `properties` (JSON), and one
-  nullable typed field per declared property, `_p_<name>`, plus
-  `_tz_offset_seconds_<name>` for a datetime's UTC offset in seconds. Dynamic
-  fields are off, so each property is stored once.
+  nullable typed field per declared property, `_p_<name>`. Dynamic fields
+  are off, so each property is stored once.
 - **Tenancy:** partition-key multi-tenancy with `partitionkey.isolation`: each
   segment builds its vector index per group of tenants, so a search filtered
   on one incarnation searches only its group. Milvus documents isolation for
@@ -34,11 +33,11 @@ registry](vector_store_collection_registry.md),
 - **Declared properties:** each has a scalar AUTOINDEX, which Milvus
   resolves by type (BITMAP for BOOL, STL_SORT for TIMESTAMPTZ, HYBRID
   otherwise: BITMAP under 100 distinct values, STL_SORT above). A datetime is
-  a TIMESTAMPTZ field. Milvus caps a collection at `proxy.maxFieldNum` fields
-  (64 on 2.6, 256 on 3.0), so a configuration declares at most 59 properties
-  on 2.6, one fewer per datetime. A TIMESTAMPTZ field holds the instant, which
-  is all a filter compares; the datetime's UTC offset is stored beside it so
-  the stored record is the one written, as the other stores keep it.
+  a TIMESTAMPTZ field holding its instant, written in UTC: a filter compares
+  only instants, a search answers with record UUIDs and scores, and Milvus
+  refuses an offset with a seconds component. Milvus caps a collection at
+  `proxy.maxFieldNum` fields (64 on 2.6, 256 on 3.0), so a configuration
+  declares at most 59 properties on 2.6.
   Undeclared properties go in the JSON field, still filterable by path.
   Negation is the complement, as on Qdrant: a negated condition holds where
   the property has no value, which Milvus's SQL-style null evaluation does not
@@ -55,10 +54,8 @@ registry](vector_store_collection_registry.md),
   with, so a changed `max_varchar_length` applies to native collections
   created afterward. A record's undeclared properties share one JSON field,
   which the server refuses above `common.JSONMaxLength` bytes (65,536 unless
-  configured). A declared property's field names are its key, at most 32
-  bytes, under a prefix of at most 19 characters (`_p_`,
-  `_tz_offset_seconds_`), within `proxy.maxNameLength` (255 unless
-  configured).
+  configured). A declared property's field name is its key, at most 32
+  bytes, under `_p_`, within `proxy.maxNameLength` (255 unless configured).
 - **Creation converges:** the collection and its indexes (named by their
   fields) are created only when missing, and the collection is loaded, a
   no-op when it is loaded already.
