@@ -597,7 +597,14 @@ class TestPartitionLifecycle:
             "_p_score": DataType.DOUBLE,
             "_p_active": DataType.BOOL,
             "_p_created_at": DataType.TIMESTAMPTZ,
-            "_tz_created_at": DataType.INT32,
+        }
+        assert set(fields) == {
+            "id",
+            "record_uuid",
+            "partition_key",
+            "vector",
+            "properties",
+            *expected,
         }
         for field_name, data_type in expected.items():
             assert fields[field_name]["type"] == data_type
@@ -617,6 +624,39 @@ class TestPartitionLifecycle:
         }
 
         await store.delete_partition("schema")
+
+    @pytest.mark.asyncio
+    async def test_the_longest_declared_key_names_a_field_milvus_accepts(self, store):
+        """A declared property's field is named by its key under a prefix,
+        within the server's proxy.maxNameLength."""
+        key = "k" * 32  # the longest property key
+        # A name of its own, so its native collection declares the key.
+        longest = await _started_store(
+            store._client,
+            store._partition_registry._engine,
+            vector_store_name="longest_key",
+            indexed_properties={key: datetime},
+        )
+        await longest.create_partition("longest_key")
+        partition = await longest.get_partition("longest_key")
+        assert partition is not None
+        written = datetime(2024, 6, 15, 12, 0, tzinfo=timezone(timedelta(hours=9)))
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await partition.upsert(records=[record])
+        await _settle(partition)
+
+        stored = (await _stored(partition, [record.uuid]))[record.uuid]
+        assert datetime.fromisoformat(stored[f"_p_{key}"]) == written
+        [result] = await partition.query(
+            query_vectors=[record.vector],
+            limit=10,
+            property_filter=Comparison(field=key, op="=", value=written),
+        )
+        assert [match.record_uuid for match in result.matches] == [record.uuid]
+
+        await longest.delete_partition("longest_key")
 
     @pytest.mark.asyncio
     async def test_unsupported_metric_raises(self, store):
@@ -1056,7 +1096,9 @@ class TestFilters:
         }
 
     @pytest.mark.asyncio
-    async def test_a_declared_datetime_is_stored_with_its_offset(self, collection):
+    async def test_a_declared_datetime_is_stored_as_its_instant_in_utc(
+        self, collection
+    ):
         written = datetime(
             2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
         )
@@ -1066,8 +1108,9 @@ class TestFilters:
         await collection.upsert(records=[record])
 
         stored = (await _stored(collection, [record.uuid]))[record.uuid]
-        assert datetime.fromisoformat(stored["_p_created_at"]) == written
-        assert stored["_tz_created_at"] == 5 * 3600 + 30 * 60
+        kept = datetime.fromisoformat(stored["_p_created_at"])
+        assert kept == written
+        assert kept.utcoffset() == timedelta(0)
 
     @pytest.mark.asyncio
     async def test_a_declared_datetime_with_a_seconds_offset_is_stored_and_matched(
@@ -1086,7 +1129,6 @@ class TestFilters:
 
         stored = (await _stored(collection, [record.uuid]))[record.uuid]
         assert datetime.fromisoformat(stored["_p_created_at"]) == written
-        assert stored["_tz_created_at"] == 19 * 60 + 32
         [result] = await collection.query(
             query_vectors=[record.vector],
             limit=10,
