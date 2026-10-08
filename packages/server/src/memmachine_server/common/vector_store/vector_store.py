@@ -43,9 +43,9 @@ class VectorStoreCollection(ABC):
     The schema exists to support indexing on fixed-type record properties.
     Record properties not declared in the schema may have mixed-type values.
 
-    A store keeps a datetime property's UTC offset as written, taking a
-    naive datetime as UTC. A filter compares datetime values by their
-    instant, for equality and ordering alike.
+    A store keeps a datetime property's instant, taking a naive datetime as
+    UTC, and may drop its UTC offset. A filter compares datetime values by
+    their instant, for equality and ordering alike.
     """
 
     @property
