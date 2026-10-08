@@ -26,6 +26,8 @@ pymilvus = pytest.importorskip("pymilvus")
 DataType = pymilvus.DataType
 AsyncMilvusClient = pymilvus.AsyncMilvusClient
 
+import grpc
+import grpc.aio
 from pymilvus.client.types import ConsistencyLevel
 
 from memmachine_server.common.data_types import (
@@ -706,6 +708,30 @@ class TestConcurrentPreparation:
 
 
 class TestUpsertAndQuery:
+    @pytest.mark.asyncio
+    async def test_an_upsert_over_the_request_size_limit_stores_every_record(
+        self, collection
+    ):
+        """Milvus refuses a request over proxy.grpc.serverMaxRecvSize (64 MiB
+        unless configured), so the batch is halved until it fits."""
+        # Each record's undeclared properties fit common.JSONMaxLength (64 KiB
+        # unless configured); the batch is over 64 MiB.
+        text = "x" * 60_000
+        records = [
+            _make_record(vector=_normalize([1.0, 0.0, 0.0]), properties={"text": text})
+            for _ in range(1_200)
+        ]
+
+        await collection.upsert(records=records)
+
+        assert sorted(
+            await _incarnation_uuids(
+                collection._client,
+                collection._collection_name,
+                collection._incarnation,
+            )
+        ) == sorted(record.uuid for record in records)
+
     @pytest.mark.asyncio
     async def test_a_query_may_ask_for_hundreds_of_results(self, collection):
         records = [
@@ -1664,12 +1690,9 @@ class _CurrentRegistration(Registration):
         return None
 
 
-@pytest.mark.asyncio
-async def test_a_delete_milvus_does_not_accept_in_full_raises():
-    """A delete Milvus accepts for fewer primary keys than the store sent raises."""
-    client = MagicMock(spec=AsyncMilvusClient)
-    client.delete = AsyncMock(return_value={"delete_count": 1})
-    partition = MilvusVectorStorePartition(
+def _partition_on(client: AsyncMilvusClient) -> MilvusVectorStorePartition:
+    """A handle on a given client, bound to a live incarnation."""
+    return MilvusVectorStorePartition(
         client=client,
         collection_name=f"sys_{VECTOR_STORE_NAME}",
         vector_store_name=VECTOR_STORE_NAME,
@@ -1689,8 +1712,95 @@ async def test_a_delete_milvus_does_not_accept_in_full_raises():
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 
+
+@pytest.mark.asyncio
+async def test_a_delete_milvus_does_not_accept_in_full_raises():
+    """A delete Milvus accepts for fewer primary keys than the store sent raises."""
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.delete = AsyncMock(return_value={"delete_count": 1})
+    partition = _partition_on(client)
+
     with pytest.raises(pymilvus.MilvusException):
         await partition.delete(record_uuids=[uuid4(), uuid4()])
+
+
+def _too_large() -> grpc.aio.AioRpcError:
+    """The error Milvus's proxy answers a request over its receive limit with."""
+    return grpc.aio.AioRpcError(
+        grpc.StatusCode.RESOURCE_EXHAUSTED,
+        details="grpc: received message larger than max",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_batch_refused_as_too_large_is_halved_until_it_fits():
+    """Milvus's proxy refuses a request over its gRPC receive limit with
+    RESOURCE_EXHAUSTED."""
+    upserted: list[list[str]] = []
+
+    def refuse_more_than_two(
+        *, collection_name: str, data: list[dict], timeout: int
+    ) -> None:
+        if len(data) > 2:
+            raise _too_large()
+        upserted.append([entity["id"] for entity in data])
+
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.upsert = AsyncMock(side_effect=refuse_more_than_two)
+    partition = _partition_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(5)]
+
+    await partition.upsert(records=records)
+
+    assert sorted(len(batch) for batch in upserted) == [1, 2, 2]
+    assert {primary_id for batch in upserted for primary_id in batch} == {
+        partition._primary_id(record.uuid) for record in records
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_upsert_with_an_entity_refused_alone_raises():
+    """Halving stops at a single entity: an entity refused on its own fails the
+    upsert, which does not report it accepted."""
+    refused = _make_record(vector=[0.0, 0.0, 1.0])
+
+    def refuse_the_refused_entity(
+        *, collection_name: str, data: list[dict], timeout: int
+    ) -> None:
+        if any(entity["vector"] == refused.vector for entity in data):
+            raise _too_large()
+
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.upsert = AsyncMock(side_effect=refuse_the_refused_entity)
+    partition = _partition_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(4)]
+    records.insert(3, refused)
+
+    with pytest.raises(grpc.aio.AioRpcError) as raised:
+        await partition.upsert(records=records)
+    assert raised.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        grpc.aio.AioRpcError(grpc.StatusCode.DEADLINE_EXCEEDED),
+        pymilvus.MilvusException(code=1100, message="invalid parameter"),
+    ],
+    ids=["timeout", "refused_otherwise"],
+)
+async def test_an_upsert_that_fails_otherwise_is_not_sent_again(error: Exception):
+    """A timed-out request may still be applied, so it is not resent."""
+    client = MagicMock(spec=AsyncMilvusClient)
+    client.upsert = AsyncMock(side_effect=error)
+    partition = _partition_on(client)
+    records = [_make_record(vector=_normalize([1.0, 0.0, 0.0])) for _ in range(4)]
+
+    with pytest.raises(type(error)):
+        await partition.upsert(records=records)
+
+    client.upsert.assert_awaited_once()
 
 
 @pytest.mark.asyncio
