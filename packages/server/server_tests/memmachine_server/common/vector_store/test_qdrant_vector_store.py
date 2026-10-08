@@ -63,6 +63,9 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "qdrant_test"
+# Liberia's offset until 1972, the last in the time zone database with a
+# seconds component.
+_OFFSET_WITH_SECONDS = timezone(-timedelta(minutes=44, seconds=30))
 
 
 async def _stored_uuids(collection) -> set[UUID]:
@@ -984,7 +987,7 @@ class TestFilters:
     @pytest.mark.parametrize(
         "key", ["created_at", "seen"], ids=["declared", "undeclared"]
     )
-    async def test_a_datetime_is_stored_as_its_instant(self, collection, key):
+    async def test_a_datetime_is_stored_as_its_instant_in_utc(self, collection, key):
         written = datetime(
             2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
         )
@@ -997,6 +1000,7 @@ class TestFilters:
             (await _stored_payload(collection, record.uuid))[key]
         )
         assert stored == written
+        assert stored.utcoffset() == timedelta(0)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1030,6 +1034,23 @@ class TestFilters:
             assert await self._query(collection, record.vector, key, op, value) == {
                 record.uuid
             }, op
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["created_at", "seen"], ids=["declared", "undeclared"]
+    )
+    async def test_a_datetime_at_an_offset_with_seconds_compares_by_its_instant(
+        self, collection, key
+    ):
+        """A datetime written to Qdrant keeps its offset only to the minute."""
+        v1 = _normalize([1.0, 0.0, 0.0])
+        written = datetime(2024, 6, 15, 12, 0, 0, tzinfo=_OFFSET_WITH_SECONDS)
+        record = _make_record(vector=v1, properties={key: written})
+        await collection.upsert(records=[record])
+
+        assert await self._query(collection, v1, key, "=", written) == {record.uuid}
+        assert await self._query(collection, v1, key, "<", written) == set()
+        assert await self._query(collection, v1, key, ">", written) == set()
 
     @pytest.mark.asyncio
     async def test_eq_naive_datetime(self, collection):
