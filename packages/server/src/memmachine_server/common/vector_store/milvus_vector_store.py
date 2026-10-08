@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, cast, override
 from uuid import UUID
 
+import grpc
+import grpc.aio
 from pydantic import Field, InstanceOf
 from pymilvus import AsyncMilvusClient, DataType
 from pymilvus.exceptions import MilvusException
@@ -342,11 +344,28 @@ class MilvusVectorStoreCollection(RegistryBackedVectorStoreCollection):
 
     @override
     async def _upsert(self, records: list[Record]) -> None:
-        await self._client.upsert(
-            collection_name=self._native_collection_name,
-            data=[self._build_entity(record) for record in records],
-            timeout=self._request_timeout_seconds,
-        )
+        await self._upsert_entities([self._build_entity(record) for record in records])
+
+    async def _upsert_entities(self, entities: list[dict[str, Any]]) -> None:
+        """Upsert entities, halving a batch refused as too large.
+
+        Milvus refuses a request over its proxy's gRPC receive limit with
+        RESOURCE_EXHAUSTED, before writing any of it. A batch refused so is
+        halved until the halves fit or a single entity is refused. Any other
+        error raises at once.
+        """
+        try:
+            await self._client.upsert(
+                collection_name=self._native_collection_name,
+                data=entities,
+                timeout=self._request_timeout_seconds,
+            )
+        except grpc.aio.AioRpcError as err:
+            if err.code() != grpc.StatusCode.RESOURCE_EXHAUSTED or len(entities) <= 1:
+                raise
+            mid = len(entities) // 2
+            await self._upsert_entities(entities[:mid])
+            await self._upsert_entities(entities[mid:])
 
     @override
     async def _query(

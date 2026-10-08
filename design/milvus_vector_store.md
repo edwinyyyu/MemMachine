@@ -63,6 +63,13 @@ registry](vector_store_collection_registry.md),
   primary keys a delete accepts, present or not (milvus-io/milvus#51566), and
   pymilvus's async client returns that count for a delete Milvus rejected, so
   the store compares it with the keys it sent.
+- **Oversized upserts are halved.** Milvus refuses a request over
+  `proxy.grpc.serverMaxRecvSize` (64 MiB unless configured) with gRPC's
+  RESOURCE_EXHAUSTED status before writing any of it, and pymilvus raises that
+  status as it is (measured on 2.6.24). An upsert refused so is halved until
+  its halves fit or a single entity is refused, as on Qdrant. Any other error
+  raises at once: a timed-out request may still be applied, and sending it
+  again adds load to a server already too slow.
 - **Milvus Lite is not supported.** It is a separate embedded engine that
   scores, indexes, and enforces collection properties differently; a URI
   ending in `.db`, which pymilvus serves with Lite, is refused. Every call the
