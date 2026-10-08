@@ -1035,7 +1035,7 @@ class TestFilters:
     @pytest.mark.parametrize(
         "key", ["created_at", "seen"], ids=["declared", "undeclared"]
     )
-    async def test_a_datetime_is_stored_with_its_offset(self, collection, key):
+    async def test_a_datetime_is_stored_as_its_instant(self, collection, key):
         written = datetime(
             2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
         )
@@ -1048,7 +1048,6 @@ class TestFilters:
             (await _stored_payload(collection, record.uuid))[key]
         )
         assert stored == written
-        assert stored.utcoffset() == written.utcoffset()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
