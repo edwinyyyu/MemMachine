@@ -99,8 +99,6 @@ class SpecDoc:
 
     EPISODE_SESSION_KEY = "Session key associated with the episode."
 
-    EPISODE_SEQUENCE_NUM = "Sequence number within the session."
-
     EPISODE_CONTENT_TYPE = "Content type of the episode."
 
     EPISODE_FILTERABLE_METADATA = "Metadata indexed for filtering."
@@ -631,8 +629,17 @@ class Examples:
     MEMORY_TYPE_SINGLE: ClassVar[list[str]] = ["episodic", "semantic"]
     PAGE_SIZE: ClassVar[list[int]] = [50, 100]
     PAGE_NUM: ClassVar[list[int]] = [0, 1, 5, 10]
-    EPISODIC_ID: ClassVar[list[str]] = ["123", "345"]
-    EPISODIC_IDS: ClassVar[list[list[str]]] = [["123", "345"], ["23"]]
+    EPISODIC_ID: ClassVar[list[str]] = [
+        "550e8400-e29b-41d4-a716-446655440001",
+        "550e8400-e29b-41d4-a716-446655440002",
+    ]
+    EPISODIC_IDS: ClassVar[list[list[str]]] = [
+        [
+            "550e8400-e29b-41d4-a716-446655440001",
+            "550e8400-e29b-41d4-a716-446655440002",
+        ],
+        ["550e8400-e29b-41d4-a716-446655440003"],
+    ]
     SEMANTIC_ID: ClassVar[list[str]] = ["12", "23"]
     SEMANTIC_IDS: ClassVar[list[list[str]]] = [["123", "345"], ["23"]]
     SEARCH_RESULT_STATUS: ClassVar[list[int]] = [0]

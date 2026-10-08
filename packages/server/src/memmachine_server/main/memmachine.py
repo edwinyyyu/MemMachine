@@ -4,8 +4,10 @@ import asyncio
 import contextlib
 import logging
 from asyncio import Task
-from collections.abc import Callable, Coroutine, Iterable, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any, Final, Protocol
+from uuid import UUID, uuid4
 
 from memmachine_common.api import MemoryType
 from pydantic import BaseModel, InstanceOf, JsonValue, ValidationError
@@ -21,11 +23,11 @@ from memmachine_server.common.configuration.retrieval_config import RetrievalAge
 from memmachine_server.common.episode_store import (
     Episode,
     EpisodeEntry,
-    EpisodeIdT,
     EpisodeResponse,
 )
 from memmachine_server.common.errors import (
     ConfigurationError,
+    ResourceNotFoundError,
     ResourceNotReadyError,
     SessionNotFoundError,
 )
@@ -74,6 +76,25 @@ logger = logging.getLogger(__name__)
 
 ALL_MEMORY_TYPES: Final[list[MemoryType]] = list(MemoryType)
 EPISODE_DELETE_BATCH_SIZE: Final[int] = 1000
+
+
+def _raise_add_episode_errors(
+    task_names: Sequence[str], results: Sequence[object], episode_ids: list[UUID]
+) -> None:
+    """Log every failed write and propagate the first failure."""
+    first_error: BaseException | None = None
+    for task_name, result in zip(task_names, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.error(
+                "Failed to add episodes %s to %s",
+                episode_ids,
+                task_name,
+                exc_info=(type(result), result, result.__traceback__),
+            )
+            if first_error is None:
+                first_error = result
+    if first_error is not None:
+        raise first_error
 
 
 class MemMachine:
@@ -564,7 +585,7 @@ class MemMachine:
 
     async def _cleanup_semantic_history(
         self,
-        episode_ids: list[EpisodeIdT],
+        episode_ids: list[UUID],
     ) -> None:
         """Remove semantic history and citations for the given episode IDs."""
         try:
@@ -710,7 +731,7 @@ class MemMachine:
         episode_entries: list[EpisodeEntry],
         *,
         target_memories: list[MemoryType] = ALL_MEMORY_TYPES,
-    ) -> list[EpisodeIdT]:
+    ) -> list[UUID]:
         """
         Append episodes to storage and selected memory backends.
 
@@ -724,13 +745,32 @@ class MemMachine:
 
         """
         episode_storage = await self._resources.get_episode_storage()
-        episodes = await episode_storage.add_episodes(
-            session_data.session_key,
-            episode_entries,
-        )
+        if not episode_entries:
+            return []
+        created_at = datetime.now(UTC)
+        # UUID order preserves input order within a batch when timestamps tie.
+        batch_ids = sorted(uuid4() for _ in episode_entries)
+        episode_entries = [
+            entry.model_copy(
+                update={
+                    "created_at": entry.created_at or created_at,
+                    "uid": batch_ids[index],
+                }
+            )
+            for index, entry in enumerate(episode_entries)
+        ]
+        episodes = [
+            Episode(
+                session_key=session_data.session_key,
+                metadata=entry.metadata or None,
+                **entry.model_dump(exclude_none=True, exclude={"metadata"}),
+            )
+            for entry in episode_entries
+        ]
         episode_ids = [e.uid for e in episodes]
 
-        tasks = []
+        episodic_memory_manager = None
+        semantic_session_manager = None
 
         if MemoryType.Episodic in target_memories:
             episodic_memory_manager = (
@@ -748,20 +788,37 @@ class MemMachine:
                 ) as episodic_session:
                     await episodic_session.add_memory_episodes(episodes)
 
-            tasks.append(add_to_episodic_memory())
-
         if self._should_dispatch_to_semantic_memory(target_memories):
             semantic_session_manager = (
                 await self._resources.get_semantic_session_manager()
             )
+
+        tasks: list[Coroutine[Any, Any, object]] = [
+            episode_storage.add_episodes(
+                session_data.session_key,
+                episode_entries,
+            )
+        ]
+        task_names = ["episode storage"]
+
+        if episodic_memory_manager is not None:
+            tasks.append(add_to_episodic_memory())
+            task_names.append("episodic memory")
+
+        if semantic_session_manager is not None:
             tasks.append(
                 semantic_session_manager.add_message(
                     episodes=episodes,
                     session_data=session_data,
                 )
             )
+            task_names.append("semantic memory")
 
-        await asyncio.gather(*tasks)
+        # TODO(#1738): Track write intent so partial failures across these
+        # parallel backends can be detected and repaired.
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        _raise_add_episode_errors(task_names, results, episode_ids)
+
         return episode_ids
 
     class SearchResponse(BaseModel):
@@ -1161,55 +1218,55 @@ class MemMachine:
 
     async def delete_episodes(
         self,
-        episode_ids: list[EpisodeIdT],
-        session_data: InstanceOf[SessionData] | None = None,
+        episode_ids: list[UUID],
+        session_data: InstanceOf[SessionData],
     ) -> None:
         """
         Delete episodes from storage and memory backends.
 
         Args:
             episode_ids: IDs of episodes to delete.
-            session_data: Optional session context for episodic memory deletion.
+            session_data: Session context used to verify episode ownership and
+                delete from episodic memory.
 
         Returns:
             None.
 
         """
-        episode_storage = await self._resources.get_episode_storage()
+        if session_data is None:
+            raise ValueError("session_data is required")
 
+        episode_storage = await self._resources.get_episode_storage()
         tasks: list[Coroutine[Any, Any, Any]] = []
 
-        if session_data is not None:
-            episodic_memory_manager = (
-                await self._resources.get_episodic_memory_manager()
-            )
+        episodes = await episode_storage.get_episodes(episode_ids)
+        for episode in episodes:
+            if episode.session_key != session_data.session_key:
+                raise ResourceNotFoundError(
+                    f"Episode '{episode.uid}' was not found in this session."
+                )
 
-            async def delete_from_episodic_memory() -> None:
+        episodic_memory_manager = await self._resources.get_episodic_memory_manager()
+
+        async def delete_from_episodic_memory() -> None:
+            try:
                 async with episodic_memory_manager.open_episodic_memory(
                     session_data.session_key
                 ) as episodic_session:
                     await episodic_session.delete_episodes(episode_ids)
+            except SessionNotFoundError:
+                logger.debug(
+                    "No episodic session for %s during idempotent delete",
+                    session_data.session_key,
+                )
 
-            tasks.append(delete_from_episodic_memory())
+        tasks.append(delete_from_episodic_memory())
 
         tasks.append(episode_storage.delete_episodes(episode_ids))
         if self._conf.semantic_memory.enabled:
             semantic_service = await self._resources.get_semantic_service()
             tasks.append(semantic_service.delete_history(episode_ids))
         await asyncio.gather(*tasks)
-
-    async def _cleanup_semantic_history(self, episode_ids: list[str]) -> None:
-        """Delete semantic history entries for the given episode IDs.
-
-        Args:
-            episode_ids: IDs of episodes whose semantic history should be removed.
-
-        Returns:
-            None.
-
-        """
-        semantic_service = await self._resources.get_semantic_service()
-        await semantic_service.delete_history(episode_ids)
 
     async def delete_features(
         self,
@@ -1237,7 +1294,7 @@ class MemMachine:
         feature: str,
         value: str,
         feature_metadata: dict[str, JsonValue] | None = None,
-        citations: list[EpisodeIdT] | None = None,
+        citations: list[UUID] | None = None,
     ) -> FeatureIdT:
         """
         Add a semantic feature to the current semantic set.
