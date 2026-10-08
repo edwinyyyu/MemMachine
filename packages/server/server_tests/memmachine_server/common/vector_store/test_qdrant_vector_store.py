@@ -63,6 +63,9 @@ NAMESPACE = "test_namespace"
 NAME = "test_name"
 VECTOR_DIM = 3
 VECTOR_STORE_NAME = "qdrant_test"
+# Liberia's offset until 1972, the last in the time zone database with a
+# seconds component.
+_OFFSET_WITH_SECONDS = timezone(-timedelta(minutes=44, seconds=30))
 
 
 async def _stored_uuids(collection) -> set[UUID]:
@@ -319,6 +322,34 @@ class TestUpsertAndQuery:
         assert matches[1].record_uuid == r3.uuid
         assert matches[2].record_uuid == r2.uuid
         assert matches[0].score >= matches[1].score >= matches[2].score
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key",
+        ["created_at", "noted_at", "k" * 32],
+        ids=["declared", "undeclared", "longest_key"],
+    )
+    async def test_a_datetime_is_stored_as_its_instant_with_its_offset_beside_it(
+        self, collection, key
+    ):
+        """The offset's payload key is the property's key under the system
+        prefix, the longest property key included."""
+        written = datetime(2024, 6, 15, 12, 0, 0, tzinfo=_OFFSET_WITH_SECONDS)
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await collection.upsert(records=[record])
+
+        [point] = await collection._client.retrieve(
+            collection_name=collection._native_collection_name,
+            ids=[str(collection._point_id(record.uuid))],
+            with_payload=True,
+        )
+        payload = point.payload or {}
+        stored = datetime.fromisoformat(payload[key])
+        assert stored == written
+        assert stored.utcoffset() == timedelta(0)
+        assert payload[f"sys-tz_offset_seconds-{key}"] == -(44 * 60 + 30)
 
     @pytest.mark.asyncio
     async def test_query_with_similarity_threshold(self, collection):
@@ -968,6 +999,25 @@ class TestFilters:
         assert r1.uuid not in uuids
         assert r2.uuid in uuids
         assert r3.uuid in uuids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key",
+        ["created_at", "noted_at", "k" * 32],
+        ids=["declared", "undeclared", "longest_key"],
+    )
+    async def test_a_datetime_at_an_offset_with_seconds_compares_by_its_instant(
+        self, collection, key
+    ):
+        """A datetime written to Qdrant keeps its offset only to the minute."""
+        v1 = _normalize([1.0, 0.0, 0.0])
+        written = datetime(2024, 6, 15, 12, 0, 0, tzinfo=_OFFSET_WITH_SECONDS)
+        record = _make_record(vector=v1, properties={key: written})
+        await collection.upsert(records=[record])
+
+        assert await self._query(collection, v1, key, "=", written) == {record.uuid}
+        assert await self._query(collection, v1, key, "<", written) == set()
+        assert await self._query(collection, v1, key, ">", written) == set()
 
     @pytest.mark.asyncio
     async def test_eq_naive_datetime(self, collection):

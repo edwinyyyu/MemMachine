@@ -2,7 +2,7 @@
 
 import hashlib
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
 
@@ -40,7 +40,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
 from memmachine_server.common.metrics_factory import OperationTracker
-from memmachine_server.common.utils import ensure_tz_aware
+from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 
 from .collection_registry import Registration
 from .data_types import (
@@ -70,6 +70,12 @@ _PAYLOAD_RECORD_UUID = f"{_SYSTEM_KEY_PREFIX}record_uuid"
 
 A point's id is derived from its incarnation and record UUID (`_point_id`),
 so a query reads the record UUID from here.
+"""
+_PAYLOAD_TZ_OFFSET_SECONDS_PREFIX = f"{_SYSTEM_KEY_PREFIX}tz_offset_seconds-"
+"""The prefix of the payload key holding a datetime property's UTC offset in seconds.
+
+The property's own key holds its instant in UTC, since a datetime written to
+Qdrant keeps its offset only to the minute.
 """
 
 
@@ -268,7 +274,10 @@ class QdrantVectorStoreCollection(RegistryBackedVectorStoreCollection):
         }
         for key, value in record.properties.items():
             if isinstance(value, datetime):
-                payload[key] = ensure_tz_aware(value)
+                payload[key] = ensure_tz_aware(value).astimezone(UTC)
+                payload[f"{_PAYLOAD_TZ_OFFSET_SECONDS_PREFIX}{key}"] = (
+                    utc_offset_seconds(value)
+                )
             else:
                 payload[key] = value
         return models.PointStruct(
