@@ -295,6 +295,49 @@ class TestCollectionLifecycle:
         await store.delete_collection(namespace=NAMESPACE, name="coll_b")
 
 
+# ── Strict mode ──
+
+
+class TestStrictMode:
+    @pytest.mark.asyncio
+    async def test_a_collection_is_created_with_strict_mode_off(
+        self, monkeypatch, registry_engine
+    ):
+        client = AsyncQdrantClient(location=":memory:")
+        requested: list[models.StrictModeConfig | None] = []
+        original = client.create_collection
+
+        async def recording_create_collection(*args, **kwargs):
+            requested.append(kwargs.get("strict_mode_config"))
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(client, "create_collection", recording_create_collection)
+        store = QdrantVectorStore(await _params(client, registry_engine))
+        await store.startup()
+        await store.create_collection(
+            namespace=NAMESPACE,
+            name=NAME,
+            config=VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM),
+        )
+
+        assert len(requested) == 1
+        assert requested[0] is not None
+        assert requested[0].enabled is False
+
+    @pytest.mark.asyncio
+    async def test_the_server_records_strict_mode_off(self, any_qdrant_client, store):
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
+
+        info = await any_qdrant_client.get_collection(
+            QdrantVectorStore._build_native_collection_name(NAMESPACE, config)
+        )
+        assert info.config.strict_mode_config is not None
+        assert info.config.strict_mode_config.enabled is False
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+
 # ── Upsert + Query ──
 
 

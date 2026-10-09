@@ -422,6 +422,13 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
         datetime: models.PayloadSchemaType.DATETIME,
     }
 
+    # A filter may name a property without a payload index, which the server
+    # scans for. Strict mode refuses such a filter instead, and a server may
+    # turn it on for new collections by default, so it is turned off here.
+    _STRICT_MODE: ClassVar[models.StrictModeConfig] = models.StrictModeConfig(
+        enabled=False
+    )
+
     @staticmethod
     def _is_already_exists_error(error: Exception) -> bool:
         """Check if an exception indicates a resource already exists."""
@@ -494,6 +501,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStoreCollection]):
                     m=0,
                     payload_m=self._hnsw_m,
                 ),
+                strict_mode_config=QdrantVectorStore._STRICT_MODE,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
