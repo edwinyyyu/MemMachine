@@ -130,7 +130,10 @@ def db_conf_dict() -> dict:
                     "uri": "https://example.zillizcloud.com",
                     "token": "test-token",
                     "db_name": "memory",
-                    "consistency_level": "Strong",
+                    "collection_registry": "main_postgres",
+                    "request_timeout_seconds": 7,
+                    "max_varchar_length": 2048,
+                    "purge_batch_size": 500,
                 },
             },
             "my_sqlite_vs": {
@@ -213,7 +216,10 @@ def test_parse_valid_storage_dict(db_conf_dict):
     assert milvus_conf.uri == "https://example.zillizcloud.com"
     assert milvus_conf.token == SecretStr("test-token")
     assert milvus_conf.db_name == "memory"
-    assert milvus_conf.consistency_level == "Strong"
+    assert milvus_conf.collection_registry == "main_postgres"
+    assert milvus_conf.request_timeout_seconds == 7
+    assert milvus_conf.max_varchar_length == 2048
+    assert milvus_conf.purge_batch_size == 500
 
     # SQLiteVectorStore (hnswlib engine)
     sqlite_vs_conf = storage_conf.sqlite_vector_store_confs["my_sqlite_vs"]
@@ -281,11 +287,19 @@ def test_serialize_deserialize_database_conf(db_conf_dict):
 
 
 def test_milvus_conf_defaults():
-    conf = MilvusConf()
-    assert conf.uri == "./milvus.db"
+    conf = MilvusConf(collection_registry="db")
+    assert conf.uri == "http://localhost:19530"
     assert conf.token == SecretStr("")
     assert conf.db_name == ""
-    assert conf.consistency_level == "Session"
+    assert conf.tombstone_retention_seconds == 86400
+    assert conf.request_timeout_seconds == 30
+    assert conf.max_varchar_length == 65535
+    assert conf.purge_batch_size == 10000
+
+
+def test_milvus_conf_requires_a_collection_registry():
+    with pytest.raises(ValueError, match="collection_registry"):
+        MilvusConf.model_validate({})
 
 
 def test_milvus_conf_reads_env(monkeypatch):
@@ -293,6 +307,7 @@ def test_milvus_conf_reads_env(monkeypatch):
     monkeypatch.setenv("MILVUS_TOKEN", "env-token")
     monkeypatch.setenv("MILVUS_DB_NAME", "memory")
     conf = MilvusConf(
+        collection_registry="db",
         uri="$MILVUS_URI",
         token=SecretStr("${MILVUS_TOKEN}"),
         db_name="$MILVUS_DB_NAME",
@@ -304,9 +319,42 @@ def test_milvus_conf_reads_env(monkeypatch):
 
 def test_milvus_conf_rejects_invalid_values():
     with pytest.raises(ValueError, match="non-empty 'uri'"):
-        MilvusConf(uri="")
-    with pytest.raises(ValueError, match="consistency_level"):
-        MilvusConf(consistency_level="Linearizable")
+        MilvusConf(collection_registry="db", uri="")
+
+
+@pytest.mark.parametrize(
+    "uri", ["./milvus.db", "milvus.db", "file:///var/lib/milvus.db"]
+)
+def test_milvus_conf_rejects_a_milvus_lite_file(uri):
+    with pytest.raises(ValueError, match="Milvus Lite file"):
+        MilvusConf(collection_registry="db", uri=uri)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://localhost:19530",
+        "https://example.zillizcloud.com",
+        "unix:/tmp/milvus.sock",
+    ],
+)
+def test_milvus_conf_accepts_a_server_uri(uri):
+    assert MilvusConf(collection_registry="db", uri=uri).uri == uri
+
+
+@pytest.mark.parametrize("setting", ["max_varchar_length", "purge_batch_size"])
+def test_milvus_conf_rejects_a_length_or_batch_size_that_is_not_positive(setting):
+    with pytest.raises(ValueError, match=setting):
+        MilvusConf.model_validate({"collection_registry": "db", setting: 0})
+
+
+def test_milvus_conf_rejects_a_timeout_that_is_not_a_positive_whole_second():
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        MilvusConf(collection_registry="db", request_timeout_seconds=0)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        MilvusConf(collection_registry="db", request_timeout_seconds=-1)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        MilvusConf(collection_registry="db", request_timeout_seconds=1.5)
 
 
 def test_neo4j_pool_lifecycle_fields():
@@ -465,7 +513,7 @@ def test_sqlite_vec_vector_store_build_config():
     assert config.path == "vec.db"
 
 
-@pytest.mark.parametrize("conf_class", [QdrantConf])
+@pytest.mark.parametrize("conf_class", [QdrantConf, MilvusConf])
 def test_a_retention_below_ten_request_timeouts_and_five_minutes_is_refused(
     conf_class,
 ):
