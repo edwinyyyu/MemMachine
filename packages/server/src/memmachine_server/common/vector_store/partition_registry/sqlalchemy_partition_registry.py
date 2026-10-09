@@ -100,9 +100,9 @@ class PartitionRow(BasePartitionRegistry):
         String(_IDENTIFIER_MAX_BYTES), primary_key=True
     )
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
-    # The dimensions, metric, and declared schema the partition was created
-    # under, so a store built with others fails loudly instead of filtering
-    # on indexes that are not there.
+    # The dimensions and declared schema the partition was created under, so
+    # a store built with others fails loudly instead of filtering on indexes
+    # that are not there.
     schema: MappedColumn[dict[str, JsonValue]] = mapped_column(
         _JSON_AUTO, nullable=False
     )
