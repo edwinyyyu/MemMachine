@@ -65,7 +65,7 @@ from .data_types import (
     indexed_property_names,
     validate_vector_store_name,
 )
-from .declared_properties import require_declared_properties, require_supported_filter
+from .declared_properties import bind_filter, require_declared_properties
 from .sql_columns import (
     compile_property_filter,
     property_column_values,
@@ -450,7 +450,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         require_valid_min_cosine_similarity(min_cosine_similarity)
 
         if property_filter is not None:
-            require_supported_filter(
+            property_filter = bind_filter(
                 property_filter,
                 self._indexed_properties,
                 SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES,
@@ -487,7 +487,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
             records_table=self._records_table,
             filter_expression=compile_property_filter(
-                property_filter, self._records_table, self._indexed_properties
+                property_filter, self._records_table
             ),
         )
 
