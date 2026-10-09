@@ -307,15 +307,12 @@ class QdrantConf(MetricsFactoryIdMixin, YamlSerializableMixin, ApiKeyMixin):
         return self
 
 
-class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
+class MilvusConf(MetricsFactoryIdMixin, YamlSerializableMixin, WithValueFromEnv):
     """Configuration options for a Milvus instance."""
 
     uri: str = Field(
-        default="./milvus.db",
-        description=(
-            "Milvus URI. Use a local .db path for Milvus Lite, "
-            "or an HTTP(S) URI for Milvus server / Zilliz Cloud."
-        ),
+        default="http://localhost:19530",
+        description="URL of the Milvus server or Zilliz Cloud endpoint.",
     )
     token: SecretStr = Field(
         default=SecretStr(""),
@@ -328,11 +325,46 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         default="",
         description="Optional Milvus database name.",
     )
-    consistency_level: str = Field(
-        default="Session",
+    collection_registry: str = Field(
+        ...,
         description=(
-            "Milvus consistency level for newly created collections. "
-            "Supported values: Strong, Session, Bounded, Eventually."
+            "The relational database, a name under resources.databases, that "
+            "holds this store's collection registry."
+        ),
+    )
+    tombstone_retention_seconds: int = Field(
+        default=86400,
+        gt=0,
+        description=(
+            "Seconds a deleted collection's records are kept before its purge "
+            "starts, so every write to Milvus in flight at the deletion has landed "
+            f"and is reclaimed; at least {_RETENTION_FLOOR_TIMEOUT_FACTOR} x "
+            f"request_timeout_seconds + {_RETENTION_FLOOR_EXTRA_SECONDS}."
+        ),
+    )
+    request_timeout_seconds: int = Field(
+        default=30,
+        gt=0,
+        description="Seconds a request to Milvus may take before the client gives up.",
+    )
+    max_varchar_length: int = Field(
+        default=65535,
+        gt=0,
+        description=(
+            "Bytes a declared string property can hold: the length of its "
+            "VARCHAR field. Milvus refuses a length above its "
+            "proxy.maxVarCharLength, 65535 unless the server sets it otherwise. "
+            "A native collection keeps the length it was created with."
+        ),
+    )
+    purge_batch_size: int = Field(
+        default=10000,
+        gt=0,
+        description=(
+            "The most entities one purge round lists and deletes. Milvus refuses "
+            "a query whose limit exceeds its "
+            "quotaAndLimits.limits.maxQueryResultWindow, 16384 unless the server "
+            "sets it otherwise."
         ),
     )
 
@@ -343,6 +375,13 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         resolved = cls._resolve_env(v)
         if not isinstance(resolved, str):
             raise TypeError("Milvus URI must be a string")
+        # pymilvus serves a URI ending in .db with Milvus Lite, a separate
+        # engine with its own behavior, so such a URI is refused.
+        if resolved.endswith(".db"):
+            raise ValueError(
+                f"Milvus URI {resolved!r} names a Milvus Lite file, which is not "
+                "supported; use a server URI such as http://localhost:19530"
+            )
         return resolved
 
     @field_validator("token", mode="before")
@@ -366,10 +405,9 @@ class MilvusConf(YamlSerializableMixin, WithValueFromEnv):
         """Validate Milvus configuration."""
         if not self.uri:
             raise ValueError("MilvusConf requires a non-empty 'uri'")
-        valid_consistency_levels = {"Strong", "Session", "Bounded", "Eventually"}
-        if self.consistency_level not in valid_consistency_levels:
-            valid = ", ".join(sorted(valid_consistency_levels))
-            raise ValueError(f"Milvus consistency_level must be one of: {valid}")
+        _require_retention_floor(
+            self.tombstone_retention_seconds, self.request_timeout_seconds
+        )
         return self
 
 
