@@ -828,6 +828,8 @@ class DatabaseManager:
             MilvusVectorStoreParams,
         )
 
+        # MilvusConf carries the vector index as a plain mapping, so pymilvus
+        # stays optional for config parsing; the params model validates it.
         return MilvusVectorStore(
             MilvusVectorStoreParams(
                 client=client,
@@ -838,6 +840,7 @@ class DatabaseManager:
                 max_varchar_length=conf.max_varchar_length,
                 purge_batch_size=conf.purge_batch_size,
                 metrics_factory=conf.get_metrics_factory(),
+                vector_index=conf.vector_index,
             )
         )
 
