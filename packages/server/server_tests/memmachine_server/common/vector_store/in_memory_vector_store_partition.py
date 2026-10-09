@@ -32,7 +32,7 @@ from memmachine_server.common.vector_store.data_types import (
 )
 from memmachine_server.common.vector_store.utils import (
     bind_filter,
-    validate_declared_properties,
+    bind_record,
 )
 
 # ---------------------------------------------------------------------------
@@ -147,11 +147,10 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         return self._store_schema
 
     async def upsert(self, *, records: Iterable[Record]) -> None:
-        records = list(records)
-        for record in records:
-            validate_declared_properties(
-                record.properties, self._store_schema.indexed_properties
-            )
+        records = [
+            bind_record(record, self._store_schema.indexed_properties)
+            for record in records
+        ]
         for record in records:
             self.records[record.uuid] = Record(
                 uuid=record.uuid,
