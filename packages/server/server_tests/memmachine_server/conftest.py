@@ -421,7 +421,19 @@ async def neo4j_semantic_storage(neo4j_driver):
 def qdrant_container():
     if not is_docker_available():
         pytest.skip("Docker is not available")
-    with QdrantContainer(image="qdrant/qdrant:v1.19.1") as container:
+    # New collections default to strict mode as on Qdrant Cloud, where a
+    # collection that leaves it on refuses a filter on a key without a payload
+    # index.
+    container = QdrantContainer(
+        image="qdrant/qdrant:v1.19.1",
+        env={
+            "QDRANT__STORAGE__COLLECTION__STRICT_MODE__ENABLED": "true",
+            "QDRANT__STORAGE__COLLECTION__STRICT_MODE__UNINDEXED_FILTERING_RETRIEVE": "false",
+            "QDRANT__STORAGE__COLLECTION__STRICT_MODE__UNINDEXED_FILTERING_UPDATE": "false",
+            "QDRANT__STORAGE__COLLECTION__STRICT_MODE__MAX_PAYLOAD_INDEX_COUNT": "100",
+        },
+    )
+    with container:
         yield container
 
 

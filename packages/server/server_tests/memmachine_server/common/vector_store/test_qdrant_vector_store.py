@@ -295,6 +295,57 @@ class TestCollectionLifecycle:
         await store.delete_collection(namespace=NAMESPACE, name="coll_b")
 
 
+# ── Strict mode ──
+
+
+class TestStrictMode:
+    @pytest.mark.asyncio
+    async def test_a_collection_overrides_the_server_strict_mode_default(
+        self, any_qdrant_client, store
+    ):
+        # The server defaults new collections to strict mode, so the store's
+        # collection serves a filter on an unindexed property only by turning
+        # strict mode off.
+        default_collection = f"strict_mode_default_{uuid4().hex}"
+        await any_qdrant_client.create_collection(
+            default_collection,
+            vectors_config=models.VectorParams(
+                size=VECTOR_DIM, distance=models.Distance.COSINE
+            ),
+        )
+        try:
+            default_info = await any_qdrant_client.get_collection(default_collection)
+        finally:
+            await any_qdrant_client.delete_collection(default_collection)
+        assert default_info.config.strict_mode_config is not None
+        assert default_info.config.strict_mode_config.enabled is True
+
+        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
+        await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
+        info = await any_qdrant_client.get_collection(
+            QdrantVectorStore._build_native_collection_name(NAMESPACE, config)
+        )
+        assert info.config.strict_mode_config is not None
+        assert info.config.strict_mode_config.enabled is False
+
+        collection = await store.open_collection(namespace=NAMESPACE, name=NAME)
+        assert collection is not None
+        vector = _normalize([1.0, 0.0, 0.0])
+        alpha = _make_record(vector=vector, properties={"topic": "alpha"})
+        beta = _make_record(vector=vector, properties={"topic": "beta"})
+        await collection.upsert(records=[alpha, beta])
+        query_results = list(
+            await collection.query(
+                query_vectors=[vector],
+                limit=10,
+                property_filter=Comparison(field="topic", op="=", value="alpha"),
+            )
+        )
+        assert [match.record_uuid for match in query_results[0].matches] == [alpha.uuid]
+
+        await store.delete_collection(namespace=NAMESPACE, name=NAME)
+
+
 # ── Upsert + Query ──
 
 
