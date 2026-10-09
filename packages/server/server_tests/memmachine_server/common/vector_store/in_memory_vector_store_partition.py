@@ -25,8 +25,8 @@ from memmachine_server.common.vector_store.data_types import (
     Record,
 )
 from memmachine_server.common.vector_store.declared_properties import (
+    bind_filter,
     require_declared_properties,
-    require_supported_filter,
 )
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
         if property_filter is not None:
-            require_supported_filter(
+            property_filter = bind_filter(
                 property_filter, self._indexed_properties, self._supported_filter_nodes
             )
         results: list[QueryResult] = []
