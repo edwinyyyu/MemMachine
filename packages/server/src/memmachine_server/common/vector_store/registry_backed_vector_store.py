@@ -33,14 +33,13 @@ from .data_types import (
     VectorStorePartitionPendingError,
     VectorStoreSchema,
 )
+from .declared_properties import validate_declared_properties, validate_supported_filter
 from .partition_registry import (
     Registration,
     Reservation,
     VectorStorePartitionRegistry,
 )
 from .utils import (
-    is_valid_filter,
-    validate_declared_types,
     validate_dimensions,
     validate_limit,
     validate_partition_key,
@@ -71,7 +70,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
 
     For subclasses: `_vector_store_name` is the store's name and
     `_incarnation` the incarnation the handle is bound to, and a subclass
-    implements the backend calls `_upsert`, `_query`, and `_delete`.
+    implements `supported_filter_nodes`, the filter nodes its backend
+    evaluates during a search, and the backend calls `_upsert`, `_query`,
+    and `_delete`.
     """
 
     def __init__(
@@ -99,7 +100,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         async with self._tracker("upsert"):
             records = list(records)
             for record in records:
-                validate_declared_types(
+                validate_declared_properties(
                     record.properties, self._store_schema.indexed_properties
                 )
                 validate_dimensions(record.vector, self._store_schema.vector_dimensions)
@@ -126,8 +127,12 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
                 )
             validate_score_threshold(score_threshold)
             validate_limit(limit)
-            if property_filter is not None and not is_valid_filter(property_filter):
-                raise ValueError("Filter contains an invalid property key")
+            if property_filter is not None:
+                validate_supported_filter(
+                    property_filter,
+                    self._store_schema.indexed_properties,
+                    self.supported_filter_nodes,
+                )
             await self._registration.require_current()
             if not query_vectors:
                 return []
@@ -154,7 +159,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Write records to the backend under the handle's incarnation.
 
         Called between two liveness checks, with at least one record, each
-        already checked against the store's schema.
+        already checked against the store's schema: its keys are declared,
+        each value is of its key's declared type, and its vector has the
+        store's dimensions.
         A record replaces the one with its UUID. The records are durable when
         it returns; a call that raises may have written some of them.
 
@@ -179,7 +186,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Search the handle's incarnation's records for each query vector.
 
         Called after a liveness check, with at least one query vector and a
-        positive limit, the vectors, threshold, and filter already checked.
+        positive limit, the vectors, threshold, and filter already checked: the
+        filter names declared keys only and is built from
+        `supported_filter_nodes` only.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.

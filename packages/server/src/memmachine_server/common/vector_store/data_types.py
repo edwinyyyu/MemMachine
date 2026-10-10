@@ -1,6 +1,6 @@
 """Data types for vector store."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Iterable, Mapping
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
@@ -17,6 +17,7 @@ from pydantic import (
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
+    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
     PropertyType,
     PropertyValue,
     SimilarityMetric,
@@ -59,7 +60,8 @@ IndexedProperties = Annotated[
 ]
 """
 The properties a store declares for every partition it holds: each key the
-store indexes for filtering, with the type its values hold.
+store indexes and filters on, with the type its values hold. A record or a
+filter naming any other key is rejected.
 """
 
 
@@ -160,6 +162,47 @@ class VectorStorePartitionHandleStaleError(Exception):
 
 class VectorStoreAttemptsExhaustedError(Exception):
     """Raised when an operation gave up after repeated attempts that made no progress."""
+
+
+class UndeclaredPropertyKeyError(ValueError):
+    """Raised when a record or a filter names a key the store has not declared."""
+
+    def __init__(self, keys: Iterable[str], declared: Collection[str]) -> None:
+        """Initialize with the offending keys and the declared ones."""
+        self.keys = sorted(set(keys))
+        self.declared = sorted(declared)
+        super().__init__(
+            f"Property keys {self.keys} are not declared by the vector store; "
+            f"declared keys: {self.declared}."
+        )
+
+
+class PropertyTypeMismatchError(ValueError):
+    """Raised when a record's value is not of its key's declared type."""
+
+    def __init__(self, key: str, declared: PropertyType, value: PropertyValue) -> None:
+        """Initialize with the key, its declared type and the offending value."""
+        self.key = key
+        self.declared = declared
+        self.value = value
+        super().__init__(
+            f"Property {key!r} is declared as "
+            f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[declared]}, "
+            f"got {type(value).__name__} {value!r}."
+        )
+
+
+class UnsupportedFilterError(ValueError):
+    """Raised when a filter uses a node the store cannot evaluate during a search."""
+
+    def __init__(self, nodes: Iterable[type], supported: Collection[type]) -> None:
+        """Initialize with the offending node classes and the supported ones."""
+        self.nodes = sorted({node.__name__ for node in nodes})
+        self.supported = sorted(node.__name__ for node in supported)
+        super().__init__(
+            f"Filter nodes {self.nodes} are not evaluated by this vector store; "
+            f"supported nodes: {self.supported}."
+        )
 
 
 class Record(BaseModel):
