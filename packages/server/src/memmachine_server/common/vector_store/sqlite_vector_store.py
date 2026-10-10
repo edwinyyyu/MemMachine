@@ -12,13 +12,12 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import override
+from typing import ClassVar, override
 from uuid import UUID, uuid4
 
 import numpy as np
 from pydantic import Field, InstanceOf, field_validator
 from sqlalchemy import (
-    JSON,
     Boolean,
     Column,
     ForeignKeyConstraint,
@@ -47,10 +46,26 @@ from sqlalchemy.sql.elements import ColumnElement
 from memmachine_server.common.data_types import (
     SimilarityMetric,
 )
-from memmachine_server.common.filter.filter_parser import FilterExpr
-from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
-from memmachine_server.common.properties_json import (
-    encode_properties,
+from memmachine_server.common.filter.filter_parser import (
+    And as FilterAnd,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Comparison as FilterComparison,
+)
+from memmachine_server.common.filter.filter_parser import (
+    FilterExpr,
+)
+from memmachine_server.common.filter.filter_parser import (
+    In as FilterIn,
+)
+from memmachine_server.common.filter.filter_parser import (
+    IsNull as FilterIsNull,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Not as FilterNot,
+)
+from memmachine_server.common.filter.filter_parser import (
+    Or as FilterOr,
 )
 from memmachine_server.common.sql import write_session
 
@@ -63,11 +78,16 @@ from .data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
 )
+from .declared_properties import validate_declared_properties, validate_supported_filter
+from .sql_columns import (
+    compile_property_filter,
+    property_column_values,
+    property_columns,
+    property_indexes,
+)
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
     _PARTITION_KEY_MAX_BYTES,
-    is_valid_filter,
-    validate_declared_types,
     validate_dimensions,
     validate_limit,
     validate_partition_key,
@@ -200,6 +220,10 @@ async def _save_partition_index(
 class SQLiteVectorStorePartition(VectorStorePartition):
     """A partition backed by SQLite + a pluggable vector search engine."""
 
+    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
+        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
+    )
+
     class _KeyFilter:
         """Per-candidate SQL filter using a sync SQLAlchemy session."""
 
@@ -281,6 +305,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     def store_schema(self) -> VectorStoreSchema:
         return self._store_schema
 
+    @property
+    @override
+    def supported_filter_nodes(self) -> frozenset[type]:
+        return SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES
+
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold."""
         if self._index_path is None:
@@ -308,7 +337,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records = list(records)
         for record in records:
-            validate_declared_types(
+            validate_declared_properties(
                 record.properties, self._store_schema.indexed_properties
             )
             validate_dimensions(record.vector, self._store_schema.vector_dimensions)
@@ -317,25 +346,28 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             await self._require_current(session)
             if not records:
                 return
-            upsert_records = (
-                sqlite_insert(self._records_table)
-                .on_conflict_do_update(
-                    index_elements=[self._records_table.c.uuid],
-                    set_={
-                        "properties": sqlite_insert(
-                            self._records_table
-                        ).excluded.properties,
-                    },
-                )
-                .returning(self._records_table.c.uuid, self._records_table.c.row_id)
-            )
+            insert_records = sqlite_insert(self._records_table)
+            upsert_records = insert_records.on_conflict_do_update(
+                index_elements=[self._records_table.c.uuid],
+                # Every column but the row id takes the new version's value,
+                # so a declared key the record no longer holds becomes NULL;
+                # the uuid, rewritten to itself, keeps the SET list nonempty
+                # for a store that declares no keys.
+                set_={
+                    column.name: insert_records.excluded[column.name]
+                    for column in self._records_table.columns
+                    if column.name != "row_id"
+                },
+            ).returning(self._records_table.c.uuid, self._records_table.c.row_id)
             rows = (
                 await session.execute(
                     upsert_records,
                     [
                         {
                             "uuid": record.uuid,
-                            "properties": encode_properties(record.properties),
+                            **property_column_values(
+                                record.properties, self._store_schema.indexed_properties
+                            ),
                         }
                         for record in records
                     ],
@@ -415,8 +447,12 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             validate_query_vector(query_vector, self._store_schema.vector_dimensions)
         validate_score_threshold(score_threshold)
 
-        if property_filter is not None and not is_valid_filter(property_filter):
-            raise ValueError("Filter contains invalid field names")
+        if property_filter is not None:
+            validate_supported_filter(
+                property_filter,
+                self._store_schema.indexed_properties,
+                SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES,
+            )
 
         async with self._create_session() as session:
             await self._require_current(session)
@@ -457,12 +493,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         return SQLiteVectorStorePartition._KeyFilter(
             sync_sqlalchemy_engine=self._sync_sqlalchemy_engine,
             records_table=self._records_table,
-            filter_expression=compile_sql_filter(
+            filter_expression=compile_property_filter(
                 property_filter,
-                lambda field: (
-                    self._records_table.c.properties[field],
-                    "properties_json",
-                ),
+                self._records_table,
+                self._store_schema.indexed_properties,
             ),
         )
 
@@ -651,7 +685,8 @@ class SQLiteVectorStore(VectorStore):
     Vector store backed by SQLite + a pluggable vector search engine.
 
     Each life of a partition gets its own records table and engine
-    instance. The engine and its index file live in the process that opened
+    instance. A declared property is a typed, indexed column of the records
+    table. The engine and its index file live in the process that opened
     the partition, so one process at a time may use a partition.
     """
 
@@ -967,15 +1002,21 @@ class SQLiteVectorStore(VectorStore):
         return f"vector_store_sqlite_{incarnation.hex}"
 
     def _records_table(self, incarnation: UUID) -> Table:
-        """Get or create a SQLAlchemy Table for a per-partition records table."""
-        return Table(
-            f"{self._partition_prefix(incarnation)}_rc",
+        """The partition life's records table, built once per incarnation."""
+        name = f"{self._partition_prefix(incarnation)}_rc"
+        records_table = self._sa_metadata.tables.get(name)
+        if records_table is not None:
+            return records_table
+        records_table = Table(
+            name,
             self._sa_metadata,
             Column("row_id", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
-            Column("properties", JSON, nullable=False, default=dict),
+            *property_columns(self._store_schema.indexed_properties),
             extend_existing=True,
         )
+        property_indexes(records_table, self._store_schema.indexed_properties)
+        return records_table
 
     def _index_path(self, incarnation: UUID) -> Path | None:
         """Return the on-disk index path for a partition life, or None if in-memory."""

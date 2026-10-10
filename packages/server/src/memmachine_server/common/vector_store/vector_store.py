@@ -35,17 +35,29 @@ class VectorStorePartition(ABC):
     An `upsert` or `delete` is durable once it returns; queries may not
     reflect it right away. A store that guarantees more states it.
 
-    A partition stores every property of a record and filters on any key;
-    the keys its store declares (`store_schema.indexed_properties`)
-    are indexed for
-    filtering during a search, and their values are typed. Record
-    properties not declared may have mixed-type values.
+    A partition stores the properties its store declares
+    (`store_schema.indexed_properties`), typed and indexed for filtering
+    during a search, and no others: a record or a filter naming an
+    undeclared key is rejected, so an undeclared key never exists in the
+    store, neither stored write-only nor scanned for.
     """
 
     @property
     @abstractmethod
     def store_schema(self) -> VectorStoreSchema:
         """The schema every record and query of this partition follows."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def supported_filter_nodes(self) -> frozenset[type]:
+        """
+        The filter node classes the backend evaluates during a search.
+
+        A `query` whose filter uses any other node raises
+        `UnsupportedFilterError`; a caller routes such a predicate to a store
+        that evaluates it afterward.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -63,14 +75,16 @@ class VectorStorePartition(ABC):
         Args:
             records (Iterable[Record]):
                 Iterable of records to upsert.
-                Records containing properties
-                not among the declared properties
-                are allowed.
 
         Raises:
+            UndeclaredPropertyKeyError:
+                If a record carries a key the store has not declared;
+                raised before anything is sent.
+            PropertyTypeMismatchError:
+                If a record's value is not of its key's declared type;
+                raised before anything is sent.
             ValueError:
-                If a record's declared property holds a value of another
-                type, or its vector does not have the store's dimensions.
+                If a record's vector does not have the store's dimensions.
         """
         raise NotImplementedError
 
@@ -93,14 +107,16 @@ class VectorStorePartition(ABC):
                 The vectors to compare against.
             limit (int):
                 Maximum number of matching records to return per query vector;
-                positive.
+                positive. A filtered search returns fewer when the filter
+                admits fewer.
             score_threshold (float | None):
                 The worst score a match may have, by the store's
                 similarity metric; a match scoring exactly the threshold is
                 returned (default: None).
             property_filter (FilterExpr | None):
-                Filter expression tree.
-                If None or empty, no property filtering is applied
+                Filter expression tree over declared keys, evaluated during
+                the search.
+                If None, no property filtering is applied
                 (default: None).
 
         Returns:
@@ -112,8 +128,11 @@ class VectorStorePartition(ABC):
             ValueError:
                 If the limit is not positive, a query vector does not have
                 the store's dimensions or has a coordinate that is not
-                finite, the score threshold is not finite, or the property
-                filter names an invalid property key.
+                finite, or the score threshold is not finite.
+            UndeclaredPropertyKeyError:
+                If the filter names a key the store has not declared.
+            UnsupportedFilterError:
+                If the filter uses a node outside `supported_filter_nodes`.
         """
         raise NotImplementedError
 
