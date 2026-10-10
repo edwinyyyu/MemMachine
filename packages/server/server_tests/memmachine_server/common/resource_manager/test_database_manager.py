@@ -410,6 +410,7 @@ async def test_get_vector_store_builds_a_qdrant_store(tmp_path):
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         partition_registry="registry",
         tombstone_retention_seconds=3600,
+        hnsw_config={"ef_construct": 256, "payload_m": 32},
     )
 
     mock_client = AsyncMock()
@@ -452,6 +453,9 @@ async def test_get_vector_store_builds_a_qdrant_store(tmp_path):
     assert kwargs["vector_dimensions"] == 3
     assert kwargs["similarity_metric"] == SimilarityMetric.COSINE
     assert kwargs["indexed_properties"] == {}
+    assert kwargs["hnsw_config"] == {"ef_construct": 256, "payload_m": 32}
+    assert kwargs["optimizers_config"] is None
+    assert kwargs["quantization_config"] is None
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
