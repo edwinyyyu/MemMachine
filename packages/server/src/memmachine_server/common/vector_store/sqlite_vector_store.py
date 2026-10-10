@@ -75,6 +75,7 @@ from .sql_columns import (
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
     require_dimensions,
+    require_distinct_record_uuids,
     require_partition_key,
     require_valid_limit,
     require_valid_min_cosine_similarity,
@@ -336,6 +337,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             return
         for record in records:
             require_dimensions(record.vector, self._vector_dimensions)
+        require_distinct_record_uuids(record.uuid for record in records)
 
         async with self._create_session() as session, session.begin():
             insert_records = sqlite_insert(self._records_table)
