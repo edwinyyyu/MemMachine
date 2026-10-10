@@ -249,34 +249,6 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def open_or_create_partition(
-        self, partition_key: str
-    ) -> VectorStorePartition:
-        """
-        Get a handle for the partition, creating the partition if it does not exist.
-
-        Args:
-            partition_key (str):
-                The key of the partition.
-
-        Returns:
-            VectorStorePartition:
-                A handle bound to the partition's current life.
-
-        Raises:
-            VectorStorePartitionSchemaMismatchError:
-                If the partition exists and was created under other
-                dimensions or another declared schema than this store's.
-            VectorStorePartitionPendingError: If the partition's creation, by
-                another caller, did not complete within the store's attempts
-                to open it.
-            VectorStoreAttemptsExhaustedError: If the store gave up opening or
-                creating the partition after repeated attempts that made no
-                progress.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     async def get_partition(self, partition_key: str) -> VectorStorePartition | None:
         """
         Get a handle for an existing partition.
