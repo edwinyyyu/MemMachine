@@ -275,8 +275,8 @@ class TestPartitionLifecycle:
 
 class TestStrictMode:
     @pytest.mark.asyncio
-    async def test_a_collection_overrides_the_server_strict_mode_default(
-        self, any_qdrant_client, store
+    async def test_the_collection_overrides_the_server_strict_mode_default(
+        self, any_qdrant_client, store, collection
     ):
         # The server defaults new collections to strict mode, so the store's
         # collection serves a filter on an unindexed property only by turning
@@ -295,16 +295,10 @@ class TestStrictMode:
         assert default_info.config.strict_mode_config is not None
         assert default_info.config.strict_mode_config.enabled is True
 
-        config = VectorStoreCollectionConfig(vector_dimensions=VECTOR_DIM)
-        await store.create_collection(namespace=NAMESPACE, name=NAME, config=config)
-        info = await any_qdrant_client.get_collection(
-            QdrantVectorStore._build_native_collection_name(NAMESPACE, config)
-        )
+        info = await any_qdrant_client.get_collection(store.vector_store_name)
         assert info.config.strict_mode_config is not None
         assert info.config.strict_mode_config.enabled is False
 
-        collection = await store.open_collection(namespace=NAMESPACE, name=NAME)
-        assert collection is not None
         vector = _normalize([1.0, 0.0, 0.0])
         alpha = _make_record(vector=vector, properties={"topic": "alpha"})
         beta = _make_record(vector=vector, properties={"topic": "beta"})
@@ -317,8 +311,6 @@ class TestStrictMode:
             )
         )
         assert [match.record_uuid for match in query_results[0].matches] == [alpha.uuid]
-
-        await store.delete_collection(namespace=NAMESPACE, name=NAME)
 
 
 # ── Upsert + Query ──
