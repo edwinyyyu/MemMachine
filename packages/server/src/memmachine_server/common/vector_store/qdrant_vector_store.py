@@ -2,7 +2,7 @@
 
 import math
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
 
@@ -198,7 +198,10 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         }
         for key, value in record.properties.items():
             if isinstance(value, datetime):
-                payload[key] = ensure_tz_aware(value)
+                # The instant in UTC, which is all a filter compares: a
+                # datetime written to Qdrant keeps its offset only to the
+                # minute, which would move one at an offset with seconds.
+                payload[key] = ensure_tz_aware(value).astimezone(UTC)
             else:
                 payload[key] = value
         return models.PointStruct(

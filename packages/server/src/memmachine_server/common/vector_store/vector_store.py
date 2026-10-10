@@ -41,6 +41,10 @@ class VectorStorePartition(ABC):
     another type than its key declares is rejected too, so a backend
     compares a stored value only with a value of its type; a record's or a
     filter's int for a float key is the float it equals.
+
+    A store keeps a datetime property's instant, taking a naive datetime as
+    UTC, and may drop its UTC offset. A filter compares datetime values by
+    their instant, for equality and ordering alike.
     """
 
     @property
@@ -94,7 +98,8 @@ class VectorStorePartition(ABC):
                 sent. An int for a float key is written as the float it
                 equals.
             ValueError:
-                If a record's vector does not have the store's dimensions.
+                If two records share a UUID or a record's vector does not have
+                the store's dimensions; no record is written.
         """
         raise NotImplementedError
 

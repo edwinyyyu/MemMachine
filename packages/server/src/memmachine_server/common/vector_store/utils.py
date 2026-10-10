@@ -2,7 +2,8 @@
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from uuid import UUID
 
 # Matched with fullmatch: `$` also matches before a trailing newline.
 _IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
@@ -24,6 +25,15 @@ def require_partition_key(partition_key: str) -> None:
             f"Partition key {partition_key!r} must match [a-z0-9_]+ and be at most "
             "32 bytes"
         )
+
+
+def require_distinct_record_uuids(record_uuids: Iterable[UUID]) -> None:
+    """Raise ValueError if a record UUID occurs more than once."""
+    seen: set[UUID] = set()
+    for record_uuid in record_uuids:
+        if record_uuid in seen:
+            raise ValueError(f"Record UUID {record_uuid} occurs more than once")
+        seen.add(record_uuid)
 
 
 def require_valid_query_vector(query_vector: Sequence[float], dimensions: int) -> None:

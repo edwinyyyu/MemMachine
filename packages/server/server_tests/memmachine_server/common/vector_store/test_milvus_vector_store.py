@@ -1152,6 +1152,38 @@ class TestFilters:
         ) == {records[2].uuid}
 
     @pytest.mark.asyncio
+    async def test_a_datetime_matches_a_filter_at_another_offset_by_its_instant(
+        self, collection
+    ):
+        """Equality and ordering compare instants, whatever either offset."""
+        key = "created_at"
+        written = datetime(
+            2024, 6, 15, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={key: written}
+        )
+        await collection.upsert(records=[record])
+        await _settle(collection)
+
+        minus8 = timezone(timedelta(hours=-8))
+        same_instant = written.astimezone(minus8)
+        # A later instant whose wall-clock time is earlier, and an earlier
+        # instant whose wall-clock time is later.
+        later = datetime(2024, 6, 15, 9, 0, tzinfo=minus8)
+        earlier = datetime(2024, 6, 15, 20, 0, tzinfo=timezone(timedelta(hours=14)))
+        for op, value in [
+            ("=", same_instant),
+            ("<=", same_instant),
+            (">=", same_instant),
+            ("<", later),
+            (">", earlier),
+        ]:
+            assert await self._query(collection, record.vector, key, op, value) == {
+                record.uuid
+            }, op
+
+    @pytest.mark.asyncio
     async def test_a_character_outside_the_basic_multilingual_plane_matches(
         self, collection
     ):
@@ -1195,6 +1227,17 @@ class TestFilters:
             await collection.upsert(records=[_make_record(vector=vector)])
         with pytest.raises(ValueError, match="dimensions"):
             await collection.query(query_vectors=[vector], limit=1)
+
+    @pytest.mark.asyncio
+    async def test_a_batch_repeating_a_record_uuid_is_refused(self, collection):
+        other = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        first = _make_record(vector=_normalize([1.0, 0.1, 0.0]), properties={"age": 1})
+        repeated = _make_record(
+            uuid=first.uuid, vector=_normalize([1.0, 0.2, 0.0]), properties={"age": 2}
+        )
+        with pytest.raises(ValueError, match=str(first.uuid)):
+            await collection.upsert(records=[other, first, repeated])
+        assert await _stored(collection, [other.uuid, first.uuid]) == {}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("coordinate", [math.nan, math.inf], ids=["nan", "inf"])
