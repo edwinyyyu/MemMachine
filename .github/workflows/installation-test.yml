@@ -268,7 +268,7 @@ jobs:
           echo "Server is fully ready!"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.2.0
 
       - name: Create uv virtual environment
         shell: bash

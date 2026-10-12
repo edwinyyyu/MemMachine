@@ -34,7 +34,7 @@ jobs:
           pip install --upgrade build
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.2.0
 
       - name: Build the packages with uv
         run: |
