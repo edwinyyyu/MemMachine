@@ -4,11 +4,13 @@ import datetime
 import json
 import random
 from datetime import UTC
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
 from memmachine_server.common.data_types import PropertyValue, SimilarityMetric
+from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
     And,
     Comparison,
@@ -1101,10 +1103,13 @@ async def _encode_random_events(
 
 
 async def _query_texts(
-    event_memory: EventMemory, property_filter: FilterExpr, limit: int
+    event_memory: EventMemory,
+    property_filter: FilterExpr,
+    limit: int,
+    query: str = "event",
 ) -> set[str]:
     result = await event_memory.query(
-        "event", vector_search_limit=limit, property_filter=property_filter
+        query, vector_search_limit=limit, property_filter=property_filter
     )
     return {
         segment.block.text
@@ -1169,6 +1174,95 @@ class TestQueryWithAndWithoutThePart:
                     declaring_event_memory, property_filter, limit=4
                 )
             assert with_part >= without_part, property_filter
+
+
+class _ColorEmbedder(Embedder):
+    """Embeds a text by how often it says blue and red, so the two rank apart."""
+
+    async def _ingest_embed(
+        self, inputs: list[Any], max_attempts: int = 1
+    ) -> list[list[float]]:
+        return [self._embed(str(text)) for text in inputs]
+
+    async def _search_embed(
+        self, queries: list[Any], max_attempts: int = 1
+    ) -> list[list[float]]:
+        return [self._embed(str(query)) for query in queries]
+
+    @staticmethod
+    def _embed(text: str) -> list[float]:
+        return [float(text.count("blue")), float(text.count("red"))]
+
+    @property
+    def model_id(self) -> str:
+        return "color-model"
+
+    @property
+    def dimensions(self) -> int:
+        return 2
+
+    @property
+    def similarity_metric(self) -> SimilarityMetric:
+        return SimilarityMetric.COSINE
+
+
+@_async
+class TestQueryWithAConditionOnAnUndeclaredField:
+    async def test_the_condition_applies_to_the_seeds_the_search_returns(
+        self,
+        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
+    ):
+        """A seed the search ranks below the limit is not found, unless the condition is on a declared field."""
+        event_memory = EventMemory(
+            EventMemoryParams(
+                segment_store_partition=fake_segment_store_partition,
+                vector_store_collection=fake_vector_store_collection,
+                segmenter=TextSegmenter(),
+                deriver=WholeTextDeriver(),
+                embedder=_ColorEmbedder(),
+            )
+        )
+        await event_memory.encode_events(
+            [
+                *(
+                    _make_event(
+                        f"blue thing {index}",
+                        timestamp=_ts(index),
+                        properties={"color": "blue", "_episode_uid": f"blue-{index}"},
+                    )
+                    for index in range(10)
+                ),
+                _make_event(
+                    "red thing",
+                    timestamp=_ts(10),
+                    properties={"color": "red", "_episode_uid": "red"},
+                ),
+            ]
+        )
+
+        on_the_segment_only = await _query_texts(
+            event_memory,
+            Comparison(field="m.color", op="=", value="red"),
+            limit=3,
+            query="blue thing",
+        )
+        on_the_segment_only_with_every_seed = await _query_texts(
+            event_memory,
+            Comparison(field="m.color", op="=", value="red"),
+            limit=11,
+            query="blue thing",
+        )
+        on_the_record = await _query_texts(
+            event_memory,
+            Comparison(field="episode_uid", op="=", value="red"),
+            limit=3,
+            query="blue thing",
+        )
+
+        assert on_the_segment_only == set()
+        assert on_the_segment_only_with_every_seed == {"red thing"}
+        assert on_the_record == {"red thing"}
 
 
 # ===================================================================

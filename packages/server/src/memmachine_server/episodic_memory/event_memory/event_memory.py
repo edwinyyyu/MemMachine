@@ -382,6 +382,10 @@ class EventMemory:
                 Property fields and values
                 to use for filtering segments
                 (default: None).
+                A condition on a field the vector store does not
+                declare applies to the seeds the vector search returns,
+                so fewer than `vector_search_limit` seeds, or none,
+                may survive it.
             format_options (FormatOptions | None):
                 Options for formatting.
                 (default: None).
