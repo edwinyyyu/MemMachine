@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Iterable, Sequence
+from collections.abc import Set as AbstractSet
 from typing import ClassVar, cast
 from uuid import UUID
 
@@ -16,6 +17,8 @@ from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
     And,
     FilterExpr,
+    Not,
+    Or,
     demangle_user_metadata_key,
     filter_fields,
     map_filter_fields,
@@ -357,22 +360,17 @@ class EventMemory:
         return f"_{field}"
 
     def _vector_store_filter(self, property_filter: FilterExpr) -> FilterExpr | None:
-        """The conjuncts of a filter the vector store evaluates.
+        """The part of a filter the vector store evaluates.
 
         A vector record carries the properties the collection declares, so
-        a conjunct naming any other field has nothing to match there and is
+        a condition naming any other field has nothing to match there and is
         left to the segment store, which holds every property and evaluates
-        the whole filter on the context windows. A conjunct is dropped whole
-        when any field under it is undeclared, so dropping only ever widens
-        the vector search; the segment store narrows it back.
+        the whole filter on the context windows. The part on declared fields
+        only ever widens the vector search; the segment store narrows it back.
         """
         declared = self._vector_store_collection.config.indexed_properties_schema
         mapped = map_filter_fields(property_filter, self._to_vector_record_property)
-        return _conjoin(
-            conjunct
-            for conjunct in _conjuncts(mapped)
-            if filter_fields(conjunct) <= declared.keys()
-        )
+        return _part_on_fields(mapped, declared.keys())
 
     async def query(
         self,
@@ -436,8 +434,8 @@ class EventMemory:
         )[0]
         t_embedding = time.monotonic()
 
-        # The vector store gets the conjuncts it can evaluate; the segment
-        # store gets the whole filter below.
+        # The vector store gets the part of the filter it can evaluate; the
+        # segment store gets the whole filter below.
         collection_filter = (
             self._vector_store_filter(property_filter)
             if property_filter is not None
@@ -847,16 +845,29 @@ class EventMemory:
         return -offset
 
 
-def _conjuncts(expr: FilterExpr) -> list[FilterExpr]:
-    """The operands of a filter's top-level conjunction; the filter itself when it is not one."""
-    if isinstance(expr, And):
-        return [*_conjuncts(expr.left), *_conjuncts(expr.right)]
-    return [expr]
+def _part_on_fields(
+    expr: FilterExpr, fields: AbstractSet[str], *, negated: bool = False
+) -> FilterExpr | None:
+    """The part of a filter that names only the given fields; None when no part does.
 
-
-def _conjoin(conjuncts: Iterable[FilterExpr]) -> FilterExpr | None:
-    """The conjunction of the given filters; None when there are none."""
-    combined: FilterExpr | None = None
-    for conjunct in conjuncts:
-        combined = conjunct if combined is None else And(left=combined, right=conjunct)
-    return combined
+    Every record that matches the filter matches its part, so searching with
+    the part only ever widens the search. Under an odd number of negations
+    (`negated`) the roles swap: every record that matches the part matches
+    the filter, so the negation around the part is again the wider one.
+    """
+    match expr:
+        case Not(expr=operand):
+            part = _part_on_fields(operand, fields, negated=not negated)
+            return None if part is None else Not(expr=part)
+        case And(left=left, right=right) | Or(left=left, right=right):
+            left_part = _part_on_fields(left, fields, negated=negated)
+            right_part = _part_on_fields(right, fields, negated=negated)
+            if left_part is not None and right_part is not None:
+                return type(expr)(left=left_part, right=right_part)
+            # Leaving out a side widens an And and narrows an Or; under a
+            # negation, the reverse.
+            if isinstance(expr, And) != negated:
+                return left_part if right_part is None else right_part
+            return None
+        case _:
+            return expr if filter_fields(expr) <= fields else None

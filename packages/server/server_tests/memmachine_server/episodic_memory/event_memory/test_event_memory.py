@@ -768,7 +768,7 @@ class TestQueryWithFilter:
         fake_vector_store_collection: InMemoryVectorStoreCollection,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        """A conjunct is dropped whole: an undeclared key anywhere under it means no vector-side filter."""
+        """An Or with an arm on undeclared fields alone leaves nothing for the vector store."""
         seen: list[FilterExpr | None] = []
         query = fake_vector_store_collection.query
 
@@ -788,6 +788,85 @@ class TestQueryWithFilter:
         )
 
         assert seen == [None]
+
+    @pytest.mark.parametrize(
+        ("property_filter", "vector_store_filter"),
+        [
+            pytest.param(
+                Or(
+                    left=And(
+                        left=Comparison(field="m.color", op="=", value="red"),
+                        right=Comparison(field="episode_uid", op="=", value="e1"),
+                    ),
+                    right=And(
+                        left=Comparison(field="m.color", op="=", value="blue"),
+                        right=Comparison(field="episode_uid", op="=", value="e2"),
+                    ),
+                ),
+                Or(
+                    left=Comparison(field="_episode_uid", op="=", value="e1"),
+                    right=Comparison(field="_episode_uid", op="=", value="e2"),
+                ),
+                id="each arm of an or",
+            ),
+            pytest.param(
+                Not(
+                    expr=Or(
+                        left=Comparison(field="m.color", op="=", value="red"),
+                        right=Comparison(field="episode_uid", op="=", value="e1"),
+                    )
+                ),
+                Not(expr=Comparison(field="_episode_uid", op="=", value="e1")),
+                id="a negated or",
+            ),
+            pytest.param(
+                Not(
+                    expr=And(
+                        left=Comparison(field="m.color", op="=", value="red"),
+                        right=Comparison(field="episode_uid", op="=", value="e1"),
+                    )
+                ),
+                None,
+                id="a negated and",
+            ),
+            pytest.param(
+                Not(
+                    expr=Or(
+                        left=Comparison(field="m.color", op="=", value="red"),
+                        right=Not(
+                            expr=Comparison(field="episode_uid", op="=", value="e1")
+                        ),
+                    )
+                ),
+                Not(
+                    expr=Not(expr=Comparison(field="_episode_uid", op="=", value="e1"))
+                ),
+                id="a negation under a negated or",
+            ),
+        ],
+    )
+    async def test_the_vector_store_gets_the_part_of_the_filter_on_declared_fields(
+        self,
+        event_memory: EventMemory,
+        fake_vector_store_collection: InMemoryVectorStoreCollection,
+        monkeypatch: pytest.MonkeyPatch,
+        property_filter: FilterExpr,
+        vector_store_filter: FilterExpr | None,
+    ):
+        """Every record matching the filter matches the part the vector store gets."""
+        seen: list[FilterExpr | None] = []
+        query = fake_vector_store_collection.query
+
+        async def spy(*args, **kwargs):
+            seen.append(kwargs["property_filter"])
+            return await query(*args, **kwargs)
+
+        monkeypatch.setattr(fake_vector_store_collection, "query", spy)
+        await event_memory.encode_events([_make_event("thing", timestamp=_ts(0))])
+
+        await event_memory.query("thing", property_filter=property_filter)
+
+        assert seen == [vector_store_filter]
 
     async def test_equality_filter(self, event_memory: EventMemory):
         """Filter by user property equality."""
