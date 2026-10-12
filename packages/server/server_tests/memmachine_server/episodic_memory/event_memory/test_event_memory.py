@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import random
 from datetime import UTC
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from memmachine_server.common.filter.filter_parser import (
     IsNull,
     Not,
     Or,
+    map_filter_fields,
 )
 from memmachine_server.common.vector_store.data_types import (
     Record,
@@ -41,8 +43,15 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
     TextSegmenter,
 )
+from server_tests.memmachine_server.common.filter.random_filters import (
+    random_filter,
+    random_properties,
+)
 from server_tests.memmachine_server.common.reranker.fake_embedder import (
     FakeEmbedder,
+)
+from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_collection import (
+    evaluate_filter,
 )
 
 from .conftest import (
@@ -1038,6 +1047,128 @@ class TestQueryWithFilter:
             ),
         )
         assert result.scored_segment_contexts == []
+
+
+# ===================================================================
+# Queries with and without the vector store's part of the filter
+# ===================================================================
+
+_FIELDS_ON_THE_RECORD = ("d1", "d2", "d3")
+_FIELDS_ON_THE_SEGMENT_ONLY = ("m.u1", "m.u2")
+
+
+@pytest.fixture
+def declaring_event_memory(fake_embedder, fake_segment_store_partition) -> EventMemory:
+    """Event memory whose vector store declares `_d1`, `_d2`, and `_d3` but not `u1` or `u2`."""
+    collection = InMemoryVectorStoreCollection(
+        VectorStoreCollectionConfig(
+            vector_dimensions=fake_embedder.dimensions,
+            similarity_metric=fake_embedder.similarity_metric,
+            indexed_properties_schema={
+                **EventMemory.expected_vector_store_collection_schema(),
+                "_d1": int,
+                "_d2": int,
+                "_d3": int,
+            },
+        )
+    )
+    return EventMemory(
+        EventMemoryParams(
+            segment_store_partition=fake_segment_store_partition,
+            vector_store_collection=collection,
+            segmenter=TextSegmenter(),
+            deriver=WholeTextDeriver(),
+            embedder=fake_embedder,
+        )
+    )
+
+
+async def _encode_random_events(
+    event_memory: EventMemory, rng: random.Random, count: int
+) -> dict[str, dict[str, PropertyValue]]:
+    """Encode `count` events with random properties; their properties by text."""
+    properties_by_text = {
+        f"event {index}": random_properties(rng, ("_d1", "_d2", "_d3", "u1", "u2"))
+        for index in range(count)
+    }
+    await event_memory.encode_events(
+        [
+            _make_event(text, timestamp=_ts(index), properties=properties)
+            for index, (text, properties) in enumerate(properties_by_text.items())
+        ]
+    )
+    return properties_by_text
+
+
+async def _query_texts(
+    event_memory: EventMemory, property_filter: FilterExpr, limit: int
+) -> set[str]:
+    result = await event_memory.query(
+        "event", vector_search_limit=limit, property_filter=property_filter
+    )
+    return {
+        segment.block.text
+        for scored in result.scored_segment_contexts
+        for segment in scored.segments
+        if isinstance(segment.block, TextBlock)
+    }
+
+
+def _without_the_part(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the vector store no filter at all."""
+    monkeypatch.setattr(
+        "memmachine_server.episodic_memory.event_memory.event_memory.extract_filter",
+        lambda expr, *, allowed_fields: None,
+    )
+
+
+@_async
+class TestQueryWithAndWithoutThePart:
+    async def test_both_answer_the_filter_when_the_search_reaches_every_record(
+        self, declaring_event_memory: EventMemory, monkeypatch: pytest.MonkeyPatch
+    ):
+        rng = random.Random(1705)
+        properties_by_text = await _encode_random_events(
+            declaring_event_memory, rng, 24
+        )
+        fields = (*_FIELDS_ON_THE_RECORD, *_FIELDS_ON_THE_SEGMENT_ONLY)
+        for _ in range(300):
+            property_filter = random_filter(rng, fields, depth=4)
+            with_part = await _query_texts(
+                declaring_event_memory, property_filter, limit=24
+            )
+            with monkeypatch.context() as patch:
+                _without_the_part(patch)
+                without_part = await _query_texts(
+                    declaring_event_memory, property_filter, limit=24
+                )
+            segment_filter = map_filter_fields(
+                property_filter, InMemorySegmentStorePartition._normalize_segment_field
+            )
+            expected = {
+                text
+                for text, properties in properties_by_text.items()
+                if evaluate_filter(segment_filter, properties)
+            }
+            assert with_part == without_part == expected, property_filter
+
+    async def test_the_part_only_adds_hits_when_the_search_reaches_fewer_records(
+        self, declaring_event_memory: EventMemory, monkeypatch: pytest.MonkeyPatch
+    ):
+        rng = random.Random(1706)
+        await _encode_random_events(declaring_event_memory, rng, 24)
+        fields = (*_FIELDS_ON_THE_RECORD, *_FIELDS_ON_THE_SEGMENT_ONLY)
+        for _ in range(300):
+            property_filter = random_filter(rng, fields, depth=4)
+            with_part = await _query_texts(
+                declaring_event_memory, property_filter, limit=4
+            )
+            with monkeypatch.context() as patch:
+                _without_the_part(patch)
+                without_part = await _query_texts(
+                    declaring_event_memory, property_filter, limit=4
+                )
+            assert with_part >= without_part, property_filter
 
 
 # ===================================================================
