@@ -118,10 +118,11 @@ class EventMemory:
     @classmethod
     def expected_vector_store_collection_schema(cls) -> dict[str, type[PropertyValue]]:
         """
-        Return the vector store collection schema expected by EventMemory.
+        Return the vector store collection schema EventMemory requires.
 
-        Callers should merge this with any user or external system-defined properties
-        when creating the collection so that EventMemory's reserved fields are efficiently filterable.
+        A vector record carries only the properties its collection declares,
+        so the vector search can filter only on those; a condition on any
+        other property applies to the seeds the search returns.
         """
         return {
             cls._TIMESTAMP_FIELD_NAME: cast(type[PropertyValue], datetime.datetime),
@@ -382,8 +383,9 @@ class EventMemory:
                 Property fields and values
                 to use for filtering segments
                 (default: None).
-                A condition on a field the vector store does not
-                declare applies to the seeds the vector search returns,
+                The vector search applies only the part of the filter
+                that names declared fields alone (see `extract_filter`);
+                the whole filter then applies to the seeds it returns,
                 so fewer than `vector_search_limit` seeds, or none,
                 may survive it.
             format_options (FormatOptions | None):
