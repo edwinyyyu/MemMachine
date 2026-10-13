@@ -40,6 +40,10 @@ data:
         backend: declarative
         vector_graph_store: db_neo4j
 {{- end }}
+      short_term_memory_enabled: false
+      short_term_memory:
+        llm_model: default_model
+        message_capacity: 500
 
     semantic_memory:
       llm_model: default_model

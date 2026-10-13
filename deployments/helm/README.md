@@ -130,6 +130,10 @@ episodic_memory:
     embedder: default_embedder     # references resources.embedders.default_embedder
     reranker: my_reranker_id       # references resources.rerankers.my_reranker_id
     vector_graph_store: db_neo4j   # references resources.databases.db_neo4j
+  short_term_memory_enabled: false
+  short_term_memory:
+    llm_model: default_model       # references resources.language_models.default_model
+    message_capacity: 500
 
 semantic_memory:
   llm_model: default_model

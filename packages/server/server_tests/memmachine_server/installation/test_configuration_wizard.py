@@ -28,6 +28,8 @@ def test_configuration_wizard_all_default(mock_input, conf_args):
     assert config is not None
     assert config.retrieval_agent.llm_model == ConfigurationWizard.LANGUAGE_MODEL_NAME
     assert config.retrieval_agent.reranker == ConfigurationWizard.RERANKER_NAME
+    assert config.episodic_memory.short_term_memory is not None
+    assert config.episodic_memory.short_term_memory_enabled is False
     lm_confs = config.resources.language_models.openai_responses_language_model_confs
     assert len(lm_confs) == 1
     for lm_conf in lm_confs.values():

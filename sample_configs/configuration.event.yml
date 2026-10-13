@@ -38,6 +38,10 @@ episodic_memory:
     #   type: passthrough             # or: text (with max_chunk_length)
     # deriver:                        # optional — defaults to whole_text
     #   type: whole_text              # or: sentence_text
+  short_term_memory_enabled: false
+  short_term_memory:
+    llm_model: openai_model
+    message_capacity: 500
 
 retrieval_agent:
   llm_model: openai_model
