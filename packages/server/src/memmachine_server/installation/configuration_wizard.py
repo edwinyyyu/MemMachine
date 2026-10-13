@@ -38,7 +38,6 @@ from memmachine_server.common.configuration.embedder_conf import (
 from memmachine_server.common.configuration.episodic_config import (
     EpisodicMemoryConfPartial,
     LongTermMemoryConfPartial,
-    ShortTermMemoryConfPartial,
 )
 from memmachine_server.common.configuration.language_model_conf import (
     AmazonBedrockLanguageModelConf,
@@ -165,7 +164,6 @@ class ConfigurationWizard:
         """Generate episodic memory configuration."""
         return EpisodicMemoryConfPartial(
             long_term_memory=self.long_term_memory_conf,
-            short_term_memory=self.short_term_memory_conf,
         )
 
     @cached_property
@@ -322,14 +320,6 @@ class ConfigurationWizard:
         return RetrievalAgentConf(
             llm_model=self.LANGUAGE_MODEL_NAME,
             reranker=self.RERANKER_NAME,
-        )
-
-    @cached_property
-    def short_term_memory_conf(self) -> ShortTermMemoryConfPartial:
-        """Generate short-term memory configuration."""
-        return ShortTermMemoryConfPartial(
-            llm_model=self.LANGUAGE_MODEL_NAME,
-            message_capacity=500,
         )
 
     @cached_property
