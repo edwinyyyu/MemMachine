@@ -327,13 +327,12 @@ class EventMemory:
         segment: the segment store holds them all and evaluates the whole
         filter (see `query`).
         """
-        declared = self._vector_store_collection.config.indexed_properties_schema
         properties: dict[str, PropertyValue] = {
             self._TIMESTAMP_FIELD_NAME: derivative.timestamp,
             **{
                 key: value
                 for key, value in derivative.properties.items()
-                if key in declared
+                if key in self._schema_fields
             },
         }
 
@@ -430,10 +429,9 @@ class EventMemory:
         # property, gets the whole filter below and narrows it back.
         collection_filter = None
         if property_filter is not None:
-            declared = self._vector_store_collection.config.indexed_properties_schema
             collection_filter = extract_filter(
                 map_filter_fields(property_filter, self._to_vector_record_property),
-                allowed_fields=declared.keys(),
+                allowed_fields=self._schema_fields,
             )
 
         # Search derivative collection for matches.
