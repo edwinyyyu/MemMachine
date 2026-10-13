@@ -95,6 +95,10 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
         for seed_uuid in seed_segment_uuids:
             if seed_uuid not in self.segments:
                 continue
+            if normalized_filter is not None and not evaluate_filter(
+                normalized_filter, self.segments[seed_uuid].properties
+            ):
+                continue
             try:
                 pos = self.segment_order.index(seed_uuid)
             except ValueError:

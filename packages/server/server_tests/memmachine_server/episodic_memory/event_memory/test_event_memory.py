@@ -879,6 +879,33 @@ class TestQueryWithFilter:
 
         assert seen == [vector_store_filter]
 
+    async def test_a_seed_the_filter_rejects_is_left_out_though_its_context_matches(
+        self,
+        event_memory: EventMemory,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
+    ):
+        await event_memory.encode_events(
+            [
+                _make_event(
+                    "blue thing", timestamp=_ts(0), properties={"color": "blue"}
+                ),
+                _make_event("red thing", timestamp=_ts(1), properties={"color": "red"}),
+            ]
+        )
+
+        result = await event_memory.query(
+            "thing",
+            vector_search_limit=2,
+            expand_context=1,
+            property_filter=Comparison(field="m.color", op="=", value="red"),
+        )
+
+        seed_blocks = [
+            fake_segment_store_partition.segments[scored.seed_segment_uuid].block
+            for scored in result.scored_segment_contexts
+        ]
+        assert seed_blocks == [TextBlock(text="red thing")]
+
     async def test_equality_filter(self, event_memory: EventMemory):
         """Filter by user property equality."""
         e1 = _make_event("red thing", timestamp=_ts(0), properties={"color": "red"})
