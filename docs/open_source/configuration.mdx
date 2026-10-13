@@ -128,7 +128,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
     | `session_key`                   | Unique session identifier for episodic ingestion and context tracking.      | *Required*  |
     | `metrics_factory_id`            | ID of the metrics exporter factory (e.g., `prometheus`).                   | `prometheus` |
     | `long_term_memory_enabled`      | Whether long-term episodic memory is enabled.                              | `true`       |
-    | `short_term_memory_enabled`     | Whether short-term episodic memory is enabled.                             | `true`       |
+    | `short_term_memory_enabled`     | Whether short-term episodic memory is enabled.                             | `false`      |
     | `enabled`                       | Whether episodic memory as a whole is enabled.                             | `true`       |
     | `long_term_memory.backend`      | Long-term memory backend. Use `event` for VectorStore + SegmentStore, or `declarative` for VectorGraphStore. | `declarative` when omitted |
     | `long_term_memory.vector_store` | Event backend only: ID of a VectorStore defined in `resources.databases`. | *Required for event backend* |

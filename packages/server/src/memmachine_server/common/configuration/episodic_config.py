@@ -376,7 +376,7 @@ class EpisodicMemoryConf(MetricsFactoryIdMixin, YamlSerializableMixin):
         description="Whether the long-term memory is enabled",
     )
     short_term_memory_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether the short-term memory is enabled",
     )
     enabled: bool = Field(
@@ -452,8 +452,8 @@ class EpisodicMemoryConfPartial(YamlSerializableMixin):
             long_term_memory_enabled=True
             if merged.long_term_memory_enabled is None and ltm_merged is not None
             else merged.long_term_memory_enabled,
-            short_term_memory_enabled=True
-            if merged.short_term_memory_enabled is None and stm_merged is not None
-            else merged.short_term_memory_enabled,
+            # A short_term_memory section only configures short-term memory;
+            # enabling it takes short_term_memory_enabled: true.
+            short_term_memory_enabled=merged.short_term_memory_enabled is True,
             enabled=True if merged.enabled is None else merged.enabled,
         )

@@ -252,6 +252,7 @@ def memmachine_config(
             short_term_memory=ShortTermMemoryConfPartial(
                 llm_model=language_model_id,
             ),
+            short_term_memory_enabled=True,
         ),
         retrieval_agent=RetrievalAgentConf(
             llm_model=language_model_id,

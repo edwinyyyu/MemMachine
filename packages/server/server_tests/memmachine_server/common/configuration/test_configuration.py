@@ -92,6 +92,40 @@ def test_update_episodic_memory_conf(
     assert updated.short_term_memory.message_capacity == 12345
 
 
+def test_short_term_memory_section_leaves_short_term_memory_disabled(
+    long_term_memory_conf: LongTermMemoryConfPartial,
+    short_term_memory_conf: ShortTermMemoryConfPartial,
+):
+    base = EpisodicMemoryConfPartial(
+        short_term_memory=short_term_memory_conf,
+        long_term_memory=long_term_memory_conf,
+    )
+
+    updated = EpisodicMemoryConfPartial(session_key="session_123").merge(base)
+    assert updated.short_term_memory is not None
+    assert updated.short_term_memory_enabled is False
+
+
+@pytest.mark.parametrize("enabled_in", ["base", "specific"])
+def test_short_term_memory_enabled_when_set_true(
+    long_term_memory_conf: LongTermMemoryConfPartial,
+    short_term_memory_conf: ShortTermMemoryConfPartial,
+    enabled_in: str,
+):
+    base = EpisodicMemoryConfPartial(
+        short_term_memory=short_term_memory_conf,
+        long_term_memory=long_term_memory_conf,
+        short_term_memory_enabled=True if enabled_in == "base" else None,
+    )
+    specific = EpisodicMemoryConfPartial(
+        session_key="session_123",
+        short_term_memory_enabled=True if enabled_in == "specific" else None,
+    )
+
+    updated = specific.merge(base)
+    assert updated.short_term_memory_enabled is True
+
+
 def find_config_file(filename: str, start_path: Path | None = None) -> Path:
     """Search parent directories for `sample_configs/filename`."""
     if start_path is None:
