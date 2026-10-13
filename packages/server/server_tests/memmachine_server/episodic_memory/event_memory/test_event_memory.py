@@ -77,6 +77,21 @@ def _record_properties(record: Record) -> dict[str, PropertyValue]:
     return record.properties
 
 
+def _record_query_filters(
+    collection: InMemoryVectorStoreCollection, monkeypatch: pytest.MonkeyPatch
+) -> list[FilterExpr | None]:
+    """Record the filter of every query the collection gets, in order."""
+    seen: list[FilterExpr | None] = []
+    query = collection.query
+
+    async def spy(*args, **kwargs):
+        seen.append(kwargs["property_filter"])
+        return await query(*args, **kwargs)
+
+    monkeypatch.setattr(collection, "query", spy)
+    return seen
+
+
 def _make_event(
     text: str,
     *,
@@ -742,14 +757,7 @@ class TestQueryWithFilter:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """The vector store gets the conjuncts on declared fields; the segment store gets the whole filter."""
-        seen: list[FilterExpr | None] = []
-        query = fake_vector_store_collection.query
-
-        async def spy(*args, **kwargs):
-            seen.append(kwargs["property_filter"])
-            return await query(*args, **kwargs)
-
-        monkeypatch.setattr(fake_vector_store_collection, "query", spy)
+        seen = _record_query_filters(fake_vector_store_collection, monkeypatch)
         e1 = _make_event("red thing", properties={"color": "red", "_episode_uid": "e1"})
         e2 = _make_event(
             "blue thing", properties={"color": "blue", "_episode_uid": "e2"}
@@ -780,14 +788,7 @@ class TestQueryWithFilter:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """An Or with an arm on undeclared fields alone leaves nothing for the vector store."""
-        seen: list[FilterExpr | None] = []
-        query = fake_vector_store_collection.query
-
-        async def spy(*args, **kwargs):
-            seen.append(kwargs["property_filter"])
-            return await query(*args, **kwargs)
-
-        monkeypatch.setattr(fake_vector_store_collection, "query", spy)
+        seen = _record_query_filters(fake_vector_store_collection, monkeypatch)
         await event_memory.encode_events([_make_event("thing", timestamp=_ts(0))])
 
         await event_memory.query(
@@ -865,19 +866,56 @@ class TestQueryWithFilter:
         vector_store_filter: FilterExpr | None,
     ):
         """Every record matching the filter matches the part the vector store gets."""
-        seen: list[FilterExpr | None] = []
-        query = fake_vector_store_collection.query
-
-        async def spy(*args, **kwargs):
-            seen.append(kwargs["property_filter"])
-            return await query(*args, **kwargs)
-
-        monkeypatch.setattr(fake_vector_store_collection, "query", spy)
+        seen = _record_query_filters(fake_vector_store_collection, monkeypatch)
         await event_memory.encode_events([_make_event("thing", timestamp=_ts(0))])
 
         await event_memory.query("thing", property_filter=property_filter)
 
         assert seen == [vector_store_filter]
+
+    async def test_a_declared_user_property_reaches_the_vector_store(
+        self,
+        fake_embedder: FakeEmbedder,
+        fake_segment_store_partition: InMemorySegmentStorePartition,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A user key the collection declares is on the record, and its condition reaches the search under its bare name."""
+        collection = InMemoryVectorStoreCollection(
+            VectorStoreCollectionConfig(
+                vector_dimensions=fake_embedder.dimensions,
+                similarity_metric=fake_embedder.similarity_metric,
+                indexed_properties_schema={
+                    **EventMemory.expected_vector_store_collection_schema(),
+                    "color": str,
+                },
+            )
+        )
+        event_memory = EventMemory(
+            EventMemoryParams(
+                segment_store_partition=fake_segment_store_partition,
+                vector_store_collection=collection,
+                segmenter=TextSegmenter(),
+                deriver=WholeTextDeriver(),
+                embedder=fake_embedder,
+            )
+        )
+        seen = _record_query_filters(collection, monkeypatch)
+        await event_memory.encode_events(
+            [_make_event("red thing", properties={"color": "red", "size": 1})]
+        )
+
+        await event_memory.query(
+            "thing",
+            property_filter=And(
+                left=Comparison(field="m.color", op="=", value="red"),
+                right=Comparison(field="m.size", op="=", value=1),
+            ),
+        )
+
+        record = next(iter(collection.records.values()))
+        assert _record_properties(record)["color"] == "red"
+        assert "size" not in _record_properties(record)
+        assert seen == [Comparison(field="color", op="=", value="red")]
 
     async def test_a_seed_the_filter_rejects_is_left_out_though_its_context_matches(
         self,
