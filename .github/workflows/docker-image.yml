@@ -93,19 +93,20 @@ jobs:
             # Disable 'latest' tag for CPU image to prevent conflicts with GPU Image
             # We use manual 'latest' tags for CPU images
             latest=false
+          # For a pre-release version, a semver rule replaces its pattern with
+          # {{version}} but keeps its prefix and suffix. The variant therefore
+          # goes in the suffix, and the latest rules skip any version with a
+          # pre-release part, since they would tag the bare version.
           tags: |
             # For Manual (workflow_dispatch) runs
-            # semver drops the pattern for a pre-release input, so v0.3.9-post1
-            # yields the bare 0.3.9-post1 for *both* jobs and the GPU build
-            # silently overwrites the CPU one. raw always carries the suffix.
-            type=raw,value=${{ inputs.tag }}-cpu,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern={{version}},prefix=v,suffix=-cpu,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=semver,pattern=latest-cpu,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && !contains(inputs.tag, '-') }}
             type=semver,pattern=latest,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && !contains(inputs.tag, '-') }}
 
             # For Release events
-            type=semver,pattern=v{{version}}-cpu,enable=${{ github.event_name == 'release' }}
-            type=semver,pattern=latest-cpu,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
-            type=semver,pattern=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=semver,pattern={{version}},prefix=v,suffix=-cpu,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern=latest-cpu,enable=${{ github.event_name == 'release' && !github.event.release.prerelease && !contains(github.event.release.tag_name, '-') }}
+            type=semver,pattern=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease && !contains(github.event.release.tag_name, '-') }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
 
@@ -201,15 +202,17 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           flavor: |
             latest=false
+          # The variant goes in the suffix, which a semver rule keeps for a
+          # pre-release version, and the latest rule skips a pre-release
+          # version, since it would tag the bare version.
           tags: |
             # For Manual (workflow_dispatch) runs
-            # See the CPU build: raw keeps the two jobs on distinct tags.
-            type=raw,value=${{ inputs.tag }}-gpu,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern={{version}},prefix=v,suffix=-gpu,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=semver,pattern=latest-gpu,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && !contains(inputs.tag, '-') }}
 
             # For Release events
-            type=semver,pattern=v{{version}}-gpu,enable=${{ github.event_name == 'release' }}
-            type=semver,pattern=latest-gpu,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=semver,pattern={{version}},prefix=v,suffix=-gpu,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern=latest-gpu,enable=${{ github.event_name == 'release' && !github.event.release.prerelease && !contains(github.event.release.tag_name, '-') }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
 
