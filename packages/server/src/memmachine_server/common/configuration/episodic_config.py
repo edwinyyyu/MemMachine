@@ -403,12 +403,8 @@ class EpisodicMemoryConf(MetricsFactoryIdMixin, YamlSerializableMixin):
         description="Whether the long-term memory is enabled",
     )
     short_term_memory_enabled: bool = Field(
-        default=False,
-        description=(
-            "Whether the short-term memory is enabled. Off by default: each save "
-            "costs an LLM round trip, and a deployment that only wants retrieval "
-            "should not pay for it without asking."
-        ),
+        default=True,
+        description="Whether the short-term memory is enabled",
     )
     enabled: bool = Field(
         default=True,
@@ -483,13 +479,8 @@ class EpisodicMemoryConfPartial(YamlSerializableMixin):
             long_term_memory_enabled=True
             if merged.long_term_memory_enabled is None and ltm_merged is not None
             else merged.long_term_memory_enabled,
-            # Off unless asked for. This previously read True whenever a
-            # short_term_memory section existed, which meant the field default
-            # above never applied to any real config.
-            short_term_memory_enabled=(
-                merged.short_term_memory_enabled
-                if merged.short_term_memory_enabled is not None
-                else False
-            ),
+            short_term_memory_enabled=True
+            if merged.short_term_memory_enabled is None and stm_merged is not None
+            else merged.short_term_memory_enabled,
             enabled=True if merged.enabled is None else merged.enabled,
         )
