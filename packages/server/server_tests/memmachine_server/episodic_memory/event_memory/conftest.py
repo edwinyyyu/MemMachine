@@ -156,16 +156,15 @@ class InMemorySegmentStorePartition(SegmentStorePartition):
 
         Mirrors SQLAlchemySegmentStorePartition._resolve_segment_field:
         - `timestamp` -> the segment's own timestamp.
-        - `m.<key>` / `metadata.<key>` -> user metadata, bare key.
-        - any other bare name -> system field, `_<field>` (matches the
-          LongTermMemory event-backend property layout).
+        - `m.<key>` / `metadata.<key>` -> the property, bare key.
+        - any other name -> ValueError.
         """
         if field == "timestamp":
             return field
         internal_name, is_user_metadata = normalize_filter_field(field)
-        if is_user_metadata:
-            return demangle_user_metadata_key(internal_name)
-        return f"_{field}"
+        if not is_user_metadata:
+            raise ValueError(f"Filter field {field!r} names no segment property.")
+        return demangle_user_metadata_key(internal_name)
 
     def _admits(
         self,
@@ -387,17 +386,16 @@ class AngleEmbedder(FakeEmbedder):
 def make_partition(
     similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
 ) -> InMemoryVectorStorePartition:
-    """A partition declaring what the event backend declares, scoring by `similarity_metric`.
+    """A partition declaring EventMemory's reserved keys and one property.
 
-    EventMemory's reserved keys and one of the adapter's system fields;
-    a declared property is copied into the records, and anything else,
-    a user property included, stays with the segment.
+    It scores by `similarity_metric`. A declared property is copied into
+    the records, and anything else stays with the segment.
     """
     return InMemoryVectorStorePartition(
         similarity_metric=similarity_metric,
         indexed_properties={
             **EventMemory.expected_vector_store_collection_schema(),
-            "_episode_uid": str,
+            "episode_uid": str,
         },
     )
 
