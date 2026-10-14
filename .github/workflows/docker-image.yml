@@ -142,11 +142,12 @@ jobs:
     needs: build-cpu
     # Use the latest Ubuntu runner
     runs-on: ubuntu-latest
-    # always() is needed because a deliberately skipped CPU build would
+    # !cancelled() is needed because a deliberately skipped CPU build would
     # otherwise skip this job with it; the result check still stops a *failed*
-    # CPU build from letting the GPU one through.
+    # CPU build from letting the GPU one through. Unlike always(), it turns
+    # false when the run is canceled, so a cancel also stops this job.
     if: >-
-      always()
+      !cancelled()
       && (needs.build-cpu.result == 'success' || needs.build-cpu.result == 'skipped')
       && (github.event_name != 'workflow_dispatch' || inputs.variant != 'cpu')
     steps:
