@@ -257,16 +257,18 @@ class LongTermMemoryConfPartial(BaseModel):
     Partial configuration for long-term memory.
 
     A flat partial that can describe either backend. `merge()` resolves the
-    discriminator (None -> declarative for backwards compat) and produces the
-    appropriate full conf variant.
+    backend with `resolve_backend()` and produces the matching full conf
+    variant.
     """
 
     backend: Literal["declarative", "event"] | None = Field(
         default=None,
         description=(
-            "Long-term memory backend. None or 'declarative' uses the legacy "
-            "VectorGraphStore-backed declarative memory. 'event' uses the "
-            "VectorStore + SegmentStore event memory."
+            "Long-term memory backend. 'declarative' uses the "
+            "VectorGraphStore-backed declarative memory, and 'event' the "
+            "VectorStore + SegmentStore event memory. None infers it from the "
+            "store fields: event when a vector_store or segment_store is named "
+            "and no vector_graph_store is, declarative otherwise."
         ),
     )
     session_id: str | None = Field(
@@ -316,46 +318,13 @@ class LongTermMemoryConfPartial(BaseModel):
         description="ID of the Reranker instance for reranking search results",
     )
 
-    @staticmethod
-    def _infer_backend(
-        primary: "LongTermMemoryConfPartial",
-        fallback: "LongTermMemoryConfPartial",
-    ) -> Literal["declarative", "event"]:
-        """Guess the backend from which side's fields a config filled in.
-
-        The two backends share no field names, so naming one of them is an
-        unambiguous statement of intent - a config pointing at a `vector_store`
-        cannot mean the declarative backend, which has no such field. Inferring
-        rather than defaulting is what lets event memory be reachable without a
-        `backend` key while leaving every pre-discriminator config alone: those
-        name a `vector_graph_store`, and resolve as they always did.
-
-        Declarative wins a config that somehow names both, since that is the
-        legacy reading and the safer one to be wrong about: it points at the
-        store the data is already in.
-        """
-        for side in (primary, fallback):
-            if side.vector_graph_store is not None:
-                return "declarative"
-            if side.vector_store is not None or side.segment_store is not None:
-                return "event"
-        return "declarative"
-
     def merge(self, other: Self) -> LongTermMemoryConf:
         """Merge with another partial into a complete long-term config.
 
-        Resolution rule for the backend discriminator:
-        - if either side sets `backend` explicitly, that value wins (primary first).
-        - otherwise infer it from which backend's fields are present: the two
-          share no field names, so a config that names a `vector_store` wants
-          event memory and one that names a `vector_graph_store` wants
-          declarative, whether or not it knows the discriminator exists.
-        - if neither side names a store, fall back to `declarative`, the legacy
-          shape, so that pre-discriminator configs keep resolving as they did.
+        `resolve_backend` picks the backend, and the result is that backend's
+        full config.
         """
-        backend = self.backend if self.backend is not None else other.backend
-        if backend is None:
-            backend = LongTermMemoryConfPartial._infer_backend(self, other)
+        backend = self.resolve_backend(other)
 
         if backend == "declarative":
             return merge_partial_configs(self, other, DeclarativeLongTermMemoryConf)
@@ -368,6 +337,32 @@ class LongTermMemoryConfPartial(BaseModel):
             EventLongTermMemoryConf,
         )
         return merged
+
+    def resolve_backend(
+        self, fallback: Self | None = None
+    ) -> Literal["declarative", "event"]:
+        """Return the backend that merging this partial over `fallback` selects.
+
+        An explicit `backend` wins, this partial's first. Otherwise the store
+        fields decide, since the two backends share no field names: a
+        `vector_graph_store` on either side selects declarative, a
+        `vector_store` or `segment_store` selects event, and naming no store
+        selects declarative. The `vector_graph_store` outranks the event stores
+        because it points at the store existing data is in, which makes it the
+        safer reading to be wrong about.
+        """
+        sides = (self,) if fallback is None else (self, fallback)
+        for side in sides:
+            if side.backend is not None:
+                return side.backend
+        if any(side.vector_graph_store is not None for side in sides):
+            return "declarative"
+        if any(
+            side.vector_store is not None or side.segment_store is not None
+            for side in sides
+        ):
+            return "event"
+        return "declarative"
 
     @staticmethod
     def _force_backend(

@@ -316,10 +316,39 @@ def test_explicit_backend_beats_inference():
 
 def test_backend_falls_back_to_declarative_when_no_store_is_named():
     """Nothing to infer from, so the legacy reading stands."""
-    partial = LongTermMemoryConfPartial.model_validate(
-        {"session_id": "s", "embedder": "e", "reranker": "r", "vector_graph_store": "g"}
+    partial = LongTermMemoryConfPartial(session_id="s", embedder="e", reranker="r")
+    assert partial.resolve_backend(LongTermMemoryConfPartial()) == "declarative"
+
+
+@pytest.mark.parametrize(
+    ("primary_stores", "fallback_stores"),
+    [
+        ({"vector_store": "v", "segment_store": "seg"}, {"vector_graph_store": "g"}),
+        ({"vector_store": "v"}, {"vector_graph_store": "g"}),
+        ({"vector_graph_store": "g"}, {"vector_store": "v", "segment_store": "seg"}),
+    ],
+)
+def test_vector_graph_store_on_either_side_selects_declarative(
+    primary_stores, fallback_stores
+):
+    primary = LongTermMemoryConfPartial(**primary_stores)
+    fallback = LongTermMemoryConfPartial(
+        session_id="s", embedder="e", reranker="r", **fallback_stores
     )
-    assert partial.merge(LongTermMemoryConfPartial()).backend == "declarative"
+
+    merged = primary.merge(fallback)
+    assert isinstance(merged, DeclarativeLongTermMemoryConf)
+    assert merged.vector_graph_store == "g"
+
+
+def test_backend_inferred_as_event_from_the_fallback_stores():
+    fallback = LongTermMemoryConfPartial(
+        session_id="s", embedder="e", vector_store="v", segment_store="seg"
+    )
+
+    merged = LongTermMemoryConfPartial().merge(fallback)
+    assert isinstance(merged, EventLongTermMemoryConf)
+    assert merged.vector_store == "v"
 
 
 def test_episodic_memory_conf_with_explicit_event_backend_loads_as_event():
