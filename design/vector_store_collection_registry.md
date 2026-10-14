@@ -150,7 +150,6 @@ pair per vector store, keeps the schema static.
 | `incarnation` | UUID, primary key | The deleted life whose records remain. |
 | `vector_store_name` | string | Whose purge claims the tombstone. |
 | `namespace` | string | With `config`, locates the records in the store. |
-| `name` | string | Kept for inspection; the purge does not read it. |
 | `config` | JSON | With `namespace`, locates the records in the store. |
 | `enqueued_at` | timestamp | When the deletion committed, on the database clock. |
 | `attempts_without_progress` | integer | Purge rounds claimed since a round last found records and deleted them, the open one included; a cancelled round's attempt is taken back. |
@@ -164,9 +163,8 @@ repository's naming scheme (table, two letters per column).
 
 The queue carries `namespace` and `config` because nothing else locates a
 dead incarnation's records once the collection is gone (on Qdrant and Milvus,
-the native collection's name is derived from them). It carries `name` so an
-operator looking at a tombstone, a dead-lettered one above all, can tell which
-collection it was, as the segment store's queue carries its partition key.
+the native collection's name is derived from them). A tombstone holds only
+what the purge reads.
 
 ### Operations
 
