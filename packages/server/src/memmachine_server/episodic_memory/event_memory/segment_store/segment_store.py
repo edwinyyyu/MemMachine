@@ -77,6 +77,8 @@ class SegmentStorePartition(ABC):
         Returns:
             dict[UUID, list[Segment]]:
                 A mapping from each seed segment UUID to its context segments.
+                A seed that does not match the filter has no entry, and a
+                context holds only segments that match it.
         """
         raise NotImplementedError
 
