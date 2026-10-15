@@ -604,7 +604,7 @@ class LongTermMemory:
             return
 
         def _check(field: str) -> str:
-            _internal_name, is_user_metadata = normalize_filter_field(field)
+            _, is_user_metadata = normalize_filter_field(field)
             if is_user_metadata:
                 return field
             if field not in _EVENT_BACKEND_SYSTEM_FIELD_CLIENT_NAMES:
