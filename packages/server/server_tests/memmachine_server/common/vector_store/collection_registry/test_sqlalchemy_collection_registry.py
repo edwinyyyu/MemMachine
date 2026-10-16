@@ -1448,7 +1448,6 @@ async def test_a_deletion_racing_another_waits_and_queues_nothing_more(
                     incarnation=incarnation,
                     vector_store_name=vector_store_name,
                     namespace=NAMESPACE,
-                    name="c",
                     config=CONFIG.model_dump(mode="json"),
                     enqueued_at=func.now(),
                 )
@@ -1524,7 +1523,6 @@ async def test_a_mint_checks_the_queue_after_its_insert(
                     incarnation=victim,
                     vector_store_name=vector_store_name,
                     namespace=NAMESPACE,
-                    name="victim",
                     config=CONFIG.model_dump(mode="json"),
                     enqueued_at=func.now(),
                 )

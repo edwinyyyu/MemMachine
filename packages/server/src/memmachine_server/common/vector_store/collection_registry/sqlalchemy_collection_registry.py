@@ -116,7 +116,10 @@ class CollectionRow(BaseCollectionRegistry):
 
 
 class PurgeQueueRow(BaseCollectionRegistry):
-    """A deleted collection's tombstone: its incarnation awaiting purge."""
+    """A deleted collection's tombstone: its incarnation awaiting purge.
+
+    It holds only what a purge round reads.
+    """
 
     __tablename__ = "collection_registry_gc"
 
@@ -125,10 +128,6 @@ class PurgeQueueRow(BaseCollectionRegistry):
         String(_VECTOR_STORE_NAME_MAX_LENGTH), nullable=False
     )
     namespace: MappedColumn[str] = mapped_column(
-        String(_IDENTIFIER_MAX_BYTES), nullable=False
-    )
-    # The collection's name, kept for inspection.
-    name: MappedColumn[str] = mapped_column(
         String(_IDENTIFIER_MAX_BYTES), nullable=False
     )
     # With the namespace, the configuration locates the records in the store.
@@ -781,7 +780,6 @@ async def _unregister_where(
                 .returning(
                     CollectionRow.incarnation,
                     CollectionRow.namespace,
-                    CollectionRow.name,
                     CollectionRow.config,
                 )
             )
@@ -793,7 +791,6 @@ async def _unregister_where(
                 incarnation=row.incarnation,
                 vector_store_name=vector_store_name,
                 namespace=row.namespace,
-                name=row.name,
                 config=row.config,
                 enqueued_at=func.now(),
             )
