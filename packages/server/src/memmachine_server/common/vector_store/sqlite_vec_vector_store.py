@@ -455,12 +455,20 @@ class SQLiteVecVectorStoreParams(BaseModel):
     Parameters for constructing a SQLiteVecVectorStore.
 
     Attributes:
-        engine (AsyncEngine): Async SQLAlchemy engine (sqlite+aiosqlite).
+        engine (AsyncEngine):
+            Async SQLAlchemy engine (sqlite+aiosqlite). It must load the
+            sqlite-vec extension on every connection, registered at engine
+            creation (load_sqlite_vec_extension); the store does not verify
+            it.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(
         ...,
-        description="Async SQLAlchemy engine (sqlite+aiosqlite)",
+        description=(
+            "Async SQLAlchemy engine (sqlite+aiosqlite). It must load the "
+            "sqlite-vec extension on every connection, registered at engine "
+            "creation (load_sqlite_vec_extension); the store does not verify it"
+        ),
     )
 
     @field_validator("engine")
@@ -500,29 +508,6 @@ class SQLiteVecVectorStore(VectorStore):
     @override
     async def startup(self) -> None:
         async with self._engine.begin() as connection:
-            # The sqlite-vec extension is per-connection state and must be
-            # loaded at ENGINE creation: a listener added by this store
-            # would miss connections the caller's engine pooled earlier --
-            # which then fail every vec statement -- and registering
-            # listeners on a live pool races its event dispatch. The store
-            # therefore verifies rather than mutates. Probing the function
-            # list keeps the check a scalar; calling vec_version() would
-            # need its failure told apart from other OperationalErrors.
-            loaded = (
-                await connection.execute(
-                    text(
-                        "SELECT count(*) FROM pragma_function_list "
-                        "WHERE name = 'vec_version'"
-                    )
-                )
-            ).scalar()
-            if not loaded:
-                raise RuntimeError(
-                    "SQLite engine does not load the sqlite-vec extension, so "
-                    "every vec statement would fail. Register the loader at "
-                    "engine creation (load_sqlite_vec_extension) before "
-                    "constructing the store."
-                )
             await connection.run_sync(BaseSQLiteVecVectorStore.metadata.create_all)
 
     @override

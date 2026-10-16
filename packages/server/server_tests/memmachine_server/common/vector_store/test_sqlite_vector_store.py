@@ -1494,34 +1494,11 @@ class TestIndexFileDurability:
 
 
 @pytest.mark.asyncio
-async def test_startup_refuses_engine_without_foreign_key_enforcement(tmp_path):
-    """Cascade deletes need PRAGMA foreign_keys=ON from engine creation.
-
-    A listener added by the store would miss connections the caller's
-    engine pooled earlier and would race a live pool's event dispatch, so
-    the store verifies and refuses loudly instead.
-    """
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bare.db'}")
-    store = SQLiteVectorStore(
-        SQLiteVectorStoreParams(
-            sqlalchemy_engine=engine,
-            vector_search_engine_factory=_engine_factory,
-        )
-    )
-    try:
-        with pytest.raises(RuntimeError, match="foreign keys"):
-            await store.startup()
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
 async def test_cascade_covers_connection_pooled_before_store_exists(tmp_path):
     """A connection pooled before the store is built still cascades.
 
-    Creation-time registration is what covers it: a store-side listener
-    left this connection with foreign keys off, so deleting a collection
-    orphaned its pending-operation rows without any error.
+    The pragma is registered at engine creation, so it covers every
+    connection the engine opens.
     """
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     enable_sqlite_foreign_keys(engine)

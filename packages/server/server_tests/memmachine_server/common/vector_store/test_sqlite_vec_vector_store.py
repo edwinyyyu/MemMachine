@@ -1020,29 +1020,11 @@ class TestFilterEdgeCases:
 
 
 @pytest.mark.asyncio
-async def test_startup_refuses_engine_without_sqlite_vec(tmp_path):
-    """vec statements need the extension loaded from engine creation.
-
-    A listener added by the store would miss connections the caller's
-    engine pooled earlier and would race a live pool's event dispatch, so
-    the store verifies and refuses loudly instead.
-    """
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bare.db'}")
-    store = SQLiteVecVectorStore(SQLiteVecVectorStoreParams(engine=engine))
-    try:
-        with pytest.raises(RuntimeError, match="sqlite-vec"):
-            await store.startup()
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
 async def test_extension_covers_connection_pooled_before_store_exists(tmp_path):
     """A connection pooled before the store is built still serves vec.
 
-    Creation-time registration is what covers it: a store-side listener
-    left this connection without the extension, so creating a collection
-    failed with "no such module: vec0".
+    The loader is registered at engine creation, so it covers every
+    connection the engine opens.
     """
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     load_sqlite_vec_extension(engine)

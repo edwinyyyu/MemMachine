@@ -31,7 +31,6 @@ from sqlalchemy import (
     event,
     func,
     select,
-    text,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -608,7 +607,10 @@ class SQLiteVectorStoreParams(BaseModel):
 
     Attributes:
         sqlalchemy_engine (AsyncEngine):
-            Async SQLAlchemy engine (sqlite+aiosqlite).
+            Async SQLAlchemy engine (sqlite+aiosqlite). It must enforce
+            foreign keys on every connection, registered at engine
+            creation (enable_sqlite_foreign_keys): the store relies on the
+            pending-operation cascade and does not verify enforcement.
         engine_factory (Callable[[int, SimilarityMetric], VectorSearchEngine]):
             Factory for creating :class:`VectorSearchEngine` instances.
             Receives `(ndim, metric)` and returns a search engine.
@@ -623,7 +625,13 @@ class SQLiteVectorStoreParams(BaseModel):
     """
 
     sqlalchemy_engine: InstanceOf[AsyncEngine] = Field(
-        ..., description="Async SQLAlchemy engine (sqlite+aiosqlite)"
+        ...,
+        description=(
+            "Async SQLAlchemy engine (sqlite+aiosqlite). It must enforce "
+            "foreign keys on every connection, registered at engine creation "
+            "(enable_sqlite_foreign_keys): the store relies on the "
+            "pending-operation cascade and does not verify enforcement"
+        ),
     )
     vector_search_engine_factory: VectorSearchEngineFactory = Field(
         ...,
@@ -689,10 +697,9 @@ class SQLiteVectorStore(VectorStore):
             str(self._sqlalchemy_engine.url).replace("aiosqlite", "pysqlite")
         )
 
-        # Registered only on the sync engine created just above, before it
-        # pools anything. The caller's async engine must have had the same
-        # pragma registered at its own creation; startup() verifies that
-        # instead of registering late (see enable_sqlite_foreign_keys).
+        # Registered on the sync engine created just above, before it pools
+        # anything. The caller registers the same pragma on the async engine
+        # at its creation (see SQLiteVectorStoreParams.sqlalchemy_engine).
         @event.listens_for(self._sync_sqlalchemy_engine, "connect")
         def _enable_sqlite_foreign_keys(
             dbapi_connection: DBAPIConnection,
@@ -719,22 +726,6 @@ class SQLiteVectorStore(VectorStore):
             self._index_directory.mkdir(parents=True, exist_ok=True)
 
         async with self._sqlalchemy_engine.begin() as connection:
-            # Foreign-key enforcement is per-connection state on SQLite
-            # and must be registered at ENGINE creation: a listener added
-            # by this store would miss connections the caller's engine
-            # pooled earlier -- silently disabling the pending-operation
-            # cascade on exactly those connections -- and registering
-            # listeners on a live pool races its event dispatch. The
-            # store therefore verifies rather than mutates.
-            enforced = (await connection.execute(text("PRAGMA foreign_keys"))).scalar()
-            if not enforced:
-                raise RuntimeError(
-                    "SQLite engine does not enforce foreign keys, so deleting "
-                    "a collection would silently orphan its pending-operation "
-                    "rows. Register PRAGMA foreign_keys=ON at engine creation "
-                    "(enable_sqlite_foreign_keys) before constructing the "
-                    "store."
-                )
             await connection.run_sync(BaseSQLiteVectorStore.metadata.create_all)
 
         await self._replay_pending_operations()
