@@ -49,6 +49,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
+          prune-cache: true
 
       - name: Test ${{ matrix.test-paths }} with python ${{ matrix.python-version }}
         env:
