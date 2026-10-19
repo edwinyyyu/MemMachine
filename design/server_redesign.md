@@ -779,8 +779,9 @@ Operations, in the order the stores are touched:
   registry row after the query, inside the vector store); segment
   contexts. Hits are returned in descending score, each a window with
   the matched segment marked; events are not returned, a caller that
-  wants one fetches it by id. Scores are cosine similarity throughout;
-  there is no metric option besides cosine similarity. Reranking is a second stage
+  wants one fetches it by id. A vector score is in the container's
+  similarity metric, the embedder's, whose `higher_is_better` gives its
+  direction. Reranking is a second stage
   the manager runs over the rendered windows, with its own candidate
   count and threshold, so over-fetching is one limit set above
   another.
@@ -823,7 +824,8 @@ tenant's default and runs the stages.
 
 That is all the manager does: dispatch, defaults, validation, and the
 stages. The vector stage is `EpisodicMemory.query`, which knows one
-limit and one threshold, cosine similarity; the reranking stage, when
+limit and one threshold, a score in the container's similarity metric;
+the reranking stage, when
 the request or the tenant asks for one, takes the vector stage's hits,
 renders each window, scores the renderings with the named reranker,
 applies the reranker's own threshold and cuts to the final limit.
@@ -847,7 +849,10 @@ request parameter, passed as an argument of the call: `limit`,
 candidates, its threshold) and the rendering format. One model,
 `SearchOptions`, is the tenant's `search` section with every field set
 and the request's overrides with every field optional, so there is no
-second list to keep in step. Nothing that ingest does varies per
+second list to keep in step. `min_cosine_similarity` is the vector
+stage's threshold on a tenant whose container scores by cosine
+similarity, and a tenant scoring by another metric refuses it. Nothing
+that ingest does varies per
 request: the format the deriver embeds with is a tenant option, since
 a tenant's derivatives must be formatted one way. The division is
 composition rule 5's: an option that decides where or how records are
@@ -869,8 +874,8 @@ Tenant configuration section `episodic_memory`, with mutability:
   "Processing"), each handler's `datetime_format` and `parts` among
   them; all mutable, applying to
   events processed after the change.
-- `eviction` (cosine similarity threshold, neighbors consulted, target
-  cluster size, or none): mutable, applying to batches processed after
+- `eviction` (score threshold in the container's similarity metric,
+  neighbors consulted, target cluster size, or none): mutable, applying to batches processed after
   the change; the threshold is calibrated per embedder, so a template
   sets it beside its embedder.
 - `search`: default `limit`, `min_cosine_similarity`, `expand_context` and
@@ -887,13 +892,16 @@ Eviction. An agent's stream repeats itself, and every repetition is
 another derivative with nearly the same vector; left alone they grow
 with the corpus and crowd a search with copies of one thing. With
 eviction on, `encode` treats near-duplicates as a cluster: a new
-derivative's cluster is its stored neighbors at or above the
-cosine similarity threshold, the earlier derivatives of its own batch above
-it, and itself; a cluster larger than the target size is trimmed from
+derivative's cluster is its stored neighbors whose score is at least as
+good as the threshold, by the container's similarity metric and in its
+units, the earlier derivatives of its own batch that are, scored by the
+same metric, and itself; a cluster larger than the target size is trimmed from
 the temporal middle, keeping the earliest and the latest, by deleting
 stored derivatives and not writing new ones. Segments and events are
 untouched, so the loss is to search only and a reprocessing starts
-from the full record. Specified in
+from the full record. Under dot product over vectors that are not
+normalized, a vector's length shifts what a fixed threshold means.
+Specified in
 `design/components/episodic_memory.md`; from `agentic_expansion`,
 where it runs in production.
 
@@ -1350,12 +1358,14 @@ purgeable on a backend that cannot list or reject keys.
   applied; read the row again and raise the not-live error if the key
   is not live. No row before the write: the not-live error, and no
   write creates a collection.
-- Read, on the handle (`query(vectors, limit, min_cosine_similarity,
+- Read, on the handle (`query(vectors, limit, score_threshold,
   filter)`): read the row for
   the address, query, read the row again, raise the not-live error if
   the key is not live. `filter` names declared keys only and raises on
   any other; it is evaluated during the search where the backend can.
-  Queries return record ids and scores, never properties.
+  Queries return record ids and scores in the container's similarity
+  metric, never properties; `score_threshold` is the worst score a match
+  may have.
 - `delete_collection(key)`: set `dropping`. O(1), idempotent, waits for
   nothing.
 - `purge_collection(key) -> DONE | MORE`: with a `dropping` row,
@@ -1693,7 +1703,7 @@ Episodic memory, under `/v1/tenants/{id}/episodic-memory`:
 
 | Method and path | Effect | Status |
 | --- | --- | --- |
-| `POST .../query` | body `query`; the query options, each optional with the tenant's default: `limit`, `min_cosine_similarity`, `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `datetime_format` (dates, times, locale, zone) and `parts` (the context part kinds composed into `text`, in order) | 200 with up to `limit` hits in descending score |
+| `POST .../query` | body `query`; the query options, each optional with the tenant's default: `limit`, `min_cosine_similarity` (refused by a tenant that does not score by cosine similarity), `expand_context`, `rerank` (`reranker`, `candidates`, `min_score`, or `null` for none); the system filters `since`, `until`, `session_ids`, `source_ids`, `block_kinds`; `filter` (JSON tree); `datetime_format` (dates, times, locale, zone) and `parts` (the context part kinds composed into `text`, in order) | 200 with up to `limit` hits in descending score, a vector score with a distance negated so that higher is better |
 | `POST .../expand` | body `anchor` (segment or event uuid), `before`, `after` (segments), `since`, `until`, `source_ids`, `block_kinds`, `filter`, `datetime_format`, `parts` | 200 with `before` and `after`, the segments on each side in order within the anchor's session, never the anchor itself, and their `text` |
 | `GET ...` | `watermark` and `head`, the lag being their difference | 200 |
 

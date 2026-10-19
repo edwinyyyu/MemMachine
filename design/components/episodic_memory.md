@@ -22,7 +22,7 @@ EpisodicMemory(
 )
 
 class EvictionOptions(BaseModel):
-    cosine_similarity_threshold: float  # at or above it, eviction is considered
+    score_threshold: float          # at or better than it, in the collection's metric, eviction is considered
     search_limit: int               # stored neighbors consulted per new derivative
     target_size: int                # a cluster larger than this is trimmed to it
 ```
@@ -46,7 +46,7 @@ change. Rendering for display takes the caller's options per call.
 
 ```python
 class QueryHit(BaseModel):
-    score: float                    # relevance of the seed to the query; cosine similarity from `query`
+    score: float                    # relevance of the seed to the query: the collection's score, in its metric, until a rerank
     seed: Segment                   # the segment the query matched
     neighborhood: Neighborhood      # the segments around it, in the store's order
     def window(self) -> list[Segment]   # before, seed, after
@@ -59,7 +59,7 @@ class EpisodicMemory:
     async def encode(self, events: Iterable[StoredEvent]) -> None
     async def forget(self, event_uuids: Iterable[UUID]) -> None
     async def query(self, query: str, *,
-                    vector_search_limit: int, min_cosine_similarity: float | None,
+                    vector_search_limit: int, score_threshold: float | None,
                     expand_context: int,
                     since: datetime | None, until: datetime | None,
                     session_ids: Iterable[str] | None,
@@ -174,8 +174,8 @@ of near-duplicates gets too large, on derived data only.
 What it does, per batch of derivatives in `encode`:
 
 - Batch predecessors: for each derivative, the earlier derivatives in
-  the same batch whose cosine similarity to it is at or above
-  `cosine_similarity_threshold`. Only earlier ones count, so a batch evicts
+  the same batch whose score with it, by the collection's similarity
+  metric, is at least as good as `score_threshold`. Only earlier ones count, so a batch evicts
   exactly what serial ingestion of the same events would have.
 - Stored neighbors: one vector query per derivative against the
   tenant's collection, all sessions, `search_limit` results at or above
@@ -203,8 +203,11 @@ run displaced, so it can displace more and never restores anything.
 The cost is one bounded vector query per new derivative, which
 `eviction: null` removes entirely. The threshold is a property of the
 embedder, since two models put the same pair of texts at different
-cosine similarities, so a template sets it beside the embedder it chooses and
+scores, so a template sets it beside the embedder it chooses and
 a deployment calibrates it per embedder; the design gives no number.
+The threshold is in the collection's similarity metric and its units;
+under dot product over vectors that are not normalized, a vector's
+length shifts what a fixed threshold means.
 
 ## Context
 
@@ -236,7 +239,7 @@ filtered by `block_kinds`; rendering calls `block.render`.
   `StoredEvent`s so a segment can carry the event's position;
   `forget_events` (`:680`) becomes `forget`.
 - `query` (`:353`): `vector_search_limit` keeps its name, since it
-  bounds the vector stage and the hits can be fewer; the threshold becomes `min_cosine_similarity`; `since`, `until`, `session_ids`, `source_ids` and
+  bounds the vector stage and the hits can be fewer; the threshold becomes `score_threshold`, in the collection's similarity metric; `since`, `until`, `session_ids`, `source_ids` and
   `block_kinds` are added as typed parameters (`until` exclusive, the
   reference branch's `before` renamed so that `before` counts segments
   everywhere); the reserved-key mapping
@@ -264,16 +267,14 @@ filtered by `block_kinds`; rendering calls `block.render`.
   the neighbors, never the anchor; `string_from_segment_context` and
   `string_from_segment_contexts` become `render_segments`.
 - Eviction comes from `agentic_expansion` (commit ed2c5702):
-  `_compute_batch_predecessors` and `_select_eviction_targets` as they
-  are, cosine only; the three parameters become `EvictionOptions`; the
+  `_select_eviction_targets` as it is and `_compute_batch_predecessors`
+  scoring by the collection's metric rather than cosine only; the three parameters become `EvictionOptions`; the
   displaced derivatives' link rows are deleted as well as their vector
   records, which the branch left dangling.
-- Scores are cosine similarity; `SimilarityMetric` goes from the
-  embedder, the vector store and the engines, as on the reference
-  branch (commit 6ab12098): the embedder exposes `model_id` and
-  `dimensions` only, every container and engine is configured for
-  cosine, `higher_is_better` and the metric-dependent scoring branches
-  in `event_memory.py` go.
+- Scores are in the collection's similarity metric, the embedder's;
+  `SimilarityMetric` and `higher_is_better` stay, and a score's
+  direction is its metric's. The reference branch's removal of the
+  metric (commit 6ab12098) is not taken.
 - `Embedder.ingest_embed` and `search_embed` take `list[str]`, not
   `list[Any]` (reference branch, commit ae1d616a); the only inputs are
   derivative texts and the query.

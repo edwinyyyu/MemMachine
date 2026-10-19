@@ -51,7 +51,8 @@ class EpisodicMemoryTenantConfig(BaseModel):
     search: SearchOptions               # mutable; defaults for a search
 ```
 
-`eviction.cosine_similarity_threshold` is calibrated per embedder, so a
+`eviction.score_threshold`, in the container's similarity metric and its
+units, is calibrated per embedder, so a
 template sets it beside the `embedder` it names; the manager rejects
 no value, since the design gives none.
 
@@ -111,9 +112,12 @@ segmenter and deriver objects for the row's options, taken from the
 cache, and makes one call.
 
 `search` is the stages. It fills each `SearchOptions` field the request
-omits from the row's defaults. Without `rerank`, it calls `query` with
-`limit` and `min_cosine_similarity` and returns the hits. With `rerank`, it
-calls `query` with `limit = candidates` and `min_cosine_similarity`, renders
+omits from the row's defaults. `min_cosine_similarity` is the score
+threshold `query` takes on a tenant whose container scores by cosine
+similarity; a tenant scoring by another metric refuses it. Without
+`rerank`, it calls `query` with `limit` and that threshold and returns
+the hits, a distance negated so that a higher score is better. With
+`rerank`, it calls `query` with `limit = candidates` and the threshold, renders
 each hit's window with the request's or the row's `datetime_format` and `parts`, scores the
 renderings with `rerankers[rerank.reranker].score`, drops those below
 `rerank.min_score`, and returns the best `limit` in descending reranker

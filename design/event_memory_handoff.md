@@ -7,11 +7,12 @@ lifecycle, handles, the event store, the manager, settings, the HTTP
 API) is out of scope here, and nothing is renamed: the class stays
 `EventMemory`, the package stays `episodic_memory/event_memory/`.
 
-Target: a branch off upstream `speedkick`, stacked on PR #1598 (cosine
-as the only similarity, `min_cosine_similarity`, scores and uuids from
-`query`; it replaced #1591 and #1593). Eviction needs a threshold
-query and a single score scale, and #1598 provides both, so base on it
-rather than re-deriving them. #1597 is the implementation of this
+Target: a branch off upstream `speedkick`, stacked on PR #1598 (scores
+and uuids from `query`; it replaced #1591 and #1593), without its
+cosine-only half: a score is in the collection's similarity metric,
+whose `higher_is_better` gives its direction, and a query takes
+`score_threshold`, the worst score a match may have. Eviction needs
+that threshold query, so base on it rather than re-deriving it. #1597 is the implementation of this
 document on that base.
 
 ## References
@@ -174,7 +175,7 @@ Results:
 
 ```python
 class QueryHit(BaseModel):
-    score: float                    # relevance of the seed to the query; cosine similarity from `query`
+    score: float                    # relevance of the seed to the query: the collection's score, in its metric, until a rerank
     seed: Segment                   # the segment the query matched
     neighborhood: Neighborhood      # the segments around it, in the store's order
     def window(self) -> list[Segment]   # before, seed, after
@@ -184,9 +185,9 @@ class Neighborhood(BaseModel):
     after: list[Segment]            # in order, starting just after it
 
 class EvictionOptions(BaseModel):
-    cosine_similarity_threshold: float  # at or above it, eviction is considered
-    search_limit: int               # stored derivatives at or above it fetched per new one
-    target_size: int                # how many of a new derivative and those at or above it are kept
+    score_threshold: float          # at or better than it, in the collection's metric, eviction is considered
+    search_limit: int               # stored derivatives at or better than it fetched per new one
+    target_size: int                # how many of a new derivative and those at or better than it are kept
 ```
 
 `QueryHit` replaces `ScoredSegmentContext` (`seed_segment_uuid` is
@@ -457,7 +458,7 @@ class EventMemory:
     async def encode_events(self, events: Iterable[Event]) -> None
     async def forget_events(self, event_uuids: Iterable[UUID]) -> None
     async def query(self, query: str, *,
-                    vector_search_limit: int, min_cosine_similarity: float | None,
+                    vector_search_limit: int, score_threshold: float | None,
                     expand_context: int,
                     since: datetime | None, until: datetime | None,
                     session_ids: Iterable[str] | None,
@@ -498,7 +499,7 @@ class EventMemory:
   the records, `delete_events`. Records before events: a failed record
   delete leaves the event whole for a retry.
 - `query` is the vector stage only: embed the query; `query` the
-  collection with `vector_search_limit`, `min_cosine_similarity` and
+  collection with `vector_search_limit`, `score_threshold` and
   `system_predicates(...)` alone, since `property_filter` is the
   caller's, over properties the vector store does not index, and it
   never reaches the vector store; resolve seeds
@@ -510,7 +511,7 @@ class EventMemory:
   `property_filter`, the post-filter, then `get_segment_neighborhoods` from the seeds
   it returned, `expand_context` split as today and no walk when it is
   zero; drop seeds the store did not return; return at most `vector_search_limit`
-  hits in descending cosine similarity, each its seed with the
+  hits best first by the vector search's score, each its seed with the
   neighborhood around it. Neighborhoods of different hits may overlap
   and each hit is returned whole. Every count is a maximum.
 - `rerank` is the second stage, a static helper so a caller that has a
@@ -534,14 +535,18 @@ class EventMemory:
 - `build_query_result_context` and `string_from_query_result`, already
   gone on the branch, go here too.
 
-Eviction, from the branch, cosine only:
+Eviction, from the branch, which scores by cosine only; here by the
+collection's similarity metric:
 
-- `_compute_batch_predecessors(embeddings, threshold)`: normalize, one
-  matrix product, keep only earlier indices (`j < i`) at or above the
-  threshold, so a batch evicts exactly what serial ingestion would.
-  The metric `match` goes.
+- `_compute_batch_predecessors(embeddings, metric, threshold)`: score
+  every pair by the collection's metric (cosine similarity or dot
+  product, Euclidean or Manhattan distance), keep only earlier indices
+  (`j < i`) whose score is at least as good as the threshold, so a
+  batch evicts exactly what serial ingestion would. Under dot product
+  over vectors that are not normalized, a vector's length shifts what a
+  fixed threshold means; no metric is refused.
 - Stored neighbors: one collection `query` per derivative with the
-  batch's embeddings, `min_cosine_similarity=threshold`,
+  batch's embeddings, `score_threshold=threshold`,
   `limit=search_limit`, properties returned so the event timestamp is
   known.
 - `_select_eviction_targets` as on the branch: the cluster is the
