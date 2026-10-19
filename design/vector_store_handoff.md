@@ -32,8 +32,9 @@ document adds.
 
 ## Base and order
 
-- Branch off upstream `speedkick` after the #1603 stack, #1598 (cosine
-  scores and uuids; replaces #1591 and #1593), #1602 (filtered queries
+- Branch off upstream `speedkick` after the #1603 stack, #1598 (scores
+  and uuids from `query`, in the store's similarity metric; replaces
+  #1591 and #1593), #1602 (filtered queries
   routed by selectivity inside the engine-backed SQLite store, with an
   exact engine allowlist) and #1603 (`Record` requires a vector and
   never has `None` properties), and after #1597 (the EventMemory

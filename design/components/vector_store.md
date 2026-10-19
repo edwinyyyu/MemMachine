@@ -17,8 +17,8 @@ Queries return ids and scores, never properties.
   `container_options: Mapping[str, Mapping]`, optional backend-specific
   options per container. Containers themselves are not declared: the
   store has one per embedder id the deployment built, named by that
-  id, with the embedder's `dimensions` and cosine as the metric, so
-  dimensions are declared once, on the embedder.
+  id, with the embedder's `dimensions` and similarity metric, so both
+  are declared once, on the embedder.
 
 ## Types
 
@@ -30,7 +30,7 @@ class Record(BaseModel):
 
 class QueryMatch(BaseModel):
     uuid: UUID
-    score: float                             # cosine similarity
+    score: float                             # in the container's similarity metric
 ```
 
 ## API
@@ -60,19 +60,26 @@ class VectorCollection(ABC):              # data, bound to one key and container
     def key(self) -> UUID
     @property
     def container(self) -> str
+    @property
+    def similarity_metric(self) -> SimilarityMetric
     async def upsert(self, records: Iterable[Record]) -> None
     async def delete(self, uuids: Iterable[UUID]) -> None
     async def query(self, vectors: Iterable[Sequence[float]], *,
-                    limit: int, min_cosine_similarity: float | None,
+                    limit: int, score_threshold: float | None,
                     filter: FilterExpr | None) -> list[list[QueryMatch]]
     @property
     def supported_filter_nodes(self) -> frozenset[type]
 ```
 
-Scores are cosine similarity everywhere; there is no `SimilarityMetric`
-(reference branch, commit 6ab12098): every container and every engine
-is configured for cosine, the embedder exposes no metric, and `query`
-takes `min_cosine_similarity` as a cosine similarity.
+A score is in the container's similarity metric, a `SimilarityMetric`:
+cosine similarity or dot product, where higher is better, or Euclidean
+or Manhattan distance, where lower is better, as `higher_is_better`
+says. Every collection of a container scores by its metric. Each
+backend maps the metric onto its own distance or metric type and
+converts what it measures into the score; a backend that lacks a
+metric refuses it when the store is built. `score_threshold` is the
+worst score a match may have, by that metric, and a match scoring
+exactly the threshold is returned.
 
 Semantics:
 
@@ -98,9 +105,9 @@ Semantics:
   `UndeclaredPropertyKeyError` otherwise, and uses only nodes in
   `supported_filter_nodes`, raising `UnsupportedFilterError` otherwise;
   evaluated during the search. Read the row, query, read the row again.
-  Returns, per vector, at most `limit` matches in descending
-  cosine similarity, none below `min_cosine_similarity`, fewer when the filter admits
-  fewer.
+  Returns, per vector, at most `limit` matches best first by the
+  container's metric, none worse than `score_threshold`, fewer when the
+  filter admits fewer.
 - `supported_filter_nodes`: the node classes the backend evaluates
   during a search, per the table in `filters_and_properties.md`; the
   subsystem routes any other predicate to the event memory store.
@@ -220,7 +227,9 @@ pgvector, one table per container, created by `provision_containers`:
 | `memmachine_em_block_kind` | `Text` | not null |
 | one column per declared user key | by declared type: `Text`, `BigInteger`, `Float`, `Boolean`, `DateTime(timezone=True)` | null |
 
-Indexes: `vec_<container>__vector`, HNSW with `vector_cosine_ops`;
+Indexes: `vec_<container>__vector`, HNSW with the operator class of the
+container's metric (`vector_cosine_ops`, `vector_ip_ops`, `vector_l2_ops`
+or `vector_l1_ops`);
 `vec_<container>__key_timestamp (key, memmachine_em_timestamp)`;
 `vec_<container>__key_<field>` for each declared user key. Filtered
 search is `WHERE key = ? AND ...` with pgvector's iterative index
@@ -233,7 +242,7 @@ table:
 ```sql
 CREATE VIRTUAL TABLE vec_<container> USING vec0(
     key TEXT PARTITION KEY,          -- 32 hex characters
-    vector FLOAT[<dimensions>] distance_metric=cosine,
+    vector FLOAT[<dimensions>] distance_metric=<metric>,  -- cosine or L2, by the container's metric
     memmachine_em_timestamp INTEGER,      -- metadata column, epoch microseconds
     memmachine_em_session TEXT,
     memmachine_em_source TEXT,
