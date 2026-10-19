@@ -14,10 +14,10 @@ during a session:
   the cue, best first, each one rendered with the ids it was found under.
   A cue is the context a memory was encoded in, not a bare entity: the
   user's own wording of what they are after works well.
-- `memory_expand(id, direction)` reads more of the session a passage came
-  from, a fixed step at a time, `around`, `earlier` or `later`. Following
-  a lead the passage mentions is another query; reading around it is an
-  expansion.
+- `memory_expand(id, direction)` reads more of the timeline around a
+  passage, a fixed step at a time, `around`, `earlier` or `later`.
+  Following a lead the passage mentions is another query; reading around
+  it is an expansion.
 
 Both tools run against one tenant's memory, and the tenant travels with
 every request in the `X-MemMachine-Tenant` header the installer writes.
@@ -38,18 +38,22 @@ Every passage carries markers that name where it sits:
 backs the file up before it writes.
 ```
 
-- `[session:"<id>"]` is the agent session a passage belongs to, the
-  conversation it happened in. It is what `memory_query`'s `within`
-  argument takes.
+- `[session:"<id>"]` is the agent session the passages below it belong
+  to, the conversation they happened in. It is what `memory_query`'s
+  `within` argument takes.
 - `[segment:<hex>]` is one passage. It is what `memory_expand` takes,
   with or without the wrapper.
 - `[segments:<first>..<last>]` is a run of neighboring passages, rendered
   as one. Its two ends are the handles a further expansion continues
   from.
 
-A side the session has run out of answers with a sentence saying so,
-`Nothing earlier: the session starts here.` or `Nothing later: the
-session ends here.`
+The timeline runs through every session of the tenant in timestamp
+order, so a window or an expansion that reaches a session running
+alongside shows its passages under their own `[session:"<id>"]` line,
+one wherever the session changes; `within` keeps a query and its
+windows to one session. A side that reaches the end of the timeline
+answers with a sentence saying so, `Nothing earlier: the timeline starts
+here.` or `Nothing later: the timeline ends here.`
 
 ## Choosing a tenant name
 
