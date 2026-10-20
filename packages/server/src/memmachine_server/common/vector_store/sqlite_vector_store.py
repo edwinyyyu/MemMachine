@@ -30,7 +30,14 @@ import contextlib
 import hashlib
 import logging
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from pathlib import Path
 from typing import ClassVar, override
 from uuid import UUID
@@ -306,7 +313,7 @@ async def _save_partition_index(
     """
     # Write index to path.
     async with engine_lock.write_lock():
-        await search_engine.save(path)
+        await _finish_despite_cancellation(search_engine.save(path))
 
     # Delete applied pending operations and flip index_saved to True.
     async with _write_transaction(create_session) as session:
@@ -334,6 +341,11 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     Reads run freely. Writes are serialized by `write_lock`, which the store
     shares among every handle on one partition, so the engine sees a
     partition's writes in the order SQLite committed them.
+
+    Once a write's SQL change commits, its engine update runs to completion,
+    the wait for the engine lock included, even if the call is cancelled. Any
+    call cancelled while the search engine works on its behalf raises
+    `CancelledError` once that work has finished, and runs nothing after it.
     """
 
     _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
@@ -555,7 +567,9 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                     pending_operation_values,
                 )
 
-            await self._apply_engine_upserts(records, uuid_to_row_id, replaced_row_ids)
+            await _finish_despite_cancellation(
+                self._apply_engine_upserts(records, uuid_to_row_id, replaced_row_ids)
+            )
 
     async def _apply_engine_upserts(
         self,
@@ -563,7 +577,13 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         uuid_to_row_id: Mapping[UUID, int],
         replaced_row_ids: Sequence[int],
     ) -> None:
-        """Update search engine index after SQLite commit."""
+        """Apply a committed upsert to the search engine, then mark it applied.
+
+        SQLite already holds the write, so call through
+        `_finish_despite_cancellation`: a cancellation must not leave the
+        engine behind SQLite. The remove of the replaced row ids and the add
+        of the new vectors run under one hold of the engine lock.
+        """
         vectors_by_row_id: dict[int, list[float]] = {
             uuid_to_row_id[record.uuid]: record.vector
             for record in records
@@ -621,8 +641,10 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         key_filter = self._build_key_filter(property_filter)
 
         async with self._engine_lock.read_lock():
-            search_results = await self._search_engine.search(
-                query_vectors, limit=limit, allowed_keys=key_filter
+            search_results = await _finish_despite_cancellation(
+                self._search_engine.search(
+                    query_vectors, limit=limit, allowed_keys=key_filter
+                )
             )
 
         results: list[QueryResult] = []
@@ -739,21 +761,31 @@ class SQLiteVectorStorePartition(VectorStorePartition):
                     )
                 )
 
-            async with self._engine_lock.write_lock():
-                await self._search_engine.remove(record_row_ids)
-            async with _write_transaction(self._create_session) as session:
-                await session.execute(
-                    update(_PendingOperationRow)
-                    .where(
-                        _PendingOperationRow.vector_store_name
-                        == self._vector_store_name,
-                        _PendingOperationRow.partition_key == self._partition_key,
-                        _PendingOperationRow.record_row_id.in_(record_row_ids),
-                        _PendingOperationRow.applied.is_(False),
-                    )
-                    .values(applied=True)
+            await _finish_despite_cancellation(
+                self._apply_engine_deletes(record_row_ids)
+            )
+
+    async def _apply_engine_deletes(self, record_row_ids: Sequence[int]) -> None:
+        """Apply a committed delete to the search engine, then mark it applied.
+
+        SQLite already holds the delete, so call through
+        `_finish_despite_cancellation`: a cancellation must not leave the
+        engine behind SQLite.
+        """
+        async with self._engine_lock.write_lock():
+            await self._search_engine.remove(record_row_ids)
+        async with _write_transaction(self._create_session) as session:
+            await session.execute(
+                update(_PendingOperationRow)
+                .where(
+                    _PendingOperationRow.vector_store_name == self._vector_store_name,
+                    _PendingOperationRow.partition_key == self._partition_key,
+                    _PendingOperationRow.record_row_id.in_(record_row_ids),
+                    _PendingOperationRow.applied.is_(False),
                 )
-            await self._maybe_save_index()
+                .values(applied=True)
+            )
+        await self._maybe_save_index()
 
 
 VectorSearchEngineFactory = Callable[[int, SimilarityMetric], VectorSearchEngine]
@@ -857,6 +889,9 @@ class SQLiteVectorStore(VectorStore):
     and engine instance. The engine and its index file live in the process
     that opened the partition, so one process at a time may use a
     partition.
+
+    A call cancelled while a search engine works on its behalf raises
+    `CancelledError` once that work has finished, and runs nothing after it.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:
@@ -1008,9 +1043,9 @@ class SQLiteVectorStore(VectorStore):
             return
 
         async with self._engine_lock_for(partition_key).write_lock():
-            await search_engine.remove(all_row_ids)
-            if upserted_vectors:
-                await search_engine.add(upserted_vectors)
+            await _finish_despite_cancellation(
+                _remove_then_add(search_engine, all_row_ids, upserted_vectors)
+            )
 
         async with _write_transaction(self._create_session) as session:
             await session.execute(
@@ -1208,9 +1243,11 @@ class SQLiteVectorStore(VectorStore):
         """Get or create the lock guarding a partition's search engine.
 
         Engines are not safe for concurrent use: searches take the read side,
-        everything else the write side. Shared by every handle on the
-        partition and kept for the store's lifetime: a lock replaced while
-        held would guard nobody.
+        everything else the write side. A hold lasts until the engine calls
+        under it have finished, threads included, even when the holder is
+        cancelled (see `_finish_despite_cancellation`). Shared by every handle
+        on the partition and kept for the store's lifetime: a lock replaced
+        while held would guard nobody.
         """
         return self._engine_locks.setdefault(partition_key, AsyncRWLock())
 
@@ -1278,7 +1315,9 @@ class SQLiteVectorStore(VectorStore):
                 # can do with the cause.
                 try:
                     async with self._engine_lock_for(partition_key).write_lock():
-                        await search_engine.load(str(index_path))
+                        await _finish_despite_cancellation(
+                            search_engine.load(str(index_path))
+                        )
                 except Exception as e:
                     raise IndexLoadError(
                         self._vector_store_name, partition_key, index_path
@@ -1302,3 +1341,47 @@ class SQLiteVectorStore(VectorStore):
         )
 
         return records_table, search_engine
+
+
+async def _finish_despite_cancellation[T](work: Coroutine[None, None, T]) -> T:
+    """Await `work` to its end, then propagate any cancellation of the caller.
+
+    A search engine call may do its work in a thread, which a cancelled
+    `await` leaves running. `work` runs in a task of its own, which no
+    cancellation of the caller reaches, however often one arrives, so a lock
+    held around this call stays held until `work` has finished, and every
+    thread it awaited with it.
+
+    A caller cancelled meanwhile then raises `CancelledError` instead of
+    returning. Nothing here uncancels the caller, so `Task.cancelling()`
+    counts every cancellation, and `asyncio.timeout` and task groups read the
+    outcome as they would any other. A failure of `work` after such a
+    cancellation is logged rather than raised.
+    """
+    task = asyncio.create_task(work)
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.wait([task])
+        except asyncio.CancelledError as cancelled:
+            cancellation = cancelled
+    if cancellation is None:
+        return task.result()
+    if not task.cancelled() and (failure := task.exception()) is not None:
+        logger.error(
+            "A search engine operation failed after its caller was cancelled",
+            exc_info=failure,
+        )
+    raise cancellation
+
+
+async def _remove_then_add(
+    search_engine: VectorSearchEngine,
+    keys: Sequence[int],
+    vectors: Mapping[int, Sequence[float]],
+) -> None:
+    """Remove `keys` from the search engine, then add `vectors`, skipping either if empty."""
+    if keys:
+        await search_engine.remove(keys)
+    if vectors:
+        await search_engine.add(vectors)
