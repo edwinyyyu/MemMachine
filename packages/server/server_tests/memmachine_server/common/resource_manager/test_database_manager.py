@@ -410,6 +410,7 @@ async def test_get_vector_store_builds_a_qdrant_store(tmp_path):
     conf.qdrant_confs["qdrant1"] = QdrantConf(
         partition_registry="registry",
         tombstone_retention_seconds=3600,
+        max_request_bytes=1048576,
     )
 
     mock_client = AsyncMock()
@@ -452,6 +453,7 @@ async def test_get_vector_store_builds_a_qdrant_store(tmp_path):
     assert kwargs["vector_dimensions"] == 3
     assert kwargs["similarity_metric"] == SimilarityMetric.COSINE
     assert kwargs["indexed_properties"] == {}
+    assert kwargs["max_request_bytes"] == 1048576
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
@@ -685,6 +687,7 @@ async def test_get_vector_store_builds_a_milvus_store(tmp_path):
         request_timeout_seconds=7,
         max_varchar_length=2048,
         purge_batch_size=500,
+        max_request_bytes=2097152,
     )
 
     mock_client = AsyncMock()
@@ -726,6 +729,7 @@ async def test_get_vector_store_builds_a_milvus_store(tmp_path):
         request_timeout_seconds=7,
         max_varchar_length=2048,
         purge_batch_size=500,
+        max_request_bytes=2097152,
         metrics_factory=conf.milvus_confs["milvus1"].get_metrics_factory(),
     )
     mock_store_cls.assert_called_once_with(mock_params_cls.return_value)
