@@ -1,10 +1,10 @@
 """
 Vector store backed by SQLite + sqlite-vec.
 
-The store is one collection. Each partition gets its own records table and
-vec0 virtual table, named by the collection and the partition key, so stores
-of different collections may share one engine; sqlite-vec's own partition
-keys are not used, since its ANN indexes may not support them.
+Each partition gets its own records table and vec0 virtual table, named by
+the store and the partition key, so different stores may share one engine;
+sqlite-vec's own partition keys are not used, since its ANN indexes may not
+support them.
 """
 
 import hashlib
@@ -417,10 +417,10 @@ class SQLiteVecVectorStore(VectorStore):
     """
     Vector store backed by SQLite + sqlite-vec.
 
-    The store is one collection; each partition gets its own records table
-    and vec0 virtual table. The database is a local file, so the processes
-    sharing a partition must run on one host. A handle used after its
-    partition is deleted acts on a partition created again under its key.
+    Each partition gets its own records table and vec0 virtual table. The
+    database is a local file, so the processes sharing a partition must run
+    on one host. A handle used after its partition is deleted acts on a
+    partition created again under its key.
     """
 
     _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {
@@ -439,8 +439,8 @@ class SQLiteVecVectorStore(VectorStore):
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._sa_metadata = MetaData()
 
-        # Stores of different collections may share the engine; the
-        # extension is loaded once per connection.
+        # Different stores may share the engine; the extension is loaded
+        # once per connection.
         if not event.contains(self._engine.sync_engine, "connect", _load_sqlite_vec):
             event.listen(self._engine.sync_engine, "connect", _load_sqlite_vec)
 

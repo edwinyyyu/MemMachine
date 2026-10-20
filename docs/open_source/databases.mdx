@@ -31,8 +31,8 @@ keeps event segments in a relational database. Configure the VectorStore under
 
 Supported VectorStore providers include Qdrant, Milvus, SQLiteVectorStore, and
 SQLiteVecVectorStore. The event backend keeps one store per backend and
-embedder, one collection on the backend, and each session's data is a
-partition of it. The store's vector store name is a UUIDv5 of the embedder's
+embedder, and each session's data is a partition of it. The store's vector
+store name is a UUIDv5 of the embedder's
 id in a namespace derived from the backend's key, written as 32 hexadecimal
 digits, so neither the key nor the id is constrained, and stores on different
 backends never share a name; a Milvus collection is named `sys_` followed by

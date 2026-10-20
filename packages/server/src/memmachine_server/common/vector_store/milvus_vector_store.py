@@ -268,7 +268,7 @@ def _incarnation_filter(incarnation: UUID) -> str:
 
 
 class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
-    """A partition backed by Milvus: one partition-key value inside the store's collection."""
+    """A partition backed by Milvus: one partition-key value inside the store's native collection."""
 
     @staticmethod
     def _passes_threshold(

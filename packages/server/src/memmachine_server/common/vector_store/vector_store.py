@@ -1,10 +1,11 @@
 """
 Abstract base class for a vector store.
 
-A store is one collection: a body of records searched together, with one
-dimensionality, one similarity metric and one declared schema, named at
-construction. Within it, a partition holds one tenant's records, and
-`VectorStorePartition` is the handle a data consumer holds for it.
+A vector store is constructed with a name, a dimensionality, a similarity
+metric and a declared schema, and every record it holds has that
+dimensionality and schema. Within it, a partition holds one tenant's records,
+every search runs within one partition, and `VectorStorePartition` is the
+handle a data consumer holds for a partition.
 """
 
 from abc import ABC, abstractmethod
@@ -143,13 +144,13 @@ class VectorStore(ABC):
     """
     Abstract base class for a vector store.
 
-    A store is one collection, named at construction with its vector
-    dimensions, its similarity metric and its declared schema; the
-    composition root builds one store per collection it needs, and the
-    name is what keeps two stores over one engine or one client apart.
-    Every partition of the store shares the collection's dimensions,
-    metric and schema, and the schema is fixed for the life of the store's
-    data: changing it is a migration.
+    A store is constructed with a name, a dimensionality, a similarity
+    metric and a declared schema, and every record it holds has that
+    dimensionality and schema. The composition root builds the stores its
+    services need, and the name keeps two stores over one engine or one
+    client apart. Every partition of the store shares the store's
+    dimensions, metric and schema, and the schema is fixed for the life of
+    the store's data: changing it is a migration.
 
     A partition is identified by its key. A partition deleted and created
     again under the same key starts empty, and reclaiming the deleted one's

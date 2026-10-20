@@ -28,8 +28,9 @@ names across processes, which no consumer did.
 
 ## Design
 
-A store is one collection, and a partition is one tenant's records in it,
-addressed by a string key. A partition's catalog entry lives where a primary
+A store holds records of one dimensionality and declared schema, fixed at
+construction, and a partition is one tenant's records in it, addressed by a
+string key. A partition's catalog entry lives where a primary
 key and a transaction can arbitrate it: a relational database, reached
 through SQLAlchemy. The backend keeps only records, each carrying the
 *incarnation* of the partition life that wrote it.
@@ -309,9 +310,10 @@ the backend is remote:
 
 ## Decisions
 
-- **A store is one collection.** The composition root builds one store per
-  collection it needs, with its dimensions, metric, and declared schema fixed
-  at construction, and partitions it by tenant. A partition key is all a
+- **A store's dimensions, metric, and schema are fixed at construction.** The
+  composition root builds the stores its services need, each with its
+  dimensions, metric, and declared schema fixed at construction, and
+  partitions each by tenant. A partition key is all a
   caller names; the store, not each call, carries what the records share.
 - **`unregister` is keyed by partition key.** Callers delete partitions by
   key, and the key is resolved to its incarnation inside the deleting

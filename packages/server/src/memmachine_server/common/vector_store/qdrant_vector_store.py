@@ -86,7 +86,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
 
 
 class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
-    """A partition backed by Qdrant: one payload value inside the store's collection."""
+    """A partition backed by Qdrant: one payload value inside the store's native collection."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
         ">": "gt",

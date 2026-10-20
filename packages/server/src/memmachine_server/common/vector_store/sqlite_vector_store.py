@@ -1,11 +1,10 @@
 """
 Vector store backed by SQLite + pluggable vector search engine.
 
-The store is one collection. Each partition gets its own records table and
-vector search engine, and a pending operations table, shared by every store
-on the engine and keyed by store and partition, tracks search engine
-operations for crash recovery: on a store's startup, its unfinalized
-operations are replayed.
+Each partition gets its own records table and vector search engine, and a
+pending operations table, shared by every store on the engine and keyed by
+store and partition, tracks search engine operations for crash recovery: on a
+store's startup, its unfinalized operations are replayed.
 """
 
 import hashlib
@@ -669,10 +668,9 @@ class SQLiteVectorStore(VectorStore):
     """
     Vector store backed by SQLite + a pluggable vector search engine.
 
-    The store is one collection; each partition gets its own records table
-    and engine instance. The engine and its index file live in the process
-    that opened the partition, so one process at a time may use a
-    partition.
+    Each partition gets its own records table and engine instance. The
+    engine and its index file live in the process that opened the
+    partition, so one process at a time may use a partition.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:
@@ -699,8 +697,8 @@ class SQLiteVectorStore(VectorStore):
             str(self._sqlalchemy_engine.url).replace("aiosqlite", "pysqlite")
         )
 
-        # Stores of different collections may share the async engine; the
-        # listener is registered once per engine.
+        # Different stores may share the async engine; the listener is
+        # registered once per engine.
         for sync_engine in (
             self._sqlalchemy_engine.sync_engine,
             self._sync_sqlalchemy_engine,
