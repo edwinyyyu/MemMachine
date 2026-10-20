@@ -6,7 +6,7 @@ import datetime
 import json
 import logging
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Self, cast
 from uuid import UUID, uuid4
@@ -366,7 +366,10 @@ class EventMemory:
         if claim is None:
             return False
         try:
-            await self._write_pending_derivatives(claim, budget)
+            (
+                vector_store_partition,
+                evicted_uuids,
+            ) = await self._write_pending_derivatives(claim, budget)
         except Exception as error:
             logger.warning(
                 "Writing pending derivatives %s of partition %r failed on attempt %d",
@@ -380,12 +383,19 @@ class EventMemory:
             )
             return True
         await self._params.event_memory_store.finish_pending_derivatives_claim(claim)
+        await _delete_evicted_records(vector_store_partition, evicted_uuids)
         return True
 
     async def _write_pending_derivatives(
         self, claim: PendingDerivativesClaim, budget: "_WriteBudget"
-    ) -> None:
-        """Write a claim's derivatives to the vector store within the budget."""
+    ) -> tuple[VectorStorePartition, set[UUID]]:
+        """Write a claim's derivatives to the vector store within the budget, deciding eviction again.
+
+        Returns:
+            tuple[VectorStorePartition, set[UUID]]:
+                The partition's vector store partition, and the derivative
+                UUIDs whose records eviction removes from it.
+        """
         vector_store_partition = await self._params.vector_store.open_partition(
             claim.partition_key
         )
@@ -397,23 +407,40 @@ class EventMemory:
             raise RuntimeError(
                 f"Partition {claim.partition_key!r} has no vector store partition"
             )
-        derivatives = claim.pending_derivatives.derivatives
+        # In temporal order, as an encode decides eviction.
+        derivatives = sorted(
+            claim.pending_derivatives.derivatives,
+            key=lambda derivative: (derivative.timestamp, derivative.uuid),
+        )
         embeddings = await self._params.embedder.ingest_embed(
             _derivative_texts(derivatives)
         )
-        await _upsert_within_budget(
+        # Decided again, against what is stored now. The stranded write may
+        # have stored some of the claim's own derivatives, which are not
+        # their own neighbors, and a skipped one's record leaves with the
+        # displaced ones.
+        displaced_uuids, skipped_uuids = await _decide_eviction(
+            self._params.eviction,
             vector_store_partition,
-            [
-                _build_derivative_record(
-                    derivative,
-                    embedding,
-                    claim.pending_derivatives.properties,
-                    self._schema_fields,
-                )
-                for derivative, embedding in zip(derivatives, embeddings, strict=True)
-            ],
-            budget,
+            self._similarity_metric,
+            claim.partition,
+            derivatives,
+            embeddings,
+            excluded_uuids={derivative.uuid for derivative in derivatives},
         )
+        records = [
+            _build_derivative_record(
+                derivative,
+                embedding,
+                claim.pending_derivatives.properties,
+                self._schema_fields,
+            )
+            for derivative, embedding in zip(derivatives, embeddings, strict=True)
+            if derivative.uuid not in skipped_uuids
+        ]
+        if records:
+            await _upsert_within_budget(vector_store_partition, records, budget)
+        return vector_store_partition, displaced_uuids | skipped_uuids
 
     async def _delete_tombstoned_derivatives(self) -> bool:
         """Delete one claimed tombstone's derivatives from the vector store; whether one was claimed."""
@@ -700,8 +727,15 @@ class EventMemoryPartition:
         )
         t_embedding = time.monotonic()
 
-        displaced_uuids, skipped_uuids = await self._decide_eviction(
-            derivatives, derivative_embeddings
+        displaced_uuids, skipped_uuids = await _decide_eviction(
+            self._eviction,
+            self._vector_store_partition,
+            self._similarity_metric,
+            self._event_memory_store_partition,
+            derivatives,
+            derivative_embeddings,
+            # The batch's derivatives are new, so none is stored yet.
+            excluded_uuids=frozenset(),
         )
         t_eviction = time.monotonic()
 
@@ -768,18 +802,8 @@ class EventMemoryPartition:
         t_pending_derivatives = time.monotonic()
 
         # A displaced derivative keeps its link, and its record leaves the
-        # vector store once the batch's records are written, best effort: a
-        # record a failed delete leaves stays searchable until a later
-        # eviction or a forget removes it.
-        if displaced_uuids:
-            try:
-                await self._vector_store_partition.delete(record_uuids=displaced_uuids)
-            except Exception:
-                logger.warning(
-                    "Deleting the records of %d displaced derivatives failed",
-                    len(displaced_uuids),
-                    exc_info=True,
-                )
+        # vector store once the batch's records are written.
+        await _delete_evicted_records(self._vector_store_partition, displaced_uuids)
         t_displaced_records = time.monotonic()
 
         phase_durations = {
@@ -807,168 +831,6 @@ class EventMemoryPartition:
                 self._encode_events_phase_seconds.observe(
                     duration, labels={"phase": phase}
                 )
-
-    async def _decide_eviction(
-        self,
-        derivatives: Sequence[Derivative],
-        derivative_embeddings: Sequence[Sequence[float]],
-    ) -> tuple[set[UUID], set[UUID]]:
-        """The stored derivatives to displace and the batch's to skip.
-
-        Decided before the encode writes anything, from the batch's own
-        embeddings and one neighbor query per derivative. Both sets are
-        empty when eviction is not configured.
-
-        Returns:
-            tuple[set[UUID], set[UUID]]:
-                The stored derivative UUIDs to displace and the batch
-                derivative UUIDs to leave unwritten.
-        """
-        if self._eviction is None or not derivatives:
-            return set(), set()
-
-        batch_predecessors = EventMemoryPartition._compute_batch_predecessors(
-            derivative_embeddings,
-            self._similarity_metric,
-            self._eviction.score_threshold,
-        )
-        stored_neighbors = await self._vector_store_partition.query(
-            query_vectors=list(derivative_embeddings),
-            score_threshold=self._eviction.score_threshold,
-            limit=self._eviction.search_limit,
-        )
-        stored_timestamps = await self._stored_derivative_timestamps(
-            match.record_uuid
-            for query_result in stored_neighbors
-            for match in query_result.matches
-        )
-        return EventMemoryPartition._select_eviction_targets(
-            derivatives,
-            stored_neighbors,
-            batch_predecessors,
-            stored_timestamps,
-            self._eviction.target_size,
-        )
-
-    async def _stored_derivative_timestamps(
-        self, derivative_uuids: Iterable[UUID]
-    ) -> dict[UUID, datetime.datetime]:
-        """The event timestamp of each stored derivative, read from its segment.
-
-        The vector store answers uuids and scores only; the event memory
-        store owns the derivative's segment, and the segment its timestamp.
-        A derivative whose segment is gone is omitted.
-        """
-        segment_by_derivative = await self._event_memory_store_partition.get_segment_uuids_by_derivative_uuids(
-            derivative_uuids
-        )
-        if not segment_by_derivative:
-            return {}
-        segments_by_uuid = await self._event_memory_store_partition.get_segments(
-            set(segment_by_derivative.values())
-        )
-        return {
-            derivative_uuid: segments_by_uuid[segment_uuid].timestamp
-            for derivative_uuid, segment_uuid in segment_by_derivative.items()
-            if segment_uuid in segments_by_uuid
-        }
-
-    @staticmethod
-    def _compute_batch_predecessors(
-        derivative_embeddings: Iterable[Sequence[float]],
-        similarity_metric: SimilarityMetric,
-        score_threshold: float,
-    ) -> list[set[int]]:
-        """
-        Compute batch predecessors for each derivative embedding.
-
-        The ith entry holds the indices j < i whose score with i, by
-        `similarity_metric`, is at least as good as the threshold, the test
-        the vector store applies to a stored neighbor. Only earlier indices
-        count, so a batch evicts exactly what serial ingestion would.
-        """
-        embeddings = np.asarray(list(derivative_embeddings), dtype=np.float64)
-        num_embeddings = len(embeddings)
-        if num_embeddings == 0:
-            return []
-
-        scores = _pairwise_scores(embeddings, similarity_metric)
-        if similarity_metric.higher_is_better:
-            mask = scores >= score_threshold
-        else:
-            mask = scores <= score_threshold
-        # The diagonal and the upper triangle never count.
-        mask[np.triu_indices(num_embeddings)] = False
-
-        return [set(np.where(mask[i])[0].tolist()) for i in range(num_embeddings)]
-
-    @staticmethod
-    def _select_eviction_targets(
-        derivatives: Iterable[Derivative],
-        query_results: Iterable[QueryResult],
-        batch_predecessors: list[set[int]],
-        stored_timestamps: Mapping[UUID, datetime.datetime],
-        target_size: int,
-    ) -> tuple[set[UUID], set[UUID]]:
-        """
-        Select eviction targets among near-duplicate stored and batch derivatives.
-
-        The cluster of a derivative is its stored neighbors not already
-        displaced in this batch, its batch predecessors not already skipped,
-        and itself. Within `target_size` nothing happens; over it, the
-        cluster is sorted by event timestamp and the earliest
-        `target_size // 2` and the latest remainder are kept: the middle's
-        stored members are displaced, its batch members skipped. A stored
-        neighbor with no timestamp in `stored_timestamps` (its segment is
-        gone) is not a member.
-
-        Returns a tuple of:
-        - the stored derivative UUIDs to displace
-        - the batch derivative UUIDs to skip
-        """
-        derivatives = list(derivatives)
-        query_results = list(query_results)
-
-        displaced_uuids: set[UUID] = set()
-        skipped_uuids: set[UUID] = set()
-
-        for derivative, query_result, predecessor_indexes in zip(
-            derivatives, query_results, batch_predecessors, strict=True
-        ):
-            # Cluster members: (timestamp, uuid, is_stored).
-            members: list[tuple[datetime.datetime, UUID, bool]] = []
-
-            for match in query_result.matches:
-                if match.record_uuid in displaced_uuids:
-                    continue
-                timestamp = stored_timestamps.get(match.record_uuid)
-                if timestamp is None:
-                    continue
-                members.append((timestamp, match.record_uuid, True))
-
-            for index in predecessor_indexes:
-                neighbor = derivatives[index]
-                if neighbor.uuid not in skipped_uuids:
-                    members.append((neighbor.timestamp, neighbor.uuid, False))
-
-            members.append((derivative.timestamp, derivative.uuid, False))
-
-            total_size = len(members)
-            if total_size <= target_size:
-                continue
-
-            # Oversized: trim the temporal middle.
-            members.sort()
-            keep_early = target_size // 2
-            keep_late = target_size - keep_early
-
-            for _, uuid, is_stored in members[keep_early : total_size - keep_late]:
-                if is_stored:
-                    displaced_uuids.add(uuid)
-                else:
-                    skipped_uuids.add(uuid)
-
-        return displaced_uuids, skipped_uuids
 
     @classmethod
     def _to_vector_record_property(cls, field: str) -> str:
@@ -1376,6 +1238,26 @@ def _build_derivative_record(
     )
 
 
+async def _delete_evicted_records(
+    vector_store_partition: VectorStorePartition, record_uuids: set[UUID]
+) -> None:
+    """Delete evicted derivatives' records, best effort.
+
+    An evicted derivative keeps its link, so a record a failed delete leaves
+    stays searchable until a later eviction or a forget removes it.
+    """
+    if not record_uuids:
+        return
+    try:
+        await vector_store_partition.delete(record_uuids=record_uuids)
+    except Exception:
+        logger.warning(
+            "Deleting the records of %d evicted derivatives failed",
+            len(record_uuids),
+            exc_info=True,
+        )
+
+
 async def _upsert_within_budget(
     vector_store_partition: VectorStorePartition,
     records: list[Record],
@@ -1427,6 +1309,192 @@ class _WriteBudget:
             time.time() - self.started_wall,
         )
         return self.seconds - elapsed
+
+
+async def _decide_eviction(
+    eviction: EvictionOptions | None,
+    vector_store_partition: VectorStorePartition,
+    similarity_metric: SimilarityMetric,
+    event_memory_store_partition: EventMemoryStorePartition,
+    derivatives: Sequence[Derivative],
+    derivative_embeddings: Sequence[Sequence[float]],
+    *,
+    excluded_uuids: Collection[UUID],
+) -> tuple[set[UUID], set[UUID]]:
+    """The stored derivatives to displace and the batch's to skip.
+
+    Decided before the batch's records are written, from the batch's own
+    embeddings and one neighbor query per derivative. A stored record whose
+    UUID is in `excluded_uuids` is no derivative's neighbor. Both sets are
+    empty when eviction is not configured.
+
+    Returns:
+        tuple[set[UUID], set[UUID]]:
+            The stored derivative UUIDs to displace and the batch
+            derivative UUIDs to leave unwritten.
+    """
+    if eviction is None or not derivatives:
+        return set(), set()
+
+    batch_predecessors = _compute_batch_predecessors(
+        derivative_embeddings,
+        similarity_metric,
+        eviction.score_threshold,
+    )
+    stored_neighbors = [
+        QueryResult(
+            matches=[
+                match
+                for match in query_result.matches
+                if match.record_uuid not in excluded_uuids
+            ][: eviction.search_limit]
+        )
+        for query_result in await vector_store_partition.query(
+            query_vectors=list(derivative_embeddings),
+            score_threshold=eviction.score_threshold,
+            # Room for the excluded records besides `search_limit` others.
+            limit=eviction.search_limit + len(excluded_uuids),
+        )
+    ]
+    stored_timestamps = await _stored_derivative_timestamps(
+        event_memory_store_partition,
+        (
+            match.record_uuid
+            for query_result in stored_neighbors
+            for match in query_result.matches
+        ),
+    )
+    return _select_eviction_targets(
+        derivatives,
+        stored_neighbors,
+        batch_predecessors,
+        stored_timestamps,
+        eviction.target_size,
+    )
+
+
+async def _stored_derivative_timestamps(
+    event_memory_store_partition: EventMemoryStorePartition,
+    derivative_uuids: Iterable[UUID],
+) -> dict[UUID, datetime.datetime]:
+    """The event timestamp of each stored derivative, read from its segment.
+
+    The vector store answers uuids and scores only; the event memory
+    store owns the derivative's segment, and the segment its timestamp.
+    A derivative whose segment is gone is omitted.
+    """
+    segment_by_derivative = (
+        await event_memory_store_partition.get_segment_uuids_by_derivative_uuids(
+            derivative_uuids
+        )
+    )
+    if not segment_by_derivative:
+        return {}
+    segments_by_uuid = await event_memory_store_partition.get_segments(
+        set(segment_by_derivative.values())
+    )
+    return {
+        derivative_uuid: segments_by_uuid[segment_uuid].timestamp
+        for derivative_uuid, segment_uuid in segment_by_derivative.items()
+        if segment_uuid in segments_by_uuid
+    }
+
+
+def _compute_batch_predecessors(
+    derivative_embeddings: Iterable[Sequence[float]],
+    similarity_metric: SimilarityMetric,
+    score_threshold: float,
+) -> list[set[int]]:
+    """
+    Compute batch predecessors for each derivative embedding.
+
+    The ith entry holds the indices j < i whose score with i, by
+    `similarity_metric`, is at least as good as the threshold, the test
+    the vector store applies to a stored neighbor. Only earlier indices
+    count, so a batch evicts exactly what serial ingestion would.
+    """
+    embeddings = np.asarray(list(derivative_embeddings), dtype=np.float64)
+    num_embeddings = len(embeddings)
+    if num_embeddings == 0:
+        return []
+
+    scores = _pairwise_scores(embeddings, similarity_metric)
+    if similarity_metric.higher_is_better:
+        mask = scores >= score_threshold
+    else:
+        mask = scores <= score_threshold
+    # The diagonal and the upper triangle never count.
+    mask[np.triu_indices(num_embeddings)] = False
+
+    return [set(np.where(mask[i])[0].tolist()) for i in range(num_embeddings)]
+
+
+def _select_eviction_targets(
+    derivatives: Iterable[Derivative],
+    query_results: Iterable[QueryResult],
+    batch_predecessors: list[set[int]],
+    stored_timestamps: Mapping[UUID, datetime.datetime],
+    target_size: int,
+) -> tuple[set[UUID], set[UUID]]:
+    """
+    Select eviction targets among near-duplicate stored and batch derivatives.
+
+    The cluster of a derivative is its stored neighbors not already
+    displaced in this batch, its batch predecessors not already skipped,
+    and itself. Within `target_size` nothing happens; over it, the
+    cluster is sorted by event timestamp and the earliest
+    `target_size // 2` and the latest remainder are kept: the middle's
+    stored members are displaced, its batch members skipped. A stored
+    neighbor with no timestamp in `stored_timestamps` (its segment is
+    gone) is not a member.
+
+    Returns a tuple of:
+    - the stored derivative UUIDs to displace
+    - the batch derivative UUIDs to skip
+    """
+    derivatives = list(derivatives)
+    query_results = list(query_results)
+
+    displaced_uuids: set[UUID] = set()
+    skipped_uuids: set[UUID] = set()
+
+    for derivative, query_result, predecessor_indexes in zip(
+        derivatives, query_results, batch_predecessors, strict=True
+    ):
+        # Cluster members: (timestamp, uuid, is_stored).
+        members: list[tuple[datetime.datetime, UUID, bool]] = []
+
+        for match in query_result.matches:
+            if match.record_uuid in displaced_uuids:
+                continue
+            timestamp = stored_timestamps.get(match.record_uuid)
+            if timestamp is None:
+                continue
+            members.append((timestamp, match.record_uuid, True))
+
+        for index in predecessor_indexes:
+            neighbor = derivatives[index]
+            if neighbor.uuid not in skipped_uuids:
+                members.append((neighbor.timestamp, neighbor.uuid, False))
+
+        members.append((derivative.timestamp, derivative.uuid, False))
+
+        total_size = len(members)
+        if total_size <= target_size:
+            continue
+
+        # Oversized: trim the temporal middle.
+        members.sort()
+        keep_early = target_size // 2
+        keep_late = target_size - keep_early
+
+        for _, uuid, is_stored in members[keep_early : total_size - keep_late]:
+            if is_stored:
+                displaced_uuids.add(uuid)
+            else:
+                skipped_uuids.add(uuid)
+
+    return displaced_uuids, skipped_uuids
 
 
 def _pairwise_scores(
