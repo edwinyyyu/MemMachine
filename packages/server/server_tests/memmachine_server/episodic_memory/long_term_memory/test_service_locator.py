@@ -159,6 +159,8 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
     partition = create_autospec(VectorStorePartition, instance=True)
+    partition.indexed_properties = event_backend_indexed_properties()
+    partition.similarity_metric = SimilarityMetric.COSINE
     vector_store = create_autospec(VectorStore, instance=True)
     vector_store.open_or_create_partition.return_value = partition
     embedder = create_autospec(Embedder, instance=True)
@@ -180,7 +182,7 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
 
     params = await _event_params(config, resource_manager)
 
-    assert params.vector_store_partition is partition
+    assert params.event_memory_partition.similarity_metric is SimilarityMetric.COSINE
     vector_store.open_or_create_partition.assert_awaited_once_with("raced")
     resource_manager.get_vector_store.assert_awaited_once_with(
         "vs",
