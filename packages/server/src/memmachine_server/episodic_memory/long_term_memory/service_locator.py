@@ -11,6 +11,7 @@ from memmachine_server.common.configuration.episodic_config import (
     DeriverConf,
     EventLongTermMemoryConf,
     LongTermMemoryConf,
+    LongTermMemoryConfPartial,
     PassthroughSegmenterConf,
     SegmenterConf,
     SentenceTextDeriverConf,
@@ -18,6 +19,7 @@ from memmachine_server.common.configuration.episodic_config import (
     WholeTextDeriverConf,
 )
 from memmachine_server.common.data_types import PropertyType
+from memmachine_server.common.errors import ConfigurationError
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
@@ -100,26 +102,26 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
-    segment_store = await resource_manager.get_segment_store(config.segment_store)
-    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
-    vector_store = await event_backend_vector_store(config, resource_manager)
-    reranker = (
-        await resource_manager.get_reranker(config.reranker, validate=True)
-        if config.reranker is not None
-        else None
-    )
-    episode_storage = await resource_manager.get_episode_storage()
-
-    event_memory = EventMemory(
-        EventMemoryParams(
-            segment_store=segment_store,
-            vector_store=vector_store,
-            segmenter=_build_segmenter(config.segmenter),
-            deriver=_build_deriver(config.deriver),
-            embedder=embedder,
-            reranker=reranker,
-            metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
+    # The deployment's EventMemory serves every session. A session's vector
+    # store, segment store, and embedder hold its data, so they must be the
+    # deployment's; the deployment's segmenter, deriver, and reranker serve
+    # it whatever the session names.
+    event_memory = await resource_manager.get_event_memory()
+    deployment = resource_manager.config.episodic_memory.long_term_memory
+    assert deployment is not None
+    if (config.vector_store, config.segment_store, config.embedder) != (
+        deployment.vector_store,
+        deployment.segment_store,
+        deployment.embedder,
+    ):
+        raise ConfigurationError(
+            f"Session {config.session_id!r} names a vector store, segment "
+            "store, or embedder other than the deployment's event memory's"
         )
+    reranker = (
+        await resource_manager.get_reranker(deployment.reranker, validate=True)
+        if deployment.reranker is not None
+        else None
     )
 
     partition_key = partition_key_for_session(config.session_id)
@@ -130,25 +132,82 @@ async def _event_params(
         event_memory=event_memory,
         event_memory_partition=event_memory_partition,
         partition_key=partition_key,
-        episode_storage=episode_storage,
+        episode_storage=await resource_manager.get_episode_storage(),
         reranker=reranker,
     )
 
 
-async def event_backend_vector_store(
-    config: EventLongTermMemoryConf,
+async def event_memory_from_config(
+    config: LongTermMemoryConfPartial | None,
     resource_manager: InstanceOf[CommonResourceManager],
+) -> EventMemory:
+    """Build a deployment's EventMemory from its long-term memory configuration.
+
+    The configuration names every resource the EventMemory works with.
+
+    Raises:
+        ConfigurationError:
+            If the configuration names no vector store, segment store, or
+            embedder.
+    """
+    if (
+        config is None
+        or config.vector_store is None
+        or config.segment_store is None
+        or config.embedder is None
+    ):
+        raise ConfigurationError(
+            "Event memory needs the long-term memory configuration to name "
+            "a vector store, a segment store, and an embedder"
+        )
+    reranker = (
+        await resource_manager.get_reranker(config.reranker, validate=True)
+        if config.reranker is not None
+        else None
+    )
+    return EventMemory(
+        EventMemoryParams(
+            segment_store=await resource_manager.get_segment_store(
+                config.segment_store
+            ),
+            vector_store=await event_backend_vector_store(
+                resource_manager,
+                vector_store=config.vector_store,
+                embedder=config.embedder,
+            ),
+            segmenter=_build_segmenter(
+                config.segmenter
+                if config.segmenter is not None
+                else PassthroughSegmenterConf()
+            ),
+            deriver=_build_deriver(
+                config.deriver if config.deriver is not None else WholeTextDeriverConf()
+            ),
+            embedder=await resource_manager.get_embedder(
+                config.embedder, validate=True
+            ),
+            reranker=reranker,
+            metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
+        )
+    )
+
+
+async def event_backend_vector_store(
+    resource_manager: InstanceOf[CommonResourceManager],
+    *,
+    vector_store: str,
+    embedder: str,
 ) -> VectorStore:
     """The event backend's vector store: the store of its backend and embedder, built for it."""
-    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    embedder_instance = await resource_manager.get_embedder(embedder, validate=True)
     return await resource_manager.get_vector_store(
-        config.vector_store,
+        vector_store,
         vector_store_name=uuid5(
-            uuid5(_EVENT_BACKEND_VECTOR_STORE_NAMESPACE, config.vector_store),
-            config.embedder,
+            uuid5(_EVENT_BACKEND_VECTOR_STORE_NAMESPACE, vector_store),
+            embedder,
         ).hex,
-        vector_dimensions=embedder.dimensions,
-        similarity_metric=embedder.similarity_metric,
+        vector_dimensions=embedder_instance.dimensions,
+        similarity_metric=embedder_instance.similarity_metric,
         indexed_properties=event_backend_indexed_properties(),
     )
 

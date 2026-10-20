@@ -1,16 +1,21 @@
 """Unit tests for service_locator helpers."""
 
 import re
-from unittest.mock import create_autospec
+from unittest.mock import NonCallableMagicMock, create_autospec
 
 import pytest
 
+from memmachine_server.common.configuration import Configuration
 from memmachine_server.common.configuration.episodic_config import (
+    EpisodicMemoryConfPartial,
     EventLongTermMemoryConf,
+    LongTermMemoryConfPartial,
 )
 from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import EpisodeStorage
+from memmachine_server.common.errors import ConfigurationError
+from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
     VectorStore,
@@ -28,6 +33,7 @@ from memmachine_server.episodic_memory.long_term_memory.service_locator import (
     _event_params,
     event_backend_indexed_properties,
     event_backend_vector_store,
+    event_memory_from_config,
     partition_key_for_session,
 )
 
@@ -99,19 +105,17 @@ def test_partition_key_empty_string_passthrough():
 @pytest.mark.asyncio
 async def test_any_embedder_id_names_a_vector_store():
     """The store's name derives from the embedder id, so the id itself is unconstrained."""
-    config = EventLongTermMemoryConf(
-        session_id="s",
-        vector_store="vs",
-        segment_store="ss",
-        embedder="OpenAI text-embedding-3-large, 3072 dimensions",
-    )
     embedder = create_autospec(Embedder, instance=True)
     embedder.dimensions = 3
     embedder.similarity_metric = SimilarityMetric.COSINE
     resource_manager = create_autospec(CommonResourceManager, instance=True)
     resource_manager.get_embedder.return_value = embedder
 
-    await event_backend_vector_store(config, resource_manager)
+    await event_backend_vector_store(
+        resource_manager,
+        vector_store="vs",
+        embedder="OpenAI text-embedding-3-large, 3072 dimensions",
+    )
 
     vector_store_name = resource_manager.get_vector_store.await_args.kwargs[
         "vector_store_name"
@@ -131,19 +135,55 @@ async def test_stores_on_two_backends_never_share_a_name():
 
     names = []
     for vector_store in ("vs_a", "vs_b", "vs_a"):
-        config = EventLongTermMemoryConf(
-            session_id="s",
-            vector_store=vector_store,
-            segment_store="ss",
-            embedder="e",
+        await event_backend_vector_store(
+            resource_manager, vector_store=vector_store, embedder="e"
         )
-        await event_backend_vector_store(config, resource_manager)
         names.append(
             resource_manager.get_vector_store.await_args.kwargs["vector_store_name"]
         )
 
     assert names[0] != names[1]
     assert names[0] == names[2]
+
+
+def _deployment_resource_manager(
+    deployment: LongTermMemoryConfPartial,
+) -> NonCallableMagicMock:
+    """A resource manager whose deployment configures `deployment` and whose stores open autospec partitions."""
+    partition = create_autospec(VectorStorePartition, instance=True)
+    partition.indexed_properties = event_backend_indexed_properties()
+    partition.similarity_metric = SimilarityMetric.COSINE
+    vector_store = create_autospec(VectorStore, instance=True)
+    vector_store.open_or_create_partition.return_value = partition
+    embedder = create_autospec(Embedder, instance=True)
+    embedder.dimensions = 3
+    embedder.similarity_metric = SimilarityMetric.COSINE
+    resource_manager = create_autospec(CommonResourceManager, instance=True)
+    resource_manager.config = create_autospec(Configuration, instance=True)
+    resource_manager.config.episodic_memory = EpisodicMemoryConfPartial(
+        long_term_memory=deployment
+    )
+    resource_manager.get_vector_store.return_value = vector_store
+    resource_manager.get_segment_store.return_value = create_autospec(
+        SegmentStore, instance=True
+    )
+    resource_manager.get_segment_store.return_value.open_or_create_partition.return_value = create_autospec(
+        SegmentStorePartition, instance=True
+    )
+    resource_manager.get_embedder.return_value = embedder
+    resource_manager.get_reranker.return_value = create_autospec(
+        Reranker, instance=True
+    )
+    resource_manager.get_episode_storage.return_value = create_autospec(
+        EpisodeStorage, instance=True
+    )
+    resource_manager.get_metrics_factory.return_value = None
+    return resource_manager
+
+
+_DEPLOYMENT = LongTermMemoryConfPartial(
+    backend="event", vector_store="vs", segment_store="ss", embedder="e"
+)
 
 
 @pytest.mark.asyncio
@@ -155,34 +195,18 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
     the race to another opens the winner's partition instead of failing
     the request.
     """
+    resource_manager = _deployment_resource_manager(_DEPLOYMENT)
+    resource_manager.get_event_memory.return_value = await event_memory_from_config(
+        _DEPLOYMENT, resource_manager
+    )
     config = EventLongTermMemoryConf(
         session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
     )
-    partition = create_autospec(VectorStorePartition, instance=True)
-    partition.indexed_properties = event_backend_indexed_properties()
-    partition.similarity_metric = SimilarityMetric.COSINE
-    vector_store = create_autospec(VectorStore, instance=True)
-    vector_store.open_or_create_partition.return_value = partition
-    embedder = create_autospec(Embedder, instance=True)
-    embedder.dimensions = 3
-    embedder.similarity_metric = SimilarityMetric.COSINE
-    resource_manager = create_autospec(CommonResourceManager, instance=True)
-    resource_manager.get_vector_store.return_value = vector_store
-    resource_manager.get_segment_store.return_value = create_autospec(
-        SegmentStore, instance=True
-    )
-    resource_manager.get_segment_store.return_value.open_or_create_partition.return_value = create_autospec(
-        SegmentStorePartition, instance=True
-    )
-    resource_manager.get_embedder.return_value = embedder
-    resource_manager.get_episode_storage.return_value = create_autospec(
-        EpisodeStorage, instance=True
-    )
-    resource_manager.get_metrics_factory.return_value = None
 
     params = await _event_params(config, resource_manager)
 
     assert params.event_memory_partition.similarity_metric is SimilarityMetric.COSINE
+    vector_store = resource_manager.get_vector_store.return_value
     vector_store.open_or_create_partition.assert_awaited_once_with("raced")
     resource_manager.get_vector_store.assert_awaited_once_with(
         "vs",
@@ -191,3 +215,77 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
         similarity_metric=SimilarityMetric.COSINE,
         indexed_properties=event_backend_indexed_properties(),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("vector_store", "segment_store", "embedder"),
+    [("other", "ss", "e"), ("vs", "other", "e"), ("vs", "ss", "other")],
+    ids=["vector_store", "segment_store", "embedder"],
+)
+async def test_event_params_refuses_a_session_naming_other_resources(
+    vector_store: str,
+    segment_store: str,
+    embedder: str,
+):
+    """A session whose data lives in other stores than the deployment's is not served."""
+    resource_manager = _deployment_resource_manager(_DEPLOYMENT)
+    event_memory = await event_memory_from_config(_DEPLOYMENT, resource_manager)
+    resource_manager.get_event_memory.return_value = event_memory
+    config = EventLongTermMemoryConf(
+        session_id="s",
+        vector_store=vector_store,
+        segment_store=segment_store,
+        embedder=embedder,
+    )
+
+    with pytest.raises(ConfigurationError):
+        await _event_params(config, resource_manager)
+
+    vector_store = resource_manager.get_vector_store.return_value
+    vector_store.open_or_create_partition.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_event_params_serves_a_session_with_the_deployments_reranker():
+    """The reranker is the deployment's whatever the session names."""
+    deployment = _DEPLOYMENT.model_copy(update={"reranker": "deployment_reranker"})
+    resource_manager = _deployment_resource_manager(deployment)
+    resource_manager.get_event_memory.return_value = await event_memory_from_config(
+        deployment, resource_manager
+    )
+    resource_manager.get_reranker.reset_mock()
+    config = EventLongTermMemoryConf(
+        session_id="s",
+        vector_store="vs",
+        segment_store="ss",
+        embedder="e",
+        reranker="session_reranker",
+    )
+
+    params = await _event_params(config, resource_manager)
+
+    assert params.reranker is resource_manager.get_reranker.return_value
+    resource_manager.get_reranker.assert_awaited_once_with(
+        "deployment_reranker", validate=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "deployment",
+    [
+        None,
+        LongTermMemoryConfPartial(segment_store="ss", embedder="e"),
+        LongTermMemoryConfPartial(vector_store="vs", embedder="e"),
+        LongTermMemoryConfPartial(vector_store="vs", segment_store="ss"),
+    ],
+    ids=["none", "vector_store", "segment_store", "embedder"],
+)
+async def test_event_memory_from_config_requires_its_resources(
+    deployment: LongTermMemoryConfPartial | None,
+):
+    resource_manager = create_autospec(CommonResourceManager, instance=True)
+
+    with pytest.raises(ConfigurationError):
+        await event_memory_from_config(deployment, resource_manager)

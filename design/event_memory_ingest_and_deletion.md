@@ -59,6 +59,13 @@ delete. A failure here leaves the first delete to the background work.
 A claim holds its record for a lease, fails into a backoff that doubles,
 and is no longer taken after repeated failures, which is reported.
 
+The records name no vector store or embedder: a deployment has one
+EventMemory, built from its configuration and started with the server,
+and every partition in its segment store is that EventMemory's. A session
+naming another vector store, segment store, or embedder is refused. So the
+background work writes and deletes with the EventMemory's own stores, and
+runs whether or not any session is opened.
+
 **Search.** A vector hit with no link is dropped from the results and its
 vector deleted once, best effort; the next search that finds it tries
 again.
@@ -140,6 +147,9 @@ above breaks one of them.
   do.
 - Forgotten vectors stay physically in the vector store until their
   deletes run; their text is gone from SQL when the forget commits.
+- A deployment's sessions share its vector store, segment store, and
+  embedder; a session stored with others is refused until its data is
+  moved to the deployment's.
 - Recovery needs the embedder and the vector store, and waits out their
   outages in its backoff. A record or tombstone that keeps failing is
   reported and kept, and needs an operator to retry it.

@@ -44,12 +44,16 @@ from memmachine_server.episodic_memory.episodic_memory_manager import (
     EpisodicMemoryManager,
     EpisodicMemoryManagerParams,
 )
+from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
+)
+from memmachine_server.episodic_memory.long_term_memory.service_locator import (
+    event_memory_from_config,
 )
 from memmachine_server.semantic_memory.semantic_memory import SemanticService
 from memmachine_server.semantic_memory.semantic_session_manager import (
@@ -146,6 +150,7 @@ class ResourceManagerImpl:
         self._episode_storage: EpisodeStorage | None = None
         self._semantic_manager: SemanticResourceManager | None = None
         self._segment_stores: dict[str, SegmentStore] = {}
+        self._event_memory: EventMemory | None = None
         self._segment_store_purge_tasks: list[asyncio.Task[None]] = []
         # One sweeper per vector store, keyed by its backend and its name.
         self._vector_store_purge_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
@@ -156,6 +161,7 @@ class ResourceManagerImpl:
         self._episode_storage_lock = Lock()
         self._semantic_manager_lock = Lock()
         self._segment_store_lock = Lock()
+        self._event_memory_lock = Lock()
 
     async def build(self) -> None:
         """Build all configured resources in parallel."""
@@ -172,6 +178,12 @@ class ResourceManagerImpl:
 
     async def close(self) -> None:
         """Close resources and clean up state."""
+        # The EventMemory's background work uses the stores closed below.
+        event_memory = self._event_memory
+        self._event_memory = None
+        if event_memory is not None:
+            await event_memory.shutdown()
+
         purge_tasks = list(self._segment_store_purge_tasks)
         self._segment_store_purge_tasks.clear()
         purge_tasks.extend(self._vector_store_purge_tasks.values())
@@ -260,6 +272,21 @@ class ResourceManagerImpl:
                         asyncio.create_task(_purge_deleted_partitions_forever(store))
                     )
         return self._segment_stores[name]
+
+    async def get_event_memory(self) -> EventMemory:
+        """Return the deployment's EventMemory, building and starting it on first access.
+
+        Built from the episodic memory's long-term memory configuration.
+        """
+        if self._event_memory is None:
+            async with self._event_memory_lock:
+                if self._event_memory is None:
+                    event_memory = await event_memory_from_config(
+                        self._conf.episodic_memory.long_term_memory, self
+                    )
+                    await event_memory.startup()
+                    self._event_memory = event_memory
+        return self._event_memory
 
     async def get_embedder(self, name: str, validate: bool = False) -> Embedder:
         """Return an embedder by name."""
