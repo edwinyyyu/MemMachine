@@ -1,7 +1,7 @@
 # Event memory: ingest recovery and deletion across two stores
 
 Event memory keeps events, their segments, and the links from derivatives to
-segments in a SQL segment store, and the derivatives' vectors in a vector
+segments in a SQL event memory store, and the derivatives' vectors in a vector
 store. The two share no transaction. This document is how an ingest stays
 complete and a forget stays complete anyway.
 
@@ -23,7 +23,7 @@ complete and a forget stays complete anyway.
 
 ## The protocol
 
-**State.** Besides events, segments and links, the segment store keeps
+**State.** Besides events, segments and links, the event memory store keeps
 pending derivatives (one record per event, holding its derivatives until
 the vector store has them) and tombstones (one per forget, naming the
 derivatives it unlinked), in its own database and transactions. Neither
@@ -48,7 +48,7 @@ derivatives, and deletes the events, which cascades to segments and links.
 The vectors are then deleted once, and the tombstone awaits its second
 delete. A failure here leaves the first delete to the background work.
 
-**Background work.** Any process claims, from the segment store:
+**Background work.** Any process claims, from the event memory store:
 
 - pending derivatives older than the budget plus a margin, starting a
   budget of its own before the claim, then writes them and deletes the
@@ -61,7 +61,7 @@ and is no longer taken after repeated failures, which is reported.
 
 The records name no vector store or embedder: a deployment has one
 EventMemory, built from its configuration and started with the server,
-and every partition in its segment store is that EventMemory's. So the
+and every partition in its event memory store is that EventMemory's. So the
 background work writes and deletes with the EventMemory's own stores, and
 runs whether or not any session is opened.
 
@@ -69,7 +69,7 @@ runs whether or not any session is opened.
 vector deleted once, best effort; the next search that finds it tries
 again.
 
-**Partition deletion.** The segment store's partition goes first, so its
+**Partition deletion.** The event memory store's partition goes first, so its
 text is gone at once and no write starts on it; the vector store's
 partition deletion then removes every vector, with its own retention for
 writes in flight. Partitions are created in the other order, so a segment
@@ -111,7 +111,7 @@ atomic there.
 
 A recovery opens the vector store partition under the partition's key, so
 it checks after opening that the partition it claimed from still exists:
-since deletion removes the segment store's partition first, the vector
+since deletion removes the event memory store's partition first, the vector
 store partition it opened belongs to the same life.
 
 The protocol was model-checked on a small instance (two encodes of one
@@ -122,7 +122,7 @@ above breaks one of them.
 
 ## Alternatives
 
-- **Hold the segment store's transaction across the upsert.** It holds a
+- **Hold the event memory store's transaction across the upsert.** It holds a
   pooled connection, or SQLite's whole-database write lock, across every
   vector call, and it does not bound when an admitted write lands, so it
   still needs tombstones and R.
@@ -146,7 +146,7 @@ above breaks one of them.
   do.
 - Forgotten vectors stay physically in the vector store until their
   deletes run; their text is gone from SQL when the forget commits.
-- A deployment's sessions share its vector store, segment store, and
+- A deployment's sessions share its vector store, event memory store, and
   embedder. Pointing the deployment at other stores moves no data.
 - Recovery needs the embedder and the vector store, and waits out their
   outages in its backoff. A record or tombstone that keeps failing is

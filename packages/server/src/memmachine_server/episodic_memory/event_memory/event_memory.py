@@ -59,14 +59,14 @@ from .data_types import (
     TextBlock,
 )
 from .deriver import Deriver
-from .formatting import format_timestamp
-from .segment_store import (
+from .event_memory_store import (
+    EventMemoryStore,
+    EventMemoryStorePartition,
+    EventMemoryStorePartitionConfig,
     PendingDerivatives,
     PendingDerivativesClaim,
-    SegmentStore,
-    SegmentStorePartition,
-    SegmentStorePartitionConfig,
 )
+from .formatting import format_timestamp
 from .segmenter import Segmenter
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ EVENT_SOURCE_KEY: Final[str] = reserved_property_key("em", "source")
 
 # Every property a vector record carries, with the type the collection
 # declares: the fields a search filters on at the vector stage. User
-# properties stay in the segment store.
+# properties stay in the event memory store.
 _RESERVED_PROPERTY_SCHEMA: Final[dict[str, type[PropertyValue]]] = {
     EVENT_TIMESTAMP_KEY: cast(type[PropertyValue], datetime.datetime),
     EVENT_SOURCE_KEY: cast(type[PropertyValue], str),
@@ -131,8 +131,8 @@ class EventMemoryParams(BaseModel):
     Parameters for EventMemory.
 
     Attributes:
-        segment_store (SegmentStore):
-            Segment store holding the events' segments.
+        event_memory_store (EventMemoryStore):
+            Event memory store holding the events' segments.
         vector_store (VectorStore):
             Vector store holding the derivatives' vectors.
         store_schema (VectorStoreSchema):
@@ -150,16 +150,16 @@ class EventMemoryParams(BaseModel):
             Seconds from its start within which a write of derivatives to
             the vector store sends its last request. A write still running
             then is cancelled, and its derivatives are written again in the
-            background. The segment store's tombstone retention must exceed
+            background. The event memory store's tombstone retention must exceed
             it by a wide margin (default: 120).
         background_idle_seconds (int):
             Seconds the background work waits after finding nothing to do
             (default: 5).
     """
 
-    segment_store: InstanceOf[SegmentStore] = Field(
+    event_memory_store: InstanceOf[EventMemoryStore] = Field(
         ...,
-        description="Segment store holding the events' segments",
+        description="Event memory store holding the events' segments",
     )
     vector_store: InstanceOf[VectorStore] = Field(
         ...,
@@ -192,7 +192,7 @@ class EventMemoryParams(BaseModel):
             "Seconds from its start within which a write of derivatives to "
             "the vector store sends its last request. A write still running "
             "then is cancelled, and its derivatives are written again in the "
-            "background. The segment store's tombstone retention must exceed "
+            "background. The event memory store's tombstone retention must exceed "
             "it by a wide margin"
         ),
     )
@@ -205,7 +205,7 @@ class EventMemoryParams(BaseModel):
 
 class EventMemory:
     """
-    Event memory over a segment store and a vector store.
+    Event memory over an event memory store and a vector store.
 
     A partition key names one partition in each store, and must be valid
     in both. Handles on a partition read and write that pair only.
@@ -285,8 +285,8 @@ class EventMemory:
         """
         Open the partition if it exists, or create it if it does not.
 
-        The vector store's partition is created before the segment store's,
-        so a segment store partition always has its vector store partition.
+        The vector store's partition is created before the event memory store's,
+        so an event memory store partition always has its vector store partition.
 
         Args:
             partition_key (str):
@@ -299,15 +299,15 @@ class EventMemory:
         vector_store_partition = (
             await self._params.vector_store.open_or_create_partition(partition_key)
         )
-        segment_store_partition = (
-            await self._params.segment_store.open_or_create_partition(
+        event_memory_store_partition = (
+            await self._params.event_memory_store.open_or_create_partition(
                 partition_key,
-                SegmentStorePartitionConfig(),
+                EventMemoryStorePartitionConfig(),
             )
         )
         return EventMemoryPartition(
             self._params,
-            segment_store_partition=segment_store_partition,
+            event_memory_store_partition=event_memory_store_partition,
             vector_store_partition=vector_store_partition,
             schema_fields=self._schema_fields,
             similarity_metric=self._similarity_metric,
@@ -317,7 +317,7 @@ class EventMemory:
         """
         Delete the partition from both stores. Idempotent.
 
-        The segment store's partition is deleted first. Its text is gone
+        The event memory store's partition is deleted first. Its text is gone
         then, no write can start on it, and the background work stops
         taking up its pending derivatives and tombstones, whose vectors
         the vector store's partition deletion removes.
@@ -326,7 +326,7 @@ class EventMemory:
             partition_key (str):
                 The key of the partition to delete.
         """
-        await self._params.segment_store.delete_partition(partition_key)
+        await self._params.event_memory_store.delete_partition(partition_key)
         await self._params.vector_store.delete_partition(partition_key)
 
     async def _work_in_background(self) -> None:
@@ -346,7 +346,7 @@ class EventMemory:
         # Started before the claim: a forget of these derivatives stamps its
         # tombstone after the claim, so after the start.
         budget = _WriteBudget.start(self._params.write_budget_seconds)
-        claim = await self._params.segment_store.claim_pending_derivatives(
+        claim = await self._params.event_memory_store.claim_pending_derivatives(
             min_age_seconds=self._params.write_budget_seconds + _CLAIM_MARGIN_SECONDS,
             lease_seconds=self._params.write_budget_seconds + _CLAIM_MARGIN_SECONDS,
         )
@@ -362,11 +362,11 @@ class EventMemory:
                 claim.attempt,
                 exc_info=True,
             )
-            await self._params.segment_store.fail_pending_derivatives_claim(
+            await self._params.event_memory_store.fail_pending_derivatives_claim(
                 claim, error
             )
             return True
-        await self._params.segment_store.finish_pending_derivatives_claim(claim)
+        await self._params.event_memory_store.finish_pending_derivatives_claim(claim)
         return True
 
     async def _write_pending_derivatives(
@@ -378,7 +378,7 @@ class EventMemory:
         )
         # The vector store partition opened under the key belongs to the
         # claimed partition only while that partition exists, since a
-        # partition leaves the segment store first.
+        # partition leaves the event memory store first.
         await claim.partition.require_current()
         if vector_store_partition is None:
             raise RuntimeError(
@@ -404,7 +404,7 @@ class EventMemory:
 
     async def _delete_tombstoned_derivatives(self) -> bool:
         """Delete one claimed tombstone's derivatives from the vector store; whether one was claimed."""
-        claim = await self._params.segment_store.claim_tombstone()
+        claim = await self._params.event_memory_store.claim_tombstone()
         if claim is None:
             return False
         try:
@@ -426,9 +426,9 @@ class EventMemory:
                 claim.attempt,
                 exc_info=True,
             )
-            await self._params.segment_store.fail_tombstone_claim(claim, error)
+            await self._params.event_memory_store.fail_tombstone_claim(claim, error)
             return True
-        await self._params.segment_store.finish_tombstone_claim(claim)
+        await self._params.event_memory_store.finish_tombstone_claim(claim)
         return True
 
     @staticmethod
@@ -552,7 +552,7 @@ class EventMemoryPartition:
         self,
         params: EventMemoryParams,
         *,
-        segment_store_partition: SegmentStorePartition,
+        event_memory_store_partition: EventMemoryStorePartition,
         vector_store_partition: VectorStorePartition,
         schema_fields: frozenset[str],
         similarity_metric: SimilarityMetric,
@@ -563,8 +563,8 @@ class EventMemoryPartition:
         Args:
             params (EventMemoryParams):
                 Parameters of the EventMemory.
-            segment_store_partition (SegmentStorePartition):
-                The partition's segment store partition.
+            event_memory_store_partition (EventMemoryStorePartition):
+                The partition's event memory store partition.
             vector_store_partition (VectorStorePartition):
                 The partition's vector store partition.
             schema_fields (frozenset[str]):
@@ -572,7 +572,7 @@ class EventMemoryPartition:
             similarity_metric (SimilarityMetric):
                 The metric the vector store scores matches by.
         """
-        self._segment_store_partition = segment_store_partition
+        self._event_memory_store_partition = event_memory_store_partition
         self._vector_store_partition = vector_store_partition
         self._segmenter = params.segmenter
         self._deriver = params.deriver
@@ -632,7 +632,7 @@ class EventMemoryPartition:
         Raises:
             ValueError:
                 If any event supplies a reserved or illegal property key.
-            SegmentStoreEventAlreadyStoredError:
+            EventMemoryStoreEventAlreadyStoredError:
                 If the partition already holds any of the events; nothing
                 is stored.
             TimeoutError:
@@ -695,14 +695,14 @@ class EventMemoryPartition:
             for event in events
             if derivatives_by_event[event.uuid]
         ]
-        await self._segment_store_partition.add_events(
+        await self._event_memory_store_partition.add_events(
             {
                 event.uuid: segment_list
                 for event, segment_list in zip(events, segment_lists, strict=True)
             },
             pending_derivatives,
         )
-        t_segment_store = time.monotonic()
+        t_event_memory_store = time.monotonic()
 
         # Built from the pending records, as the background work builds them,
         # so a record has the same properties whichever writes it.
@@ -730,7 +730,7 @@ class EventMemoryPartition:
             )
         t_vector_store = time.monotonic()
 
-        await self._segment_store_partition.delete_pending_derivatives(
+        await self._event_memory_store_partition.delete_pending_derivatives(
             pending.uuid for pending in pending_derivatives
         )
         t_pending_derivatives = time.monotonic()
@@ -739,8 +739,8 @@ class EventMemoryPartition:
             "segmentation": t_segmentation - t_start,
             "derivation": t_derivation - t_segmentation,
             "embedding": t_embedding - t_derivation,
-            "segment_store": t_segment_store - t_embedding,
-            "vector_store": t_vector_store - t_segment_store,
+            "event_memory_store": t_event_memory_store - t_embedding,
+            "vector_store": t_vector_store - t_event_memory_store,
             "pending_derivatives": t_pending_derivatives - t_vector_store,
         }
 
@@ -870,7 +870,7 @@ class EventMemoryPartition:
         # a condition naming any other field has nothing to match there. The
         # vector store gets the predicates on reserved keys and the part of
         # the filter on declared fields, which only ever widens its search;
-        # the segment store, which holds every property, gets the whole
+        # the event memory store, which holds every property, gets the whole
         # filter below and narrows it back.
         vector_store_filter = _conjoin(
             [
@@ -896,17 +896,15 @@ class EventMemoryPartition:
         )
         t_vector_query = time.monotonic()
 
-        segments_by_derivatives = (
-            await self._segment_store_partition.get_segment_uuids_by_derivative_uuids(
-                match.record_uuid for match in query_result.matches
-            )
+        segments_by_derivatives = await self._event_memory_store_partition.get_segment_uuids_by_derivative_uuids(
+            match.record_uuid for match in query_result.matches
         )
 
         score_by_seed_uuid = await self._score_seeds(
             query_result, segments_by_derivatives
         )
 
-        seed_segments = await self._segment_store_partition.get_segments(
+        seed_segments = await self._event_memory_store_partition.get_segments(
             score_by_seed_uuid.keys(),
             since=since,
             until=until,
@@ -918,7 +916,7 @@ class EventMemoryPartition:
         neighborhoods: dict[UUID, Neighborhood] = {}
         if expand_context > 0 and seed_segments:
             neighborhoods = (
-                await self._segment_store_partition.get_segment_neighborhoods(
+                await self._event_memory_store_partition.get_segment_neighborhoods(
                     seed_segments.keys(),
                     before=before,
                     after=after,
@@ -1057,7 +1055,7 @@ class EventMemoryPartition:
         """
         async with self._tracker("expand"):
             neighborhoods = (
-                await self._segment_store_partition.get_segment_neighborhoods(
+                await self._event_memory_store_partition.get_segment_neighborhoods(
                     [seed_uuid],
                     before=before,
                     after=after,
@@ -1077,8 +1075,8 @@ class EventMemoryPartition:
         Forget events by their UUIDs.
 
         When this returns, the events, their segments and their derivatives
-        are gone from the segment store, and their vectors are deleted from
-        the vector store at once and again after the segment store's
+        are gone from the event memory store, and their vectors are deleted from
+        the vector store at once and again after the event memory store's
         retention, by the background work if not here.
 
         Args:
@@ -1093,7 +1091,7 @@ class EventMemoryPartition:
             await self._forget_events(event_uuids)
 
     async def _forget_events(self, event_uuids: set[UUID]) -> None:
-        tombstone = await self._segment_store_partition.forget_events(event_uuids)
+        tombstone = await self._event_memory_store_partition.forget_events(event_uuids)
         if tombstone is None:
             return
         # The forget is complete once its tombstone commits: the background
@@ -1102,7 +1100,7 @@ class EventMemoryPartition:
             await self._vector_store_partition.delete(
                 record_uuids=tombstone.derivative_uuids
             )
-            await self._segment_store_partition.record_tombstone_first_delete(
+            await self._event_memory_store_partition.record_tombstone_first_delete(
                 tombstone.uuid
             )
         except Exception:
@@ -1146,7 +1144,7 @@ def _build_derivative_record(
     The record carries the reserved keys and the event properties the
     vector store declares, which are its segment's, since a segment
     carries its event's properties unchanged. Every other property stays
-    on the segment: the segment store holds them all and evaluates the
+    on the segment: the event memory store holds them all and evaluates the
     whole filter (see `EventMemoryPartition.query`).
     """
     properties: dict[str, PropertyValue] = {
