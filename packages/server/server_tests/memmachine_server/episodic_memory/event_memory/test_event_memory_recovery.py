@@ -26,14 +26,14 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemoryParams,
     EventMemoryPartition,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store import (
-    SegmentStore,
-    SegmentStoreEventAlreadyStoredError,
+from memmachine_server.episodic_memory.event_memory.event_memory_store import (
+    EventMemoryStore,
+    EventMemoryStoreEventAlreadyStoredError,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (
+from memmachine_server.episodic_memory.event_memory.event_memory_store.sqlalchemy_event_memory_store import (
     PendingDerivativesRow,
-    SQLAlchemySegmentStore,
-    SQLAlchemySegmentStoreParams,
+    SQLAlchemyEventMemoryStore,
+    SQLAlchemyEventMemoryStoreParams,
     TombstoneRow,
 )
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import (
@@ -44,7 +44,7 @@ from server_tests.memmachine_server.common.reranker.fake_embedder import (
 )
 
 from .conftest import (
-    InMemorySegmentStorePartition,
+    InMemoryEventMemoryStorePartition,
     InMemoryVectorStorePartition,
     open_event_memory_partition,
 )
@@ -92,10 +92,10 @@ def vector_store_partition(fake_embedder) -> _FailingVectorStorePartition:
 
 @pytest_asyncio.fixture
 async def partition(
-    fake_segment_store_partition, vector_store_partition, fake_embedder
+    fake_event_memory_store_partition, vector_store_partition, fake_embedder
 ) -> EventMemoryPartition:
     return await open_event_memory_partition(
-        segment_store_partition=fake_segment_store_partition,
+        event_memory_store_partition=fake_event_memory_store_partition,
         vector_store_partition=vector_store_partition,
         segmenter=TextSegmenter(),
         deriver=WholeTextDeriver(),
@@ -110,19 +110,19 @@ async def partition(
 
 async def test_encode_clears_the_pending_derivatives_once_the_vectors_are_written(
     partition: EventMemoryPartition,
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
     vector_store_partition: _FailingVectorStorePartition,
 ):
     await partition.encode_events([_event("hello"), _event("world")])
 
-    assert len(fake_segment_store_partition.event_to_segments) == 2
+    assert len(fake_event_memory_store_partition.event_to_segments) == 2
     assert len(vector_store_partition.records) == 2
-    assert fake_segment_store_partition.pending_derivatives == {}
+    assert fake_event_memory_store_partition.pending_derivatives == {}
 
 
 async def test_a_failed_upsert_leaves_the_events_stored_and_their_derivatives_pending(
     partition: EventMemoryPartition,
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
     vector_store_partition: _FailingVectorStorePartition,
 ):
     vector_store_partition.fail_upserts = True
@@ -131,27 +131,31 @@ async def test_a_failed_upsert_leaves_the_events_stored_and_their_derivatives_pe
     with pytest.raises(ConnectionError):
         await partition.encode_events([event])
 
-    assert event.uuid in fake_segment_store_partition.event_to_segments
-    (pending,) = fake_segment_store_partition.pending_derivatives.values()
+    assert event.uuid in fake_event_memory_store_partition.event_to_segments
+    (pending,) = fake_event_memory_store_partition.pending_derivatives.values()
     assert pending.event_uuid == event.uuid
-    linked = await fake_segment_store_partition.get_segment_uuids_by_derivative_uuids(
-        derivative.uuid for derivative in pending.derivatives
+    linked = (
+        await fake_event_memory_store_partition.get_segment_uuids_by_derivative_uuids(
+            derivative.uuid for derivative in pending.derivatives
+        )
     )
     assert set(linked) == {derivative.uuid for derivative in pending.derivatives}
 
 
 async def test_an_upsert_outlasting_the_write_budget_is_cancelled(
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
     vector_store_partition: _FailingVectorStorePartition,
     fake_embedder,
 ):
-    segment_store = create_autospec(SegmentStore, instance=True)
-    segment_store.open_or_create_partition.return_value = fake_segment_store_partition
+    event_memory_store = create_autospec(EventMemoryStore, instance=True)
+    event_memory_store.open_or_create_partition.return_value = (
+        fake_event_memory_store_partition
+    )
     vector_store = create_autospec(VectorStore, instance=True)
     vector_store.open_or_create_partition.return_value = vector_store_partition
     event_memory = EventMemory(
         EventMemoryParams(
-            segment_store=segment_store,
+            event_memory_store=event_memory_store,
             vector_store=vector_store,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
@@ -166,22 +170,22 @@ async def test_an_upsert_outlasting_the_write_budget_is_cancelled(
         await asyncio.wait_for(partition.encode_events([_event("hello")]), timeout=10)
 
     assert vector_store_partition.records == {}
-    assert len(fake_segment_store_partition.pending_derivatives) == 1
+    assert len(fake_event_memory_store_partition.pending_derivatives) == 1
 
 
 async def test_encoding_a_held_event_again_is_rejected_whole(
     partition: EventMemoryPartition,
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
 ):
     held = _event("held")
     await partition.encode_events([held])
     new = _event("new")
 
-    with pytest.raises(SegmentStoreEventAlreadyStoredError) as raised:
+    with pytest.raises(EventMemoryStoreEventAlreadyStoredError) as raised:
         await partition.encode_events([new, held])
 
     assert raised.value.event_uuids == {held.uuid}
-    assert new.uuid not in fake_segment_store_partition.event_to_segments
+    assert new.uuid not in fake_event_memory_store_partition.event_to_segments
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +195,7 @@ async def test_encoding_a_held_event_again_is_rejected_whole(
 
 async def test_forget_deletes_the_vectors_and_records_the_first_delete(
     partition: EventMemoryPartition,
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
     vector_store_partition: _FailingVectorStorePartition,
 ):
     event = _event("hello")
@@ -200,16 +204,16 @@ async def test_forget_deletes_the_vectors_and_records_the_first_delete(
     await partition.forget_events([event.uuid])
 
     assert vector_store_partition.records == {}
-    assert fake_segment_store_partition.event_to_segments == {}
-    (tombstone_uuid,) = fake_segment_store_partition.tombstones
-    assert fake_segment_store_partition.tombstones_awaiting_second_delete == {
+    assert fake_event_memory_store_partition.event_to_segments == {}
+    (tombstone_uuid,) = fake_event_memory_store_partition.tombstones
+    assert fake_event_memory_store_partition.tombstones_awaiting_second_delete == {
         tombstone_uuid
     }
 
 
 async def test_a_failed_first_delete_leaves_the_forget_complete_and_its_deletes_to_the_background(
     partition: EventMemoryPartition,
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
     vector_store_partition: _FailingVectorStorePartition,
 ):
     event = _event("hello")
@@ -218,14 +222,14 @@ async def test_a_failed_first_delete_leaves_the_forget_complete_and_its_deletes_
 
     await partition.forget_events([event.uuid])
 
-    assert fake_segment_store_partition.event_to_segments == {}
-    assert len(fake_segment_store_partition.tombstones) == 1
-    assert fake_segment_store_partition.tombstones_awaiting_second_delete == set()
+    assert fake_event_memory_store_partition.event_to_segments == {}
+    assert len(fake_event_memory_store_partition.tombstones) == 1
+    assert fake_event_memory_store_partition.tombstones_awaiting_second_delete == set()
 
 
 async def test_forgetting_events_the_partition_does_not_hold_deletes_nothing(
     partition: EventMemoryPartition,
-    fake_segment_store_partition: InMemorySegmentStorePartition,
+    fake_event_memory_store_partition: InMemoryEventMemoryStorePartition,
     vector_store_partition: _FailingVectorStorePartition,
 ):
     await partition.encode_events([_event("hello")])
@@ -233,7 +237,7 @@ async def test_forgetting_events_the_partition_does_not_hold_deletes_nothing(
     await partition.forget_events([uuid4()])
 
     assert len(vector_store_partition.records) == 1
-    assert fake_segment_store_partition.tombstones == {}
+    assert fake_event_memory_store_partition.tombstones == {}
 
 
 # ---------------------------------------------------------------------------
@@ -291,17 +295,17 @@ async def test_a_failed_cleanup_of_unlinked_records_leaves_the_query_answered(
 # ---------------------------------------------------------------------------
 
 
-async def test_delete_partition_deletes_the_segment_store_partition_first(
+async def test_delete_partition_deletes_the_event_memory_store_partition_first(
     fake_embedder,
 ):
     stores = create_autospec(object)
-    segment_store = create_autospec(SegmentStore, instance=True)
+    event_memory_store = create_autospec(EventMemoryStore, instance=True)
     vector_store = create_autospec(VectorStore, instance=True)
-    stores.attach_mock(segment_store.delete_partition, "segment_store_delete")
+    stores.attach_mock(event_memory_store.delete_partition, "event_memory_store_delete")
     stores.attach_mock(vector_store.delete_partition, "vector_store_delete")
     event_memory = EventMemory(
         EventMemoryParams(
-            segment_store=segment_store,
+            event_memory_store=event_memory_store,
             vector_store=vector_store,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
@@ -312,20 +316,20 @@ async def test_delete_partition_deletes_the_segment_store_partition_first(
     await event_memory.delete_partition("partition")
 
     assert stores.mock_calls == [
-        call.segment_store_delete("partition"),
+        call.event_memory_store_delete("partition"),
         call.vector_store_delete("partition"),
     ]
 
 
 # ---------------------------------------------------------------------------
-# Background work, over a SQLite segment store
+# Background work, over a SQLite event memory store
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
-async def segment_store(sqlalchemy_sqlite_engine: AsyncEngine):
-    store = SQLAlchemySegmentStore(
-        SQLAlchemySegmentStoreParams(engine=sqlalchemy_sqlite_engine)
+async def event_memory_store(sqlalchemy_sqlite_engine: AsyncEngine):
+    store = SQLAlchemyEventMemoryStore(
+        SQLAlchemyEventMemoryStoreParams(engine=sqlalchemy_sqlite_engine)
     )
     await store.startup()
     yield store
@@ -334,7 +338,7 @@ async def segment_store(sqlalchemy_sqlite_engine: AsyncEngine):
 
 @pytest_asyncio.fixture
 async def event_memory(
-    segment_store: SQLAlchemySegmentStore,
+    event_memory_store: SQLAlchemyEventMemoryStore,
     vector_store_partition: _FailingVectorStorePartition,
     fake_embedder,
 ) -> EventMemory:
@@ -343,7 +347,7 @@ async def event_memory(
     vector_store.open_partition.return_value = vector_store_partition
     return EventMemory(
         EventMemoryParams(
-            segment_store=segment_store,
+            event_memory_store=event_memory_store,
             vector_store=vector_store,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),

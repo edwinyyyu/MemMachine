@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 _EVENT_UUID_NAMESPACE = UUID("8c2c0e0a-3a2f-4b9c-9d1f-9b6c2a3a4f7e")
 
 # The adapter's fields, stored on `event.properties` under a leading
-# underscore; the segment store maps a bare client-API name to `_<name>`.
+# underscore; the event memory store maps a bare client-API name to `_<name>`.
 _EPISODE_UID_FIELD = "_episode_uid"
 _SESSION_KEY_FIELD = "_session_key"
 _PRODUCER_ID_FIELD = "_producer_id"
@@ -67,7 +67,7 @@ _CONTENT_TYPE_FIELD = "_content_type"
 _CREATED_AT_FIELD = "_created_at"
 
 # The fields the adapter writes into every event's properties, with their
-# types. The segment store holds them with the caller's properties; the
+# types. The event memory store holds them with the caller's properties; the
 # vector store declares them too, so a conjunct on them is evaluated at
 # the vector stage as well.
 EVENT_BACKEND_SYSTEM_FIELDS: dict[str, type[PropertyValue]] = {
@@ -291,15 +291,15 @@ class LongTermMemory:
         assert self._episode_storage is not None
         self._validate_event_backend_filter(property_filter)
         # `expand_context` is a window of segments, the unit EventMemory and
-        # the segment store work in: neither knows episodes. Under the
+        # the event memory store work in: neither knows episodes. Under the
         # passthrough segmenter one segment is one episode, and the window is
         # the declarative backend's window of neighbor episodes; under a
         # splitting segmenter the same window covers fewer episodes, the ones
         # its segments belong to. The window can never exceed the remaining
         # quota in either unit (a segment belongs to one episode; declarative
         # parity), and can never go negative: a negative `expand_context`
-        # would ask the segment store for a negative window, which the
-        # SegmentStorePartition contract does not define.
+        # would ask the event memory store for a negative window, which the
+        # EventMemoryStorePartition contract does not define.
         expand_context = max(0, min(expand_context, num_episodes_limit - 1))
         # Over-fetch from EventMemory: the per-segment results can have many
         # segments per episode under non-passthrough segmenters, and we dedup
@@ -311,7 +311,7 @@ class LongTermMemory:
         )
         # The fields ingestion maps onto the event come back typed: the
         # memory filters by them at the vector stage, and the rest of the
-        # tree is the segment store's post-filter.
+        # tree is the event memory store's post-filter.
         lifted = LongTermMemory._lift_typed_filters(property_filter)
         hits = await event_memory.query(
             query,
@@ -428,7 +428,7 @@ class LongTermMemory:
 
     async def close(self) -> None:
         # Backends do not own resources we can close at this layer; the
-        # ResourceManager handles SegmentStore/VectorStore lifecycle.
+        # ResourceManager handles EventMemoryStore/VectorStore lifecycle.
         return
 
     def _score_passes_threshold(
@@ -799,7 +799,7 @@ class LongTermMemory:
           Context: ProducerContext for messages; NullContext otherwise.
         - One TextBlock per event (Episode.content is a string today).
         - Properties: system fields stored with `_` prefix, user filterable
-          metadata stored bare, the layout the segment store maps a filter's
+          metadata stored bare, the layout the event memory store maps a filter's
           bare name (`producer_id`) and `m.<key>` onto. A search lifts the
           fields mapped above (`producer_id`, `created_at`) back into the
           memory's typed filters (`_lift_typed_filters`).

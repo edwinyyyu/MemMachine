@@ -21,11 +21,11 @@ from memmachine_server.common.vector_store import (
     VectorStore,
     VectorStorePartition,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store import (
-    SegmentStore,
-    SegmentStorePartition,
+from memmachine_server.episodic_memory.event_memory.event_memory_store import (
+    EventMemoryStore,
+    EventMemoryStorePartition,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+from memmachine_server.episodic_memory.event_memory.event_memory_store.utils import (
     PARTITION_KEY_MAX_BYTES,
     validate_partition_key,
 )
@@ -164,11 +164,11 @@ def _deployment_resource_manager(
         long_term_memory=deployment
     )
     resource_manager.get_vector_store.return_value = vector_store
-    resource_manager.get_segment_store.return_value = create_autospec(
-        SegmentStore, instance=True
+    resource_manager.get_event_memory_store.return_value = create_autospec(
+        EventMemoryStore, instance=True
     )
-    resource_manager.get_segment_store.return_value.open_or_create_partition.return_value = create_autospec(
-        SegmentStorePartition, instance=True
+    resource_manager.get_event_memory_store.return_value.open_or_create_partition.return_value = create_autospec(
+        EventMemoryStorePartition, instance=True
     )
     resource_manager.get_embedder.return_value = embedder
     resource_manager.get_reranker.return_value = create_autospec(
@@ -182,7 +182,7 @@ def _deployment_resource_manager(
 
 
 _DEPLOYMENT = LongTermMemoryConfPartial(
-    backend="event", vector_store="vs", segment_store="ss", embedder="e"
+    backend="event", vector_store="vs", event_memory_store="ss", embedder="e"
 )
 
 
@@ -200,7 +200,7 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
         _DEPLOYMENT, resource_manager
     )
     config = EventLongTermMemoryConf(
-        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
+        session_id="raced", vector_store="vs", event_memory_store="ss", embedder="e"
     )
 
     params = await _event_params(config, resource_manager)
@@ -219,13 +219,13 @@ async def test_event_params_opens_the_session_partition_of_the_embedders_collect
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("vector_store", "segment_store", "embedder"),
+    ("vector_store", "event_memory_store", "embedder"),
     [("other", "ss", "e"), ("vs", "other", "e"), ("vs", "ss", "other")],
-    ids=["vector_store", "segment_store", "embedder"],
+    ids=["vector_store", "event_memory_store", "embedder"],
 )
 async def test_event_params_refuses_a_session_naming_other_resources(
     vector_store: str,
-    segment_store: str,
+    event_memory_store: str,
     embedder: str,
 ):
     """A session whose data lives in other stores than the deployment's is not served."""
@@ -235,7 +235,7 @@ async def test_event_params_refuses_a_session_naming_other_resources(
     config = EventLongTermMemoryConf(
         session_id="s",
         vector_store=vector_store,
-        segment_store=segment_store,
+        event_memory_store=event_memory_store,
         embedder=embedder,
     )
 
@@ -258,7 +258,7 @@ async def test_event_params_serves_a_session_with_the_deployments_reranker():
     config = EventLongTermMemoryConf(
         session_id="s",
         vector_store="vs",
-        segment_store="ss",
+        event_memory_store="ss",
         embedder="e",
         reranker="session_reranker",
     )
@@ -276,11 +276,11 @@ async def test_event_params_serves_a_session_with_the_deployments_reranker():
     "deployment",
     [
         None,
-        LongTermMemoryConfPartial(segment_store="ss", embedder="e"),
+        LongTermMemoryConfPartial(event_memory_store="ss", embedder="e"),
         LongTermMemoryConfPartial(vector_store="vs", embedder="e"),
-        LongTermMemoryConfPartial(vector_store="vs", segment_store="ss"),
+        LongTermMemoryConfPartial(vector_store="vs", event_memory_store="ss"),
     ],
-    ids=["none", "vector_store", "segment_store", "embedder"],
+    ids=["none", "vector_store", "event_memory_store", "embedder"],
 )
 async def test_event_memory_from_config_requires_its_resources(
     deployment: LongTermMemoryConfPartial | None,

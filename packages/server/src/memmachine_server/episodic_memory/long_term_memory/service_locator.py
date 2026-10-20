@@ -31,7 +31,7 @@ from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
     EventMemoryParams,
 )
-from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
+from memmachine_server.episodic_memory.event_memory.event_memory_store.utils import (
     PARTITION_KEY_MAX_BYTES,
     validate_partition_key,
 )
@@ -103,15 +103,15 @@ async def _event_params(
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
     # The deployment's EventMemory serves every session. A session's vector
-    # store, segment store, and embedder hold its data, so they must be the
+    # store, event memory store, and embedder hold its data, so they must be the
     # deployment's; the deployment's segmenter, deriver, and reranker serve
     # it whatever the session names.
     event_memory = await resource_manager.get_event_memory()
     deployment = resource_manager.config.episodic_memory.long_term_memory
     assert deployment is not None
-    if (config.vector_store, config.segment_store, config.embedder) != (
+    if (config.vector_store, config.event_memory_store, config.embedder) != (
         deployment.vector_store,
-        deployment.segment_store,
+        deployment.event_memory_store,
         deployment.embedder,
     ):
         raise ConfigurationError(
@@ -147,23 +147,23 @@ async def event_memory_from_config(
 
     Raises:
         ConfigurationError:
-            If the configuration names no vector store, segment store, or
+            If the configuration names no vector store, event memory store, or
             embedder.
     """
     if (
         config is None
         or config.vector_store is None
-        or config.segment_store is None
+        or config.event_memory_store is None
         or config.embedder is None
     ):
         raise ConfigurationError(
             "Event memory needs the long-term memory configuration to name "
-            "a vector store, a segment store, and an embedder"
+            "a vector store, an event memory store, and an embedder"
         )
     return EventMemory(
         EventMemoryParams(
-            segment_store=await resource_manager.get_segment_store(
-                config.segment_store
+            event_memory_store=await resource_manager.get_event_memory_store(
+                config.event_memory_store
             ),
             vector_store=await event_backend_vector_store(
                 resource_manager,
@@ -220,7 +220,7 @@ def event_backend_indexed_properties() -> dict[str, PropertyType]:
 
 def partition_key_for_session(session_id: str) -> str:
     """
-    Derive a partition key satisfying the segment store's contract.
+    Derive a partition key satisfying the event memory store's contract.
 
     If the session_id already satisfies it (checked by the store's own
     validator, so the two can never disagree), use it directly to keep

@@ -325,14 +325,14 @@ def test_with_default_long_conf_enable_status(
 
 
 @pytest.mark.asyncio
-async def test_start_starts_the_event_memory_of_a_deployment_naming_a_segment_store(
+async def test_start_starts_the_event_memory_of_a_deployment_naming_a_event_memory_store(
     minimal_conf, patched_resource_manager
 ):
     """The EventMemory's background work runs from startup, whether or not a session opens."""
     minimal_conf.semantic_memory.enabled = False
     long_term_memory = minimal_conf.episodic_memory.long_term_memory
     assert long_term_memory is not None
-    long_term_memory.segment_store = "segment-store"
+    long_term_memory.event_memory_store = "segment-store"
     memmachine = MemMachine(minimal_conf, patched_resource_manager)
 
     await memmachine.start()
@@ -342,7 +342,7 @@ async def test_start_starts_the_event_memory_of_a_deployment_naming_a_segment_st
 
 
 @pytest.mark.asyncio
-async def test_start_builds_no_event_memory_for_a_deployment_naming_no_segment_store(
+async def test_start_builds_no_event_memory_for_a_deployment_naming_no_event_memory_store(
     minimal_conf, patched_resource_manager
 ):
     minimal_conf.semantic_memory.enabled = False
