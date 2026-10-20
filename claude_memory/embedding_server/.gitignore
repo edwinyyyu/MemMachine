@@ -1,0 +1,6 @@
+# Installed by setup.sh: large, and the model is under the Gemma license.
+bin/
+src/
+models/
+.venv-convert/
+logs/

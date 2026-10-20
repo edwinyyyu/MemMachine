@@ -133,7 +133,7 @@ class MemoryService:
         self.should_stop = asyncio.Event()
 
     async def start(self) -> None:
-        embedder = build_embedder(self._config.embedding_model)
+        embedder = build_embedder(self._config)
         self._stores = await MemoryStores.open(self._config, embedder)
         logger.info("memory daemon ready (embedder=%s)", self._config.embedding_model)
 

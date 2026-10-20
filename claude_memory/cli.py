@@ -814,13 +814,13 @@ def cmd_install(args: argparse.Namespace) -> None:
 
     print(f"\nDatabases will live in: {db_home}")
     print("Restart Claude Code for it to take effect.")
-    try:
-        __import__("sentence_transformers")
-    except ImportError:
+    os.environ["CLAUDE_MEMORY_HOME"] = str(db_home)
+    server_dir = MemoryConfig.load().embed_server.parent
+    if not (server_dir / "models" / "embeddinggemma-300M-F32.gguf").is_file():
         print(
-            "\nNote: sentence-transformers is not importable from this "
-            "interpreter. embeddinggemma-300m (the only embedder) needs it:\n"
-            f"  {venv_python} -m pip install sentence-transformers"
+            "\nNote: embeddinggemma-300m (the only embedder) runs in a local "
+            "llama.cpp server that the daemon starts on demand. Install it with:\n"
+            f"  {server_dir / 'setup.sh'}"
         )
 
 

@@ -84,8 +84,8 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 from claude_memory.engine import MessageOnlyDeriver, WholeTextDeriver, build_embedder
 from claude_memory.wire import MemoryConfig
 
-# Records handed to the model per call. Big enough that sentence-transformers'
-# own batching dominates, small enough that the progress line stays frequent.
+# Records handed to the embedder per call. Big enough to keep the embedding
+# server busy, small enough that the progress line stays frequent.
 _EMBED_BATCH = 512
 
 # Segment fetch batch. SQLite's default parameter limit is well above this, but a
@@ -336,12 +336,9 @@ async def build(args: argparse.Namespace) -> int:
         f"to embed {len(todo):,} | to drop {len(stale):,}"
     )
 
-    embedder = build_embedder(config.embedding_model)
-    # `build_embedder` sizes the batch for interactive ingest, where a turn
-    # embeds a handful of segments and latency is the whole cost. A bulk pass
-    # wants the opposite: hand the model a whole chunk in one call and let
-    # sentence-transformers do its own batching, which is several times faster
-    # per record.
+    embedder = build_embedder(config)
+    # Hand the embedder a whole chunk in one call; it splits the chunk into
+    # requests the embedding server can take.
     embedder.batch_size = None
     dimensions = embedder.dimensions
     if index is None:

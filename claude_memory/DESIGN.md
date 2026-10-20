@@ -35,12 +35,12 @@ harness, computed deterministically. That division is the whole philosophy.
 
 ## 2. The daemon and its thin clients
 
-Because the default embedder is local (`embeddinggemma`, ~5-6s to load), the
-model must load **once**, not per call. So a long-lived **daemon** owns the
-loaded embedder, the EventMemory stores, the per-(partition, session) novelty
-state, and the ingest high-water mark. Three thin clients talk to it over a Unix
-socket (`$CLAUDE_MEMORY_HOME/daemon.sock`). All clients are subcommands of one
-`cli.py`:
+The stores and per-session state need one owner, and the embedder used to load
+in-process for ~5-6s (it now runs in its own server; see §8). So a long-lived
+**daemon** owns the embedder client, the EventMemory stores, the per-(partition,
+session) novelty state, and the ingest high-water mark. Three thin clients talk to
+it over a Unix socket (`$CLAUDE_MEMORY_HOME/daemon.sock`). All clients are
+subcommands of one `cli.py`:
 
 - `cli mcp` — the `memory_search` / `memory_expand` MCP tools
 - `cli ambient` — UserPromptSubmit auto-recall
@@ -308,8 +308,13 @@ Every injection in this system is an append:
 
 - **The embedder is local `embeddinggemma-300m`** — the only model; no cloud /
   OpenAI embedder is imported or used (no network, no API key). 768-dim, cosine,
-  asymmetric query/document prompts handled in `engine.py`. It loads its weights
-  once, in the **daemon** (~5-6s; measured ~7s cold incl. first ingest).
+  asymmetric query/document prompts applied in `embed_server.py`. It runs in a
+  local llama.cpp server (Metal GPU, memory reserved at startup) that the daemon
+  spawns on first use (~2s cold) and that unloads the model after 30 idle minutes.
+  Measured 2026-10-19: the daemon fell from 8.3 GB (sentence-transformers in
+  process; torch's GPU allocator kept its peak) to ~330 MB, plus ~200 MB for the
+  server; one search query embeds in ~44 ms versus ~120 ms before; vectors match
+  (identical hits on 30 live searches, scores within 0.0005).
 - **The daemon makes that a one-time cost.** Warm round trips are ~0.09s
   (measured), so ambient recall, MCP tools, and ingest are all fast after warm-up.
   The SessionStart hook warms it before the first prompt, so the user never waits.

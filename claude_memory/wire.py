@@ -68,6 +68,10 @@ class MemoryConfig:
     namespace: str
     partition: str
     embedding_model: str
+    # The run.sh that starts the local embeddinggemma server (see embed_server.py).
+    # Defaults to embedding_server/run.sh in this package; override with `embed_server`
+    # in <home>/config.json or CLAUDE_MEMORY_EMBED_SERVER.
+    embed_server: Path
     # Eviction (semantic compaction at ingest): cosine threshold for near-dup
     # clusters whose temporal middle is deleted. None = off. Defaults to
     # _DEFAULT_EVICTION_THRESHOLD (on; calibrated for embeddinggemma) — set
@@ -137,6 +141,11 @@ class MemoryConfig:
             namespace=os.environ.get("CLAUDE_MEMORY_NAMESPACE", "claude"),
             partition=os.environ.get("CLAUDE_MEMORY_PARTITION") or _SHARED_PARTITION,
             embedding_model=os.environ.get("CLAUDE_MEMORY_EMBEDDING", "embeddinggemma"),
+            embed_server=Path(
+                os.environ.get("CLAUDE_MEMORY_EMBED_SERVER")
+                or home_config.get("embed_server")
+                or Path(__file__).resolve().parent / "embedding_server" / "run.sh"
+            ).expanduser(),
             vector_backend=(
                 os.environ.get("CLAUDE_MEMORY_VECTOR_BACKEND")
                 or home_config.get("vector_backend", "turbovec")

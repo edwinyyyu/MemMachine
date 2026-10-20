@@ -153,6 +153,10 @@ convention = "google"
 # A standalone hook script rather than library code: no importable API to annotate,
 # and stdout/stderr are its interface. Same shape as the tools/ entry above.
 "claude_memory/roster.py" = ["ANN", "C901", "D103", "T201"]
+# Glue over llama.cpp's untyped converter module, imported at run time.
+"claude_memory/embedding_server/convert_local.py" = ["ANN401"]
+# Verification script: prints its results and probes the client's internals, like tests.
+"claude_memory/embedding_server/verify.py" = ["T201", "SLF"]
 
 [tool.ty.environment]
 extra-paths = ["packages/common/src", "packages/server/src", "packages/client/src"]

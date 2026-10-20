@@ -88,6 +88,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 # Light client/wire surface lives in wire.py so thin clients can import it
 # without pulling this module's heavy deps. engine uses these internally; other
 # modules import them from wire directly.
+from claude_memory.embed_server import EMBEDDINGGEMMA, EmbedServerEmbedder
 from claude_memory.wire import (
     _SATURATED_MESSAGE,
     ANCHOR_MARKER,
@@ -121,49 +122,27 @@ logger = logging.getLogger("claude_memory.engine")
 
 # ===================================================================== embedders
 
-# embeddinggemma-300m is the ONLY embedding model. No cloud / OpenAI model is
-# imported or used anywhere (so no network and no API key). ``"hash"`` is a
-# deterministic, offline double for tests only.
-_EMBEDDINGGEMMA = "google/embeddinggemma-300m"
+# embeddinggemma-300m is the ONLY embedding model, run by a local llama.cpp
+# server (embed_server.py). No cloud / OpenAI model is imported or used anywhere
+# (so no network and no API key). ``"hash"`` is a deterministic, offline double
+# for tests only.
 
 
-def build_embedder(model_name: str) -> Embedder:
+def build_embedder(config: MemoryConfig) -> Embedder:
     """Construct the embedder: only embeddinggemma-300m (or ``"hash"`` for tests).
 
-    embeddinggemma loads weights per process (~5-6s), which is why the daemon
-    loads it once. Asymmetric query/document prompts are handled below.
+    embeddinggemma runs in its own server process, started on first use; the
+    asymmetric query/document prompts are applied in embed_server.py.
     """
+    model_name = config.embedding_model
     if model_name == "hash":
         return HashEmbedder()
-    if model_name in ("embeddinggemma", _EMBEDDINGGEMMA):
-        return _build_sentence_transformer(_EMBEDDINGGEMMA)
+    if model_name in ("embeddinggemma", EMBEDDINGGEMMA):
+        return EmbedServerEmbedder(config.embed_server)
     raise ValueError(
         f"Unsupported embedding model {model_name!r}; this integration uses only "
         "embeddinggemma-300m (set CLAUDE_MEMORY_EMBEDDING=embeddinggemma, or 'hash' "
         "for offline tests)."
-    )
-
-
-def _build_sentence_transformer(hf_name: str) -> Embedder:
-    """Build a local sentence-transformers embedder with correct asymmetric prompts."""
-    from memmachine_server.common.embedder.sentence_transformer_embedder import (
-        SentenceTransformerEmbedder,
-        SentenceTransformerEmbedderParams,
-    )
-    from sentence_transformers import SentenceTransformer
-
-    model = SentenceTransformer(hf_name)
-    # Asymmetric models (e.g. embeddinggemma) carry separate query/document
-    # prompts. SentenceTransformerEmbedder hard-codes prompt_name="query" for
-    # search; ingest passes no prompt, so the document prompt must be the default.
-    if "document" in (model.prompts or {}):
-        model.default_prompt_name = "document"
-    return SentenceTransformerEmbedder(
-        SentenceTransformerEmbedderParams(
-            model_name=hf_name,
-            sentence_transformer=model,
-            batch_size=8,
-        )
     )
 
 
@@ -851,7 +830,7 @@ class MemoryCore:
     @classmethod
     async def open(cls, config: MemoryConfig) -> "MemoryCore":
         """Build a standalone core (own stores + embedder) for one partition."""
-        embedder = build_embedder(config.embedding_model)
+        embedder = build_embedder(config)
         stores = await MemoryStores.open(config, embedder)
         opened = await stores.open_memory()
         return cls(stores=stores, opened=opened)

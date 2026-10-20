@@ -19,8 +19,8 @@ deliberately. See `DESIGN.md` for how and why; this file is how to run it.
 ```
 
 `cli mcp` and the three hook subcommands are thin clients of the one daemon,
-which holds the loaded model and all state — so the ~5-6s model load happens
-**once**. Everything lives under `$CLAUDE_MEMORY_HOME` (default
+which holds all state and talks to the local embedding server (which it starts on
+first use). Everything lives under `$CLAUDE_MEMORY_HOME` (default
 `~/.claude/claude_memory`).
 
 ## `roster.py` — cross-session index (optional, independent)
@@ -64,22 +64,25 @@ roster running. Both back up `settings.json` before writing.
 From a clean clone, in `agentic_expansion/`:
 
 ```bash
-uv sync                                       # 1. base deps (sqlite-vec locked; NOT sentence-transformers/turbovec)
-uv pip install sentence-transformers 'turbovec>=1.0.0' # 2. embedder + default ANN backend (ad-hoc; see note)
-uv run python -m claude_memory.smoke          # 3. optional sanity check (no network, no model)
-uv run python -m claude_memory.cli install    # 4. wire hooks + MCP + skill (--dry-run to preview)
-# 5. restart Claude Code
+uv sync                                       # 1. base deps (sqlite-vec locked; NOT turbovec)
+uv pip install 'turbovec>=1.0.0'              # 2. default ANN backend (ad-hoc; see note)
+claude_memory/embedding_server/setup.sh       # 3. local embedding server (see the Embedder note)
+uv run python -m claude_memory.smoke          # 4. optional sanity check (no network, no model)
+uv run python -m claude_memory.cli install    # 5. wire hooks + MCP + skill (--dry-run to preview)
+# 6. restart Claude Code
 ```
 
-Step 4 is one idempotent installer that does everything; step 5 makes it live.
+Step 5 is one idempotent installer that does everything; step 6 makes it live.
 
 - **Run everything from this repo** so `claude_memory` imports and the partition
   is stable. Start Claude Code in `agentic_expansion/`.
-- **Embedder** — local **embeddinggemma-300m**, the only model. `sentence-transformers`
-  (+ torch) is **not installed by a plain `uv sync`** and is pruned by one — install
-  it ad-hoc (step 2) and reinstall after any later `uv sync`. The model **weights**
-  download from HuggingFace into the HF cache on the first real turn (one-time,
-  network — set `HF_TOKEN` if rate-limited). **No cloud/OpenAI model, no API key.**
+- **Embedder** — local **embeddinggemma-300m**, the only model, run by a local
+  llama.cpp server (`llama-server`) on the GPU and installed by step 3 (macOS on Apple
+  Silicon; the model is gated, so download it once from Hugging Face while logged in).
+  The daemon spawns it on first use, and it unloads the model after 30 idle minutes.
+  Its vectors match the sentence-transformers ones this integration used before. See
+  [`embedding_server/README.md`](embedding_server/README.md). **No cloud/OpenAI model,
+  no API key.**
 - **Vector backend** — the default **turbovec** (TurboQuant-compressed ANN) is
   **not** in the lockfile, so `uv sync` neither installs it nor keeps it: run
   `uv pip install 'turbovec>=1.0.0'` (step 2) and re-run after any later
