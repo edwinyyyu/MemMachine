@@ -1,7 +1,7 @@
 """SQL engine setup and transactions shared by the stores built on SQLAlchemy."""
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
 from sqlalchemy.engine import Connection
@@ -44,7 +44,7 @@ def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
 @contextlib.asynccontextmanager
 async def write_transaction(
     create_session: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
+) -> AsyncGenerator[AsyncSession, None]:
     """
     A session whose transaction holds SQLite's write lock from `BEGIN`, committed when the block exits.
 
@@ -65,7 +65,9 @@ async def write_transaction(
 
 
 @contextlib.asynccontextmanager
-async def write_connection(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+async def write_connection(
+    engine: AsyncEngine,
+) -> AsyncGenerator[AsyncConnection, None]:
     """
     A connection whose transaction holds SQLite's write lock from `BEGIN`, committed when the block exits.
 
