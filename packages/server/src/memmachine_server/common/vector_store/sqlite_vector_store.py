@@ -53,7 +53,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
-from memmachine_server.common.sql import write_connection, write_transaction
+from memmachine_server.common.sql import write_connection, write_session
 
 from .data_types import (
     QueryMatch,
@@ -174,7 +174,7 @@ async def _save_partition_index(
     """Save a partition life's index to disk, leaving no file if the partition is deleted."""
     await search_engine.save(path)
 
-    async with write_transaction(create_session) as session:
+    async with write_session(create_session) as session:
         # The write lock holds a deletion off until this commits, and the
         # deletion then unlinks the file; no match means a deletion
         # committed first, so the file this wrote must go.
@@ -317,7 +317,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             validate_declared_types(record.properties, self._indexed_properties)
             validate_dimensions(record.vector, self._vector_dimensions)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             await self._require_current(session)
             if not records:
                 return
@@ -389,7 +389,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             await self._search_engine.remove(engine_vectors.keys())
             await self._search_engine.add(engine_vectors)
 
-            async with write_transaction(self._create_session) as session:
+            async with write_session(self._create_session) as session:
                 await session.execute(
                     update(_PendingOperationRow)
                     .where(
@@ -502,7 +502,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         record_uuids = list(record_uuids)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             await self._require_current(session)
             if not record_uuids:
                 return
@@ -545,7 +545,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
             )
 
         await self._search_engine.remove(record_row_ids)
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             await session.execute(
                 update(_PendingOperationRow)
                 .where(
@@ -764,7 +764,7 @@ class SQLiteVectorStore(VectorStore):
         if upserted_vectors:
             await search_engine.add(upserted_vectors)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             await session.execute(
                 update(_PendingOperationRow)
                 .where(
@@ -852,7 +852,7 @@ class SQLiteVectorStore(VectorStore):
         self._require_started()
         validate_partition_key(partition_key)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             incarnation = await self._partition_incarnation(session, partition_key)
             if incarnation is None:
                 return
@@ -887,7 +887,7 @@ class SQLiteVectorStore(VectorStore):
         A partition this adds gets a new incarnation, an empty records table,
         and an empty search engine.
         """
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             incarnation = await self._partition_incarnation(session, partition_key)
             if incarnation is not None:
                 return incarnation, False

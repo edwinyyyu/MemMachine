@@ -42,7 +42,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
-from memmachine_server.common.sql import write_connection, write_transaction
+from memmachine_server.common.sql import write_connection, write_session
 
 from .data_types import (
     QueryMatch,
@@ -163,7 +163,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
             validate_declared_types(record.properties, self._indexed_properties)
             validate_dimensions(record.vector, self._vector_dimensions)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             await self._require_current(session)
             if not records:
                 return
@@ -318,7 +318,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         record_uuids = list(record_uuids)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             await self._require_current(session)
             if not record_uuids:
                 return
@@ -509,7 +509,7 @@ class SQLiteVecVectorStore(VectorStore):
     async def delete_partition(self, partition_key: str) -> None:
         validate_partition_key(partition_key)
 
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             incarnation = await self._partition_incarnation(session, partition_key)
             if incarnation is None:
                 return
@@ -586,7 +586,7 @@ class SQLiteVecVectorStore(VectorStore):
 
         A partition this adds gets a new incarnation and empty tables.
         """
-        async with write_transaction(self._create_session) as session:
+        async with write_session(self._create_session) as session:
             incarnation = await self._partition_incarnation(session, partition_key)
             if incarnation is not None:
                 return incarnation, False

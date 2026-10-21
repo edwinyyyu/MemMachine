@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from memmachine_server.common.sql import (
     enable_sqlite_explicit_begin,
     write_connection,
-    write_transaction,
+    write_session,
 )
 
 
@@ -46,7 +46,7 @@ async def _keys(engine) -> list[int]:
 
 
 @pytest.mark.asyncio
-async def test_a_write_transaction_can_still_write_after_it_has_read(
+async def test_a_write_session_can_still_write_after_it_has_read(
     database, other_writer
 ):
     """
@@ -58,7 +58,7 @@ async def test_a_write_transaction_can_still_write_after_it_has_read(
     out the busy timeout, since waiting could only deadlock.
     """
     _, engine = database
-    async with write_transaction(async_sessionmaker(engine)) as session:
+    async with write_session(async_sessionmaker(engine)) as session:
         await session.execute(text("SELECT count(*) FROM t"))
 
         # Another writer takes what it can in the gap and holds it across the
@@ -84,16 +84,16 @@ async def test_a_read_transaction_leaves_the_write_lock_free(database, other_wri
 
 
 @pytest.mark.asyncio
-async def test_a_write_transaction_commits_when_its_block_exits(database):
+async def test_a_write_session_commits_when_its_block_exits(database):
     _, engine = database
-    async with write_transaction(async_sessionmaker(engine)) as session:
+    async with write_session(async_sessionmaker(engine)) as session:
         await session.execute(text("INSERT INTO t VALUES (1)"))
 
     assert await _keys(engine) == [1]
 
 
 @pytest.mark.asyncio
-async def test_a_write_transaction_whose_commit_fails_leaves_nothing_open(
+async def test_a_write_session_whose_commit_fails_leaves_nothing_open(
     database, other_writer
 ):
     """
@@ -110,7 +110,7 @@ async def test_a_write_transaction_whose_commit_fails_leaves_nothing_open(
     event.listen(engine.sync_engine, "commit", fail)
     try:
         with pytest.raises(RuntimeError, match="injected commit failure"):
-            async with write_transaction(async_sessionmaker(engine)) as session:
+            async with write_session(async_sessionmaker(engine)) as session:
                 await session.execute(text("INSERT INTO t VALUES (1)"))
     finally:
         event.remove(engine.sync_engine, "commit", fail)
@@ -118,18 +118,18 @@ async def test_a_write_transaction_whose_commit_fails_leaves_nothing_open(
     async with other_writer.connect() as connection:
         await connection.execute(text("INSERT INTO t VALUES (2)"))
         await connection.commit()
-    async with write_transaction(async_sessionmaker(engine)) as session:
+    async with write_session(async_sessionmaker(engine)) as session:
         await session.execute(text("INSERT INTO t VALUES (3)"))
 
     assert await _keys(engine) == [2, 3]
 
 
 @pytest.mark.asyncio
-async def test_a_write_transaction_that_raises_rolls_back_its_ddl_too(database):
+async def test_a_write_session_that_raises_rolls_back_its_ddl_too(database):
     _, engine = database
 
     async def write_then_fail() -> None:
-        async with write_transaction(async_sessionmaker(engine)) as session:
+        async with write_session(async_sessionmaker(engine)) as session:
             await session.execute(text("CREATE TABLE u (k INTEGER)"))
             await session.execute(text("INSERT INTO t VALUES (1)"))
             raise RuntimeError

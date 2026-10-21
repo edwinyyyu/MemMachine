@@ -27,13 +27,13 @@ def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
     and DDL run outside it. With every connection in the driver's
     autocommit mode, a hook emits `BEGIN` when a transaction starts:
     `BEGIN IMMEDIATE`, which takes the write lock, for a transaction
-    `write_transaction` or `write_connection` opens, and a deferred `BEGIN`
+    `write_session` or `write_connection` opens, and a deferred `BEGIN`
     for any other, so reads never take the write lock.
 
     Registered at engine creation, before any connection is pooled: a
     listener added later misses the connections already pooled. Every
     user of the engine then opens its write transactions with
-    `write_transaction` or `write_connection`. No-op for other dialects.
+    `write_session` or `write_connection`. No-op for other dialects.
     """
     if engine.dialect.name != "sqlite":
         return
@@ -42,7 +42,7 @@ def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
 
 
 @contextlib.asynccontextmanager
-async def write_transaction(
+async def write_session(
     create_session: async_sessionmaker[AsyncSession],
 ) -> AsyncGenerator[AsyncSession, None]:
     """
@@ -71,8 +71,8 @@ async def write_connection(
     """
     A connection whose transaction holds SQLite's write lock from `BEGIN`, committed when the block exits.
 
-    `write_transaction` for work on a connection rather than a session: a
-    block that raises, or a commit that fails, rolls the transaction back.
+    The counterpart of `write_session` for work on a connection: a block
+    that raises, or a commit that fails, rolls the transaction back.
     Requires an engine set up by `enable_sqlite_explicit_begin`. On other
     dialects, an ordinary transaction.
     """
