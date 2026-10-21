@@ -38,7 +38,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.interfaces import DBAPIConnection
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
@@ -432,20 +432,26 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         key_filter = self._build_key_filter(property_filter)
 
-        search_results = await self._search_engine.search(
-            query_vectors, limit=limit, allowed_keys=key_filter
-        )
-
-        results: list[QueryResult] = []
-        for search_result in search_results:
-            if not search_result.matches:
-                results.append(QueryResult(matches=[]))
-                continue
-            matches = await self._build_matches(
-                row_id_to_score={m.key: m.score for m in search_result.matches},
-                score_threshold=score_threshold,
+        try:
+            search_results = await self._search_engine.search(
+                query_vectors, limit=limit, allowed_keys=key_filter
             )
-            results.append(QueryResult(matches=matches))
+
+            results: list[QueryResult] = []
+            for search_result in search_results:
+                if not search_result.matches:
+                    results.append(QueryResult(matches=[]))
+                    continue
+                matches = await self._build_matches(
+                    row_id_to_score={m.key: m.score for m in search_result.matches},
+                    score_threshold=score_threshold,
+                )
+                results.append(QueryResult(matches=matches))
+        except OperationalError:
+            # A deletion that overtook the query dropped its tables.
+            async with self._create_session() as session:
+                await self._require_current(session)
+            raise
 
         return results
 

@@ -1237,6 +1237,41 @@ class TestConcurrentAsync:
         await store.shutdown()
         await engine.dispose()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_filter", [False, True])
+    async def test_a_query_overtaken_by_its_partitions_deletion_raises_stale(
+        self, store, monkeypatch, with_filter
+    ):
+        partition = await store.open_or_create_partition("overtaken")
+        record = _make_record(
+            vector=_normalize([1.0, 0.0, 0.0]), properties={"name": "alice"}
+        )
+        await partition.upsert(records=[record])
+        engine = partition._search_engine
+        search = engine.search
+
+        async def search_overtaken_by_deletion(*args, **kwargs):
+            # With a filter, the search reads the records table per
+            # candidate; without one, the matches' rows are read after it.
+            if with_filter:
+                await store.delete_partition("overtaken")
+                return await search(*args, **kwargs)
+            results = await search(*args, **kwargs)
+            await store.delete_partition("overtaken")
+            return results
+
+        monkeypatch.setattr(engine, "search", search_overtaken_by_deletion)
+        with pytest.raises(VectorStorePartitionHandleStaleError):
+            await partition.query(
+                query_vectors=[record.vector],
+                limit=1,
+                property_filter=(
+                    Comparison(field="name", op="=", value="alice")
+                    if with_filter
+                    else None
+                ),
+            )
+
 
 # ── Crash recovery & pending operations ──
 
