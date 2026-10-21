@@ -26,7 +26,7 @@ from memmachine_server.common.errors import (
     VectorStoreConfigurationError,
 )
 from memmachine_server.common.resource_manager.database_manager import DatabaseManager
-from memmachine_server.common.sqlite_transactions import write_transaction
+from memmachine_server.common.sql import write_transaction
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistryParams,

@@ -1,4 +1,4 @@
-"""Tests for SQLite transactions that take the write lock at BEGIN."""
+"""Tests for the shared SQL engine setup and transactions."""
 
 import contextlib
 
@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from memmachine_server.common.sqlite_transactions import (
+from memmachine_server.common.sql import (
     enable_sqlite_explicit_begin,
     write_transaction,
 )

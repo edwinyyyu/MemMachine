@@ -30,7 +30,7 @@ from memmachine_server.common.errors import (
     SQLConfigurationError,
     VectorStoreConfigurationError,
 )
-from memmachine_server.common.sqlite_transactions import enable_sqlite_explicit_begin
+from memmachine_server.common.sql import enable_sqlite_explicit_begin
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,

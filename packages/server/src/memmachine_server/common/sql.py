@@ -1,4 +1,4 @@
-"""SQLite transactions that take the write lock at BEGIN."""
+"""SQL engine setup and transactions shared by the stores built on SQLAlchemy."""
 
 import contextlib
 from collections.abc import AsyncIterator

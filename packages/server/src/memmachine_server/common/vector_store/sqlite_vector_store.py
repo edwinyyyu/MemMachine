@@ -53,7 +53,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
-from memmachine_server.common.sqlite_transactions import write_transaction
+from memmachine_server.common.sql import write_transaction
 
 from .data_types import (
     IndexedProperties,

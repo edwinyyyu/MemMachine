@@ -22,7 +22,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.properties_json import decode_properties
-from memmachine_server.common.sqlite_transactions import enable_sqlite_explicit_begin
+from memmachine_server.common.sql import enable_sqlite_explicit_begin
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
