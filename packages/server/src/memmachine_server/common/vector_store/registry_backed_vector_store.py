@@ -227,8 +227,7 @@ class RegistryBackedVectorStoreParams(VectorStoreParams):
     """
     Parameters for a RegistryBackedVectorStore.
 
-    The store's name names its storage, so stores of different names may
-    share a client.
+    Stores of different names may share a client.
 
     Attributes:
         partition_registry (VectorStorePartitionRegistry):

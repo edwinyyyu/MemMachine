@@ -392,9 +392,6 @@ class QdrantVectorStoreParams(RegistryBackedVectorStoreParams):
     """
     Parameters for QdrantVectorStore.
 
-    The native Qdrant collection is named `vector_store_name`, and each
-    declared property gets a payload index of its declared type.
-
     Attributes:
         client (AsyncQdrantClient):
             Async Qdrant client instance.

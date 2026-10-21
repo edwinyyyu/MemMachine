@@ -443,10 +443,7 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
     """
     Parameters for MilvusVectorStore.
 
-    The native Milvus collection is named `sys_` followed by
-    `vector_store_name`. Milvus scores by cosine, dot or euclidean only. Each
-    declared property is a nullable typed field, `_p_<key>`, with a scalar
-    index.
+    The similarity metric is cosine, dot, or euclidean.
 
     Attributes:
         client (AsyncMilvusClient):
