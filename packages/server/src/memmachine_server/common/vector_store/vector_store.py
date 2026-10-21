@@ -29,10 +29,10 @@ class VectorStorePartition(ABC):
     another record. The handle owns nothing: a caller builds one with
     `VectorStore.open_partition`, drops it, and builds another at will.
 
-    A partition created again under a deleted one's key starts empty.
-    Operations through a handle whose partition was deleted may raise
-    VectorStorePartitionHandleStaleError, or, on an implementation that
-    cannot tell, act on a partition created again under the same key.
+    A partition created again under a deleted one's key starts empty. An
+    operation through a handle begun after its partition was deleted raises
+    VectorStorePartitionHandleStaleError, whether or not a partition was
+    created again under the key since.
 
     An `upsert` or `delete` is durable once it returns; queries may not
     reflect it right away. A store that guarantees more states it.
