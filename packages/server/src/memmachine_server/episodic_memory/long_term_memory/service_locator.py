@@ -10,6 +10,7 @@ from memmachine_server.common.configuration.episodic_config import (
     DeriverConf,
     EventLongTermMemoryConf,
     LongTermMemoryConf,
+    LongTermMemoryConfPartial,
     PassthroughSegmenterConf,
     SegmenterConf,
     SentenceTextDeriverConf,
@@ -98,12 +99,9 @@ async def _event_params(
     # A deployment keeps every session's event memory in one vector store,
     # segment store, and embedder, so a session naming others would have its
     # data elsewhere.
-    deployment = resource_manager.config.episodic_memory.long_term_memory
-    if deployment is None or (
-        config.vector_store,
-        config.segment_store,
-        config.embedder,
-    ) != (deployment.vector_store, deployment.segment_store, deployment.embedder):
+    if not is_deployment_event_memory(
+        config, resource_manager.config.episodic_memory.long_term_memory
+    ):
         raise ConfigurationError(
             f"Session {config.session_id!r} names a vector store, segment "
             "store, or embedder other than the deployment's event memory's"
@@ -144,6 +142,17 @@ async def _event_params(
         deriver=deriver,
         metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
     )
+
+
+def is_deployment_event_memory(
+    config: EventLongTermMemoryConf, deployment: LongTermMemoryConfPartial | None
+) -> bool:
+    """Whether an event memory uses the deployment's vector store, segment store, and embedder."""
+    return deployment is not None and (
+        config.vector_store,
+        config.segment_store,
+        config.embedder,
+    ) == (deployment.vector_store, deployment.segment_store, deployment.embedder)
 
 
 async def event_backend_vector_store(
