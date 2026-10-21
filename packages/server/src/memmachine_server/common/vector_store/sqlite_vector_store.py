@@ -581,7 +581,8 @@ class SQLiteVectorStoreParams(VectorStoreParams):
     Attributes:
         sqlalchemy_engine (AsyncEngine):
             Async SQLAlchemy engine (sqlite+aiosqlite), set up by
-            `enable_sqlite_explicit_begin` at its creation.
+            `enable_sqlite_explicit_begin` and `enable_sqlite_foreign_keys`
+            at its creation.
         vector_search_engine_factory (Callable[[int, SimilarityMetric], VectorSearchEngine]):
             Factory for creating :class:`VectorSearchEngine` instances.
             Receives `(ndim, metric)` and returns a search engine.
@@ -599,7 +600,8 @@ class SQLiteVectorStoreParams(VectorStoreParams):
         ...,
         description=(
             "Async SQLAlchemy engine (sqlite+aiosqlite), set up by "
-            "enable_sqlite_explicit_begin at its creation"
+            "enable_sqlite_explicit_begin and enable_sqlite_foreign_keys at its "
+            "creation"
         ),
     )
     vector_search_engine_factory: VectorSearchEngineFactory = Field(
@@ -670,14 +672,9 @@ class SQLiteVectorStore(VectorStore):
             str(self._sqlalchemy_engine.url).replace("aiosqlite", "pysqlite")
         )
 
-        # Different stores may share the async engine; the listener is
-        # registered once per engine.
-        for sync_engine in (
-            self._sqlalchemy_engine.sync_engine,
-            self._sync_sqlalchemy_engine,
-        ):
-            if not event.contains(sync_engine, "connect", _enable_sqlite_foreign_keys):
-                event.listen(sync_engine, "connect", _enable_sqlite_foreign_keys)
+        event.listen(
+            self._sync_sqlalchemy_engine, "connect", _enable_sqlite_foreign_keys
+        )
 
         self._started = False
 

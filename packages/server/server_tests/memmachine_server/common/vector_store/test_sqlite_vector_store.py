@@ -21,7 +21,10 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.properties_json import decode_properties
-from memmachine_server.common.sql import enable_sqlite_explicit_begin
+from memmachine_server.common.sql import (
+    enable_sqlite_explicit_begin,
+    enable_sqlite_foreign_keys,
+)
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
@@ -89,6 +92,7 @@ async def store(tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     enable_sqlite_explicit_begin(engine)
+    enable_sqlite_foreign_keys(engine)
     vector_store = SQLiteVectorStore(_params(engine))
     await vector_store.startup()
     yield vector_store
@@ -1179,6 +1183,7 @@ async def _fresh_store(db_path, tmp_path, *, save_threshold=1000):
     """Create a new SQLiteVectorStore against the same DB file."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     enable_sqlite_explicit_begin(engine)
+    enable_sqlite_foreign_keys(engine)
     params = _params(
         engine,
         index_directory=str(tmp_path / "indexes"),
@@ -1415,6 +1420,7 @@ class TestCrashRecovery:
         db_path = tmp_path / "test.db"
         engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
         enable_sqlite_explicit_begin(engine)
+        enable_sqlite_foreign_keys(engine)
         store = SQLiteVectorStore(_params(engine))
 
         with pytest.raises(RuntimeError, match="startup"):
@@ -1703,6 +1709,7 @@ class TestPartitionResources:
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
         enable_sqlite_explicit_begin(engine)
+        enable_sqlite_foreign_keys(engine)
         store = SQLiteVectorStore(
             _params(
                 engine,

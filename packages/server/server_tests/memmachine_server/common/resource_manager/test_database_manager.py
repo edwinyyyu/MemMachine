@@ -951,6 +951,44 @@ async def test_a_sqlite_vector_store_engine_takes_the_write_lock_at_begin(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_a_sqlite_vector_store_engine_enforces_foreign_keys(tmp_path):
+    """Every connection of a configured SQLite vector store's engine enforces foreign keys."""
+    conf = _sqlite_vector_store_only_conf(
+        sqlite_vector_store_confs={
+            "vs1": SQLiteVectorStoreConf(path=str(tmp_path / "vs.db"))
+        }
+    )
+    builder = DatabaseManager(conf)
+    try:
+        await builder.get_vector_store("vs1", **_STORE)
+        engine = builder.vector_store_sql_engines["vs1"]
+        async with engine.connect() as connection:
+            result = await connection.execute(text("PRAGMA foreign_keys"))
+            assert result.scalar_one() == 1
+    finally:
+        await builder.close()
+
+
+@pytest.mark.asyncio
+async def test_a_sqlite_vec_vector_store_engine_loads_sqlite_vec(tmp_path):
+    """Every connection of a configured sqlite-vec vector store's engine has sqlite-vec loaded."""
+    conf = _sqlite_vector_store_only_conf(
+        sqlite_vec_vector_store_confs={
+            "vec1": SQLiteVecVectorStoreConf(path=str(tmp_path / "vec.db"))
+        }
+    )
+    builder = DatabaseManager(conf)
+    try:
+        await builder.get_vector_store("vec1", **_STORE)
+        engine = builder.vector_store_sql_engines["vec1"]
+        async with engine.connect() as connection:
+            result = await connection.execute(text("SELECT vec_version()"))
+            assert result.scalar_one()
+    finally:
+        await builder.close()
+
+
+@pytest.mark.asyncio
 async def test_stores_of_one_sqlite_vector_store_share_its_engine():
     """Two stores on one configured SQLite vector store share its engine."""
     conf = _sqlite_vector_store_only_conf(
@@ -1130,6 +1168,9 @@ async def test_sqlite_vec_vector_store_creates_store_and_engine():
         patch(
             "memmachine_server.common.vector_store.sqlite_vec_vector_store.SQLiteVecVectorStore",
         ) as mock_store_cls,
+        patch(
+            "memmachine_server.common.vector_store.sqlite_vec_vector_store.load_sqlite_vec_extension",
+        ) as mock_load,
     ):
         mock_store_cls.return_value.startup = AsyncMock()
         mock_store_cls.return_value.shutdown = AsyncMock()
@@ -1137,6 +1178,7 @@ async def test_sqlite_vec_vector_store_creates_store_and_engine():
         store = await builder.get_vector_store("vec1", **_STORE)
 
     assert store is mock_store_cls.return_value
+    mock_load.assert_called_once_with(mock_engine)
     create_args = mock_create.call_args
     assert create_args.args[0] == "sqlite+aiosqlite:///vec.db"
 
@@ -1178,6 +1220,9 @@ async def test_get_vector_store_dispatches_to_sqlite_backends():
         patch(
             "memmachine_server.common.vector_store.sqlite_vec_vector_store.SQLiteVecVectorStore",
         ) as mock_vec_cls,
+        patch(
+            "memmachine_server.common.vector_store.sqlite_vec_vector_store.load_sqlite_vec_extension",
+        ),
     ):
         mock_vs_cls.return_value.startup = AsyncMock()
         mock_vs_cls.return_value.shutdown = AsyncMock()

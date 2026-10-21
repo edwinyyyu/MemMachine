@@ -368,18 +368,26 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
             )
 
 
-def _load_sqlite_vec(
-    dbapi_connection: DBAPIConnection,
-    _connection_record: ConnectionPoolEntry,
-) -> None:
-    async def _load_extension(
-        aio_connection: aiosqlite.Connection,
-    ) -> None:
-        await aio_connection.enable_load_extension(True)
-        await aio_connection.load_extension(sqlite_vec.loadable_path())
-        await aio_connection.enable_load_extension(False)
+def load_sqlite_vec_extension(engine: AsyncEngine) -> None:
+    """Load the sqlite-vec extension on every connection of a SQLite engine.
 
-    dbapi_connection.run_async(_load_extension)
+    Loadable extensions are per-connection state, so the loader is
+    registered at the engine's creation, before any connection is pooled.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _load_sqlite_vec(
+        dbapi_connection: DBAPIConnection,
+        _connection_record: ConnectionPoolEntry,
+    ) -> None:
+        async def _load_extension(
+            aio_connection: aiosqlite.Connection,
+        ) -> None:
+            await aio_connection.enable_load_extension(True)
+            await aio_connection.load_extension(sqlite_vec.loadable_path())
+            await aio_connection.enable_load_extension(False)
+
+        dbapi_connection.run_async(_load_extension)
 
 
 class SQLiteVecVectorStoreParams(VectorStoreParams):
@@ -392,14 +400,16 @@ class SQLiteVecVectorStoreParams(VectorStoreParams):
     Attributes:
         engine (AsyncEngine):
             Async SQLAlchemy engine (sqlite+aiosqlite), set up by
-            `enable_sqlite_explicit_begin` at its creation.
+            `enable_sqlite_explicit_begin` and `load_sqlite_vec_extension` at
+            its creation.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(
         ...,
         description=(
             "Async SQLAlchemy engine (sqlite+aiosqlite), set up by "
-            "enable_sqlite_explicit_begin at its creation"
+            "enable_sqlite_explicit_begin and load_sqlite_vec_extension at its "
+            "creation"
         ),
     )
 
@@ -443,11 +453,6 @@ class SQLiteVecVectorStore(VectorStore):
         self._vector_store_schema = params.vector_store_schema
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._sa_metadata = MetaData()
-
-        # Different stores may share the engine; the extension is loaded
-        # once per connection.
-        if not event.contains(self._engine.sync_engine, "connect", _load_sqlite_vec):
-            event.listen(self._engine.sync_engine, "connect", _load_sqlite_vec)
 
     @override
     async def startup(self) -> None:

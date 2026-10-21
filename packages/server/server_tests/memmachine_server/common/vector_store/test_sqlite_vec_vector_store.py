@@ -33,6 +33,7 @@ from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
     SQLiteVecVectorStore,
     SQLiteVecVectorStoreParams,
     SQLiteVecVectorStorePartition,
+    load_sqlite_vec_extension,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -88,6 +89,7 @@ async def store(tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     enable_sqlite_explicit_begin(engine)
+    load_sqlite_vec_extension(engine)
     vector_store = SQLiteVecVectorStore(_params(engine))
     await vector_store.startup()
     yield vector_store

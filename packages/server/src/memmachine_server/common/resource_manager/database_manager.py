@@ -7,10 +7,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Self
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
-from sqlalchemy import event, text
-from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import ConnectionPoolEntry
 
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
@@ -30,7 +28,10 @@ from memmachine_server.common.errors import (
     SQLConfigurationError,
     VectorStoreConfigurationError,
 )
-from memmachine_server.common.sql import enable_sqlite_explicit_begin
+from memmachine_server.common.sql import (
+    enable_sqlite_explicit_begin,
+    enable_sqlite_foreign_keys,
+)
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
@@ -54,28 +55,6 @@ if TYPE_CHECKING:
     from qdrant_client import AsyncQdrantClient
 
 logger = logging.getLogger(__name__)
-
-
-def enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
-    """Enforce foreign keys on every connection of a SQLite engine.
-
-    SQLite defaults foreign_keys to OFF, per connection. Registering the
-    pragma at engine creation, before any connection is pooled, is the
-    only placement that covers every connection: a listener added later
-    misses already-pooled connections, and mutating a live pool's
-    listeners races its event dispatch. No-op for other dialects.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def _enable_foreign_keys(
-        dbapi_connection: DBAPIConnection,
-        _connection_record: ConnectionPoolEntry,
-    ) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
 
 
 def _sql_engine_kwargs(conf: SqlAlchemyConf) -> dict[str, Any]:
@@ -858,9 +837,7 @@ class DatabaseManager:
 
         return SQLiteVectorStore(
             SQLiteVectorStoreParams(
-                sqlalchemy_engine=self._vector_store_sql_engine(
-                    vector_store_id, conf.path
-                ),
+                sqlalchemy_engine=self._vector_store_sql_engine(vector_store_id, conf),
                 vector_store_name=vector_store_name,
                 vector_store_schema=vector_store_schema,
                 vector_search_engine_factory=self._make_sqlite_search_engine_factory(
@@ -885,18 +862,29 @@ class DatabaseManager:
 
         return SQLiteVecVectorStore(
             SQLiteVecVectorStoreParams(
-                engine=self._vector_store_sql_engine(vector_store_id, conf.path),
+                engine=self._vector_store_sql_engine(vector_store_id, conf),
                 vector_store_name=vector_store_name,
                 vector_store_schema=vector_store_schema,
             )
         )
 
-    def _vector_store_sql_engine(self, vector_store_id: str, path: str) -> AsyncEngine:
+    def _vector_store_sql_engine(
+        self,
+        vector_store_id: str,
+        conf: SQLiteVectorStoreConf | SQLiteVecVectorStoreConf,
+    ) -> AsyncEngine:
         """The engine behind a configured SQLite vector store, shared by its stores."""
         engine = self.vector_store_sql_engines.get(vector_store_id)
         if engine is None:
-            engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+            engine = create_async_engine(f"sqlite+aiosqlite:///{conf.path}")
             enable_sqlite_explicit_begin(engine)
+            enable_sqlite_foreign_keys(engine)
+            if isinstance(conf, SQLiteVecVectorStoreConf):
+                from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
+                    load_sqlite_vec_extension,
+                )
+
+                load_sqlite_vec_extension(engine)
             self.vector_store_sql_engines[vector_store_id] = engine
         return engine
 
