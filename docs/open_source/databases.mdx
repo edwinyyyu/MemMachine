@@ -30,22 +30,19 @@ keeps event segments in a relational database. Configure the VectorStore under
 `episodic_memory.long_term_memory.vector_store`.
 
 Supported VectorStore providers include Qdrant, Milvus, SQLiteVectorStore, and
-SQLiteVecVectorStore. The event backend keeps one store per backend and
-embedder, and each session's data is a partition of it. The store's vector
-store name is a UUIDv5 of the embedder's
-id in a namespace derived from the backend's key, written as 32 hexadecimal
-digits, so neither the key nor the id is constrained, and stores on different
-backends never share a name; a Milvus collection is named `sys_` followed by
-the vector store name. Qdrant and Milvus keep the registry of their partitions
-in a relational database named by `partition_registry`, so any number of
-server processes can share one backend; the SQLite stores are bound to one
-node. The registries of every store share two tables there, keyed by vector
-store name, which identifies one store among all the stores whose registries
-share the database. Every process must configure a given Qdrant server or
-Milvus database under the same key and with the same `partition_registry`, and
-give each embedder the same id, since the event backend's store names derive
-from the backend's key and the embedder's id; the processes then share its
-stores and their registries.
+SQLiteVecVectorStore. The event backend keeps one store, with the vector
+store name `event_memory`, and each session's data is a partition of it; a
+Milvus collection is named `sys_` followed by the vector store name. Qdrant and
+Milvus keep the registry of their partitions in a relational database named by
+`partition_registry`, so any number of server processes can share one backend;
+the SQLite stores are bound to one node. The registries of every store share
+two tables there, keyed by vector store name, which identifies one store among
+all the stores whose registries share the database. Event memory's store is
+always named `event_memory`, and semantic memory's `semantic_memory`, so
+deployments that share a backend, or keep their registries in one database,
+share those stores. Every process must configure a given Qdrant server or
+Milvus database with the same `partition_registry`; the processes then share
+its stores and their registries.
 
 Milvus supports two deployment shapes through the same configuration fields:
 

@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 from neo4j import AsyncDriver
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from memmachine_server.common.configuration import Configuration
 from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import EpisodeStorage
@@ -91,4 +92,9 @@ class CommonResourceManager(Protocol):
 
     async def get_episode_storage(self) -> EpisodeStorage:
         """Return the episode storage instance."""
+        raise NotImplementedError
+
+    @property
+    def config(self) -> Configuration:
+        """Return the configuration instance."""
         raise NotImplementedError

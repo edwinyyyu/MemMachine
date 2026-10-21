@@ -68,10 +68,12 @@ through SQLAlchemy. The backend keeps only records, each carrying the
   keyed by the vector store name, so several stores keep their registries in
   one database. A store name therefore identifies one store among all the
   stores whose registries share a database, and whoever names a store keeps
-  it so: the event backend names its store per backend and embedder, so one
-  embedder's stores on two backends never share a registry. A store reclaims its registry's tombstones through its own
-  client: a round run through a client that cannot reach the records finds
-  none, removes the tombstone, and leaves the records behind.
+  it so: a deployment names its one event memory store `event_memory` and
+  its semantic memory store `semantic_memory`, so deployments whose stores
+  differ keep their registries in different databases. A store reclaims its
+  registry's tombstones through its own client: a round run through a client
+  that cannot reach the records finds none, removes the tombstone, and leaves
+  the records behind.
 - The caller owns the registry's lifecycle. The database manager builds and
   starts each Qdrant and Milvus store's registry before it builds the store,
   and hands the started registry to the store in its params. The store never

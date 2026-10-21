@@ -2,7 +2,6 @@
 
 import hashlib
 import logging
-from uuid import UUID, uuid5
 
 from pydantic import InstanceOf
 
@@ -18,6 +17,7 @@ from memmachine_server.common.configuration.episodic_config import (
     WholeTextDeriverConf,
 )
 from memmachine_server.common.data_types import PropertyType
+from memmachine_server.common.errors import ConfigurationError
 from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import VectorStore
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
@@ -50,15 +50,10 @@ from .long_term_memory import (
 
 logger = logging.getLogger(__name__)
 
-_EVENT_BACKEND_VECTOR_STORE_NAMESPACE = UUID("d545833c-59ce-46ee-a325-c1a6222159a8")
-"""The UUIDv5 namespace of the event backend's vector store names.
+_EVENT_MEMORY_VECTOR_STORE_NAME = "event_memory"
+"""The name of event memory's one vector store, whatever its backend and embedder.
 
-The event backend keeps one store per vector store backend and embedder. Its
-name is the UUIDv5 of the embedder id in the UUIDv5 of the backend's key in
-this namespace, in hex: a vector store name whatever the key and the id are,
-never another backend's store name, so stores whose registries share a
-database stay apart, and never the name of another memory's store. Fixed,
-because the name locates the store's data.
+Fixed, because the name locates the store's data.
 """
 
 
@@ -100,6 +95,19 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
+    # A deployment keeps every session's event memory in one vector store,
+    # segment store, and embedder, so a session naming others would have its
+    # data elsewhere.
+    deployment = resource_manager.config.episodic_memory.long_term_memory
+    if deployment is None or (
+        config.vector_store,
+        config.segment_store,
+        config.embedder,
+    ) != (deployment.vector_store, deployment.segment_store, deployment.embedder):
+        raise ConfigurationError(
+            f"Session {config.session_id!r} names a vector store, segment "
+            "store, or embedder other than the deployment's event memory's"
+        )
     segment_store = await resource_manager.get_segment_store(config.segment_store)
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
     vector_store = await event_backend_vector_store(config, resource_manager)
@@ -144,14 +152,11 @@ async def event_backend_vector_store(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> VectorStore:
-    """The event backend's vector store: the store of its backend and embedder, built for it."""
+    """The event backend's vector store on its backend, built for its embedder."""
     embedder = await resource_manager.get_embedder(config.embedder, validate=True)
     return await resource_manager.get_vector_store(
         config.vector_store,
-        vector_store_name=uuid5(
-            uuid5(_EVENT_BACKEND_VECTOR_STORE_NAMESPACE, config.vector_store),
-            config.embedder,
-        ).hex,
+        vector_store_name=_EVENT_MEMORY_VECTOR_STORE_NAME,
         vector_dimensions=embedder.dimensions,
         similarity_metric=embedder.similarity_metric,
         indexed_properties=event_backend_indexed_properties(),
