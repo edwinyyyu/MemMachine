@@ -284,26 +284,10 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         The shared row lock blocks concurrent deletion (which takes the
         exclusive row lock) until the write completes; the incarnation
         predicate fences a handle that outlived its partition. SQLite
-        drops locking clauses and its driver defers BEGIN until the first
-        data-modifying statement -- a SELECT-only fence would run outside
-        the write transaction and fence nothing. The proper primitive,
-        BEGIN IMMEDIATE, requires taking over transaction management of
-        the whole engine in SQLAlchemy (isolation_level=None plus a
-        begin-event hook), which this store cannot do to a caller-owned,
-        possibly shared engine -- so the fence is a self-checking
-        registry-row UPDATE instead: the driver emits BEGIN before DML
-        and SQLite takes the same write lock, scoped to this
-        transaction, with the match count as the staleness check.
+        drops locking clauses; there the write transaction holds the
+        database's write lock from BEGIN, which deletion waits on just
+        the same.
         """
-        if self._is_sqlite:
-            fenced = await (await session.connection()).execute(
-                update(PartitionRow)
-                .where(PartitionRow.incarnation == self._incarnation)
-                .values(incarnation=self._incarnation)
-            )
-            if fenced.rowcount == 0:
-                raise SegmentStorePartitionHandleStaleError(self._partition_key)
-            return
         await self._ensure_partition_live(session, pin=True)
 
     def _registry_row_query(self) -> Select[tuple[str]]:
@@ -1244,29 +1228,17 @@ class SQLAlchemySegmentStore(SegmentStore):
             self._tracker("delete_partition"),
             write_session(self._create_session) as session,
         ):
-            if self._is_sqlite:
-                # Same primitive as _lock_partition_for_write: the row
-                # UPDATE opens the write transaction so racing deletions
-                # serialize instead of both enqueueing the incarnation,
-                # and no matched row is the idempotent no-op case.
-                # RETURNING resolves the incarnation in the same round
-                # trip; the locking select below is PostgreSQL's path
-                # (SQLite drops its locking clause anyway).
-                pinned = await (await session.connection()).execute(
-                    update(PartitionRow)
+            # Racing deletions serialize on the exclusive row lock, or on
+            # SQLite, which drops locking clauses, on the write lock the
+            # transaction holds from BEGIN; no row is the idempotent no-op
+            # case.
+            incarnation = (
+                await session.execute(
+                    select(PartitionRow.incarnation)
                     .where(PartitionRow.partition_key == partition_key)
-                    .values(partition_key=partition_key)
-                    .returning(PartitionRow.incarnation)
+                    .with_for_update()
                 )
-                incarnation = pinned.scalar_one_or_none()
-            else:
-                incarnation = (
-                    await session.execute(
-                        select(PartitionRow.incarnation)
-                        .where(PartitionRow.partition_key == partition_key)
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
+            ).scalar_one_or_none()
             if incarnation is None:
                 return
 
@@ -1292,9 +1264,9 @@ class SQLAlchemySegmentStore(SegmentStore):
         # contention safe to repeat, as the ABC promises: a raise rolls the
         # whole call back, cursor included. Entries are claimed one at a
         # time, so only the claiming call touches a dead incarnation's rows;
-        # on SQLite, which drops locking clauses, the claim is a write, so
-        # purgers serialize at the claim and each reads the cursor its
-        # predecessor committed. Full rationale:
+        # on SQLite, which drops locking clauses, the call holds the write
+        # lock from BEGIN, so purgers serialize and each reads the cursor
+        # its predecessor committed. Full rationale:
         # design/segment_store_shared_tables.md.
         remaining = self._purge_max_segments
         entries = 0
@@ -1306,36 +1278,16 @@ class SQLAlchemySegmentStore(SegmentStore):
             write_connection(self._engine) as connection,
         ):
             while True:
-                if self._is_sqlite:
-                    # Same primitive as _lock_partition_for_write: the row
-                    # UPDATE opens the write transaction, so a racing
-                    # purger waits here and then reads this call's
-                    # committed cursor. RETURNING resolves the entry in the
-                    # same round trip.
-                    oldest = (
-                        select(PurgeQueueRow.incarnation)
-                        .order_by(PurgeQueueRow.enqueued_at)
-                        .limit(1)
-                        .scalar_subquery()
-                    )
-                    claim = (
-                        update(PurgeQueueRow)
-                        .where(PurgeQueueRow.incarnation == oldest)
-                        .values(incarnation=PurgeQueueRow.incarnation)
-                        .returning(
-                            PurgeQueueRow.incarnation, PurgeQueueRow.purged_through
-                        )
-                    )
-                else:
-                    # Skips only OTHER transactions' locks; entries this
-                    # call has already claimed cannot come back, each
-                    # being deleted before the next claim.
-                    claim = (
-                        select(PurgeQueueRow.incarnation, PurgeQueueRow.purged_through)
-                        .order_by(PurgeQueueRow.enqueued_at)
-                        .limit(1)
-                        .with_for_update(skip_locked=True)
-                    )
+                # Skips only OTHER transactions' locks; entries this call has
+                # already claimed cannot come back, each being deleted before
+                # the next claim. SQLite drops the locking clause; there the
+                # write lock the call holds keeps other purgers out.
+                claim = (
+                    select(PurgeQueueRow.incarnation, PurgeQueueRow.purged_through)
+                    .order_by(PurgeQueueRow.enqueued_at)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
                 entry = (await connection.execute(claim)).one_or_none()
                 if entry is None:
                     return False

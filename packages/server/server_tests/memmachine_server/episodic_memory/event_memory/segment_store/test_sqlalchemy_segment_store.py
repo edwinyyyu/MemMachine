@@ -1862,7 +1862,8 @@ async def test_racing_purgers_never_retire_a_partly_purged_entry(
     A second purger that planned its batch from the entry as it stood
     before the first committed would delete nothing and retire the entry
     with rows left. PostgreSQL's claim lock makes it skip the entry; on
-    SQLite the claim is a write, so it waits until the first commits.
+    SQLite the call holds the write lock from BEGIN, so the second waits
+    until the first commits.
     """
     partition = await store.open_or_create_partition(
         "raced", _plaintext_partition_config()
@@ -2561,14 +2562,13 @@ async def test_sqlite_write_racing_delete_cannot_orphan_rows(
     sqlite_store: SQLAlchemySegmentStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On SQLite the write fence opens the write transaction before checking.
+    """On SQLite the write fence checks inside the write transaction.
 
-    The driver defers BEGIN to the first data-modifying statement, so a
-    SELECT-only fence would run outside the write transaction: a delete and
-    a full purge could complete between the check and the insert, and the
-    write would then commit rows no queue entry tracks. The fence's no-op
-    registry UPDATE opens the write transaction first, so the racing
-    deletion must wait for the writer and the rows stay reclaimable.
+    A fence that ran outside it would let a delete and a full purge
+    complete between the check and the insert, and the write would then
+    commit rows no queue entry tracks. The write transaction holds the
+    write lock from BEGIN, so the racing deletion must wait for the writer
+    and the rows stay reclaimable.
     """
     partition = await sqlite_store.open_or_create_partition(
         "sqlite_fence", _plaintext_partition_config()
@@ -2628,8 +2628,8 @@ async def test_sqlite_write_racing_delete_cannot_orphan_rows(
         ).scalar_one()
     assert leftover_rows == 0, (
         "rows were committed under an incarnation the purge queue no "
-        "longer tracks: the SQLite fence did not open the write "
-        "transaction before checking"
+        "longer tracks: the SQLite fence checked outside the write "
+        "transaction"
     )
 
 
