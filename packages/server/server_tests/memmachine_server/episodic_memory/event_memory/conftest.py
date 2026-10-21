@@ -213,7 +213,7 @@ def fake_vector_store_partition(fake_embedder):
     return InMemoryVectorStorePartition(
         similarity_metric=fake_embedder.similarity_metric,
         indexed_properties={
-            **EventMemory.expected_vector_store_collection_schema(),
+            **EventMemory.expected_vector_store_indexed_properties(),
             "_episode_uid": str,
         },
     )

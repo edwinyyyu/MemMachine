@@ -26,6 +26,7 @@ from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
+    VectorStoreSchema,
 )
 from memmachine_server.common.vector_store.sqlite_vector_store import (
     IndexLoadError,
@@ -99,13 +100,21 @@ def _engine_factory(ndim, metric):
     return USearchVectorSearchEngine(num_dimensions=ndim, similarity_metric=metric)
 
 
+def _schema(**overrides) -> VectorStoreSchema:
+    fields: dict[str, Any] = {
+        "vector_dimensions": VECTOR_DIM,
+        "similarity_metric": SimilarityMetric.COSINE,
+        "indexed_properties": INDEXED_PROPERTIES,
+    }
+    fields.update(overrides)
+    return VectorStoreSchema(**fields)
+
+
 def _params(engine, **overrides) -> SQLiteVectorStoreParams:
     params: dict[str, Any] = {
         "sqlalchemy_engine": engine,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
-        "indexed_properties": INDEXED_PROPERTIES,
+        "vector_store_schema": _schema(),
         "vector_search_engine_factory": _engine_factory,
     }
     params.update(overrides)
@@ -116,7 +125,9 @@ async def _store_with(store, vector_store_name: str, **overrides) -> SQLiteVecto
     """Another store over the fixture's engine: its own collection, dimensions or metric."""
     other = SQLiteVectorStore(
         _params(
-            store._sqlalchemy_engine, vector_store_name=vector_store_name, **overrides
+            store._sqlalchemy_engine,
+            vector_store_name=vector_store_name,
+            vector_store_schema=_schema(**overrides),
         )
     )
     await other.startup()

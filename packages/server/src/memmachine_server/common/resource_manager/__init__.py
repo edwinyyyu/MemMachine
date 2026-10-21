@@ -1,13 +1,11 @@
 """Protocols for accessing shared MemMachine resources."""
 
-from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from neo4j import AsyncDriver
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.configuration import Configuration
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.language_model import LanguageModel
@@ -18,7 +16,7 @@ from memmachine_server.common.session_manager.session_data_manager import (
 )
 from memmachine_server.common.sql_lease_lock import SQLLeaseLockService
 from memmachine_server.common.vector_graph_store import VectorGraphStore
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
 )
@@ -53,9 +51,7 @@ class CommonResourceManager(Protocol):
         backend: str,
         *,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         """Return the store of one name on a configured backend."""
         raise NotImplementedError

@@ -50,7 +50,7 @@ from memmachine_server.common.session_manager.session_data_manager import (
     SessionDataManager,
 )
 from memmachine_server.common.sql_lease_lock import SQLLeaseLockService
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.episodic_memory.event_memory.segment_store import SegmentStore
 
 RERANKER_ID = "my_reranker"
@@ -452,9 +452,11 @@ async def test_vector_store_purge_drains_backlog_without_waiting(monkeypatch):
 
 _VECTOR_STORE: dict[str, Any] = {
     "vector_store_name": "c",
-    "vector_dimensions": 3,
-    "similarity_metric": SimilarityMetric.COSINE,
-    "indexed_properties": {},
+    "vector_store_schema": VectorStoreSchema(
+        vector_dimensions=3,
+        similarity_metric=SimilarityMetric.COSINE,
+        indexed_properties={},
+    ),
 }
 
 

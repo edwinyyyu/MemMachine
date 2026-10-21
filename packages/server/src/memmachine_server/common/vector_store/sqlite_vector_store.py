@@ -60,6 +60,7 @@ from .data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
+    VectorStoreSchema,
 )
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
@@ -248,9 +249,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         vector_store_name: str,
         partition_key: str,
         incarnation: UUID,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
         index_path: str | None,
         save_threshold: int,
     ) -> None:
@@ -264,9 +263,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         self._partition_key = partition_key
         self._incarnation = incarnation
 
-        self._vector_dimensions = vector_dimensions
-        self._similarity_metric = similarity_metric
-        self._indexed_properties = dict(indexed_properties)
+        self._vector_store_schema = vector_store_schema
 
         self._index_path = index_path
         self._save_threshold = save_threshold
@@ -274,12 +271,12 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     @property
     @override
     def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
+        return self._vector_store_schema.similarity_metric
 
     @property
     @override
     def indexed_properties(self) -> Mapping[str, PropertyType]:
-        return self._indexed_properties
+        return self._vector_store_schema.indexed_properties
 
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold."""
@@ -308,8 +305,12 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records = list(records)
         for record in records:
-            validate_declared_types(record.properties, self._indexed_properties)
-            validate_dimensions(record.vector, self._vector_dimensions)
+            validate_declared_types(
+                record.properties, self._vector_store_schema.indexed_properties
+            )
+            validate_dimensions(
+                record.vector, self._vector_store_schema.vector_dimensions
+            )
 
         async with write_session(self._create_session) as session:
             await self._require_current(session)
@@ -410,7 +411,9 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         validate_limit(limit)
         query_vectors = list(query_vectors)
         for query_vector in query_vectors:
-            validate_query_vector(query_vector, self._vector_dimensions)
+            validate_query_vector(
+                query_vector, self._vector_store_schema.vector_dimensions
+            )
         validate_score_threshold(score_threshold)
 
         if property_filter is not None and not is_valid_filter(property_filter):
@@ -472,7 +475,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         async with self._create_session() as session:
             matched_rows = (await session.execute(fetch_records)).all()
 
-        higher_is_better = self._similarity_metric.higher_is_better
+        higher_is_better = self._vector_store_schema.similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
         for row in matched_rows:
             score = row_id_to_score.get(row.row_id)
@@ -488,7 +491,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         matches.sort(
             key=lambda match: match.score,
-            reverse=self._similarity_metric.higher_is_better,
+            reverse=self._vector_store_schema.similarity_metric.higher_is_better,
         )
         return matches
 
@@ -649,9 +652,7 @@ class SQLiteVectorStore(VectorStore):
         """Initialize the vector store with the provided parameters."""
         self._sqlalchemy_engine = params.sqlalchemy_engine
         self._vector_store_name = params.vector_store_name
-        self._vector_dimensions = params.vector_dimensions
-        self._similarity_metric = params.similarity_metric
-        self._indexed_properties = params.indexed_properties
+        self._vector_store_schema = params.vector_store_schema
         self._vector_search_engine_factory = params.vector_search_engine_factory
 
         self._index_directory = (
@@ -831,9 +832,7 @@ class SQLiteVectorStore(VectorStore):
             vector_store_name=self._vector_store_name,
             partition_key=partition_key,
             incarnation=incarnation,
-            vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
-            indexed_properties=self._indexed_properties,
+            vector_store_schema=self._vector_store_schema,
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
         )
@@ -884,7 +883,8 @@ class SQLiteVectorStore(VectorStore):
                 return incarnation, False
             incarnation = uuid4()
             search_engine = self._vector_search_engine_factory(
-                self._vector_dimensions, self._similarity_metric
+                self._vector_store_schema.vector_dimensions,
+                self._vector_store_schema.similarity_metric,
             )
             connection = await session.connection()
             await connection.run_sync(
@@ -945,7 +945,8 @@ class SQLiteVectorStore(VectorStore):
             return self._search_engines[incarnation]
 
         search_engine = self._vector_search_engine_factory(
-            self._vector_dimensions, self._similarity_metric
+            self._vector_store_schema.vector_dimensions,
+            self._vector_store_schema.similarity_metric,
         )
 
         index_path = self._index_path(incarnation)

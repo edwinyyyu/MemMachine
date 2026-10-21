@@ -8,6 +8,7 @@ from .data_types import (
     VectorStorePartitionDeletedError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
+    VectorStoreSchema,
 )
 from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 
@@ -22,4 +23,5 @@ __all__ = [
     "VectorStorePartitionDeletedError",
     "VectorStorePartitionHandleStaleError",
     "VectorStorePartitionPendingError",
+    "VectorStoreSchema",
 ]

@@ -12,9 +12,9 @@ from memmachine_server.common.filter.filter_parser import (
 )
 
 from .data_types import (
-    IndexedProperties,
     QueryResult,
     Record,
+    VectorStoreSchema,
     validate_vector_store_name,
 )
 
@@ -51,7 +51,7 @@ class VectorStorePartition(ABC):
     @property
     @abstractmethod
     def indexed_properties(self) -> Mapping[str, PropertyType]:
-        """The declared schema: every key this partition indexes for filtering."""
+        """The declared properties: every key this partition indexes for filtering."""
         raise NotImplementedError
 
     @abstractmethod
@@ -70,7 +70,7 @@ class VectorStorePartition(ABC):
             records (Iterable[Record]):
                 Iterable of records to upsert.
                 Records containing properties
-                not in the declared schema
+                not among the declared properties
                 are allowed.
 
         Raises:
@@ -143,11 +143,12 @@ class VectorStore(ABC):
     """
     Abstract base class for a vector store.
 
-    A store is constructed with a name, a dimensionality, a similarity
-    metric and a declared schema, and every record it holds has that
-    dimensionality and schema. Stores of different names hold separate
-    partitions. The schema is fixed for the life of the store's data:
-    changing it is a migration.
+    A store is constructed with a name and a schema: a dimensionality, a
+    similarity metric, and declared properties. Every record it holds has a
+    vector of that dimensionality, and any declared property it carries has
+    its declared type. Stores of different names hold separate partitions.
+    The schema is fixed for the life of the store's data: changing it is a
+    migration.
 
     A partition is identified by its key. A partition deleted and created
     again under the same key starts empty, and reclaiming the deleted one's
@@ -276,25 +277,16 @@ class VectorStoreParams(BaseModel):
     Attributes:
         vector_store_name (str):
             The name of this store.
-        vector_dimensions (int):
-            Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by (default: cosine).
-        indexed_properties (IndexedProperties):
-            The declared schema every partition of this store carries.
+        vector_store_schema (VectorStoreSchema):
+            The shape of this store's records and the metric its queries score by.
     """
 
     vector_store_name: str = Field(..., description="The name of this store")
-    vector_dimensions: int = Field(
-        ..., gt=0, description="Dimensionality of every vector in the store"
-    )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
-    )
-    indexed_properties: IndexedProperties = Field(
+    vector_store_schema: VectorStoreSchema = Field(
         ...,
-        description="The declared schema every partition of this store carries",
+        description=(
+            "The shape of this store's records and the metric its queries score by"
+        ),
     )
 
     @field_validator("vector_store_name")

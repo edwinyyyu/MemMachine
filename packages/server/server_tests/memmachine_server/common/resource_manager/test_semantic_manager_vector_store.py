@@ -13,6 +13,7 @@ from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.resource_manager.semantic_manager import (
     SemanticResourceManager,
 )
+from memmachine_server.common.vector_store import VectorStoreSchema
 from memmachine_server.semantic_memory.storage.vector_store_semantic_storage import (
     VectorStoreSemanticStorage,
 )
@@ -55,9 +56,11 @@ async def test_semantic_manager_builds_vector_store_backend(sqlalchemy_sqlite_en
     resource_manager.get_vector_store.assert_awaited_once_with(
         "semantic_vectors",
         vector_store_name="semantic_memory",
-        vector_dimensions=2,
-        similarity_metric=SimilarityMetric.COSINE,
-        indexed_properties={},
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=2,
+            similarity_metric=SimilarityMetric.COSINE,
+            indexed_properties={},
+        ),
     )
     vector_store.open_or_create_partition.assert_awaited_once_with("semantic_memory")
 

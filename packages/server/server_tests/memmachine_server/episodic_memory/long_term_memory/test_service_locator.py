@@ -18,6 +18,7 @@ from memmachine_server.common.resource_manager import CommonResourceManager
 from memmachine_server.common.vector_store import (
     VectorStore,
     VectorStorePartition,
+    VectorStoreSchema,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store import (
     SegmentStore,
@@ -185,9 +186,11 @@ async def test_event_params_opens_the_session_partition_in_the_event_store():
     resource_manager.get_vector_store.assert_awaited_once_with(
         "vs",
         vector_store_name="event_memory",
-        vector_dimensions=3,
-        similarity_metric=SimilarityMetric.COSINE,
-        indexed_properties=event_backend_indexed_properties(),
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=3,
+            similarity_metric=SimilarityMetric.COSINE,
+            indexed_properties=event_backend_indexed_properties(),
+        ),
     )
 
 

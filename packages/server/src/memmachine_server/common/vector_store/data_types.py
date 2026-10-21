@@ -9,6 +9,7 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     BeforeValidator,
+    ConfigDict,
     Field,
     FiniteFloat,
     field_validator,
@@ -18,6 +19,7 @@ from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
     PropertyType,
     PropertyValue,
+    SimilarityMetric,
 )
 
 from .utils import is_valid_identifier
@@ -56,7 +58,7 @@ IndexedProperties = Annotated[
     AfterValidator(_validate_property_keys),
 ]
 """
-The one schema a store declares for every partition it holds: each key a
+The properties a store declares for every partition it holds: each key the
 store indexes for filtering, with the type its values hold.
 """
 
@@ -67,6 +69,34 @@ def validate_vector_store_name(name: str) -> None:
         raise ValueError(
             f"Vector store name {name!r} must match [a-z0-9_]+ and be at most 32 bytes."
         )
+
+
+class VectorStoreSchema(BaseModel):
+    """
+    The shape of a vector store's records and the metric its queries score by.
+
+    Attributes:
+        vector_dimensions (int):
+            Dimensionality of every vector in the store.
+        similarity_metric (SimilarityMetric):
+            The metric every query of the store scores by (default: cosine).
+        indexed_properties (IndexedProperties):
+            The properties every partition of the store declares.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    vector_dimensions: int = Field(
+        ..., gt=0, description="Dimensionality of every vector in the store"
+    )
+    similarity_metric: SimilarityMetric = Field(
+        SimilarityMetric.COSINE,
+        description="The metric every query of the store scores by",
+    )
+    indexed_properties: IndexedProperties = Field(
+        ...,
+        description="The properties every partition of the store declares",
+    )
 
 
 class VectorStorePartitionAlreadyExistsError(Exception):

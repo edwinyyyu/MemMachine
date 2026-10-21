@@ -15,6 +15,7 @@ from memmachine_server.common.episode_store import EpisodeStorage
 from memmachine_server.common.errors import ResourceNotReadyError
 from memmachine_server.common.language_model import LanguageModel
 from memmachine_server.common.resource_manager import CommonResourceManager
+from memmachine_server.common.vector_store import VectorStoreSchema
 from memmachine_server.semantic_memory.config_store.caching_semantic_config_storage import (
     CachingSemanticConfigStorage,
 )
@@ -151,9 +152,11 @@ class SemanticResourceManager:
         vector_store = await self._resource_manager.get_vector_store(
             backend,
             vector_store_name=_VECTOR_STORE_NAME,
-            vector_dimensions=vector_dimensions,
-            similarity_metric=self._conf.vector_similarity_metric,
-            indexed_properties={},
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=vector_dimensions,
+                similarity_metric=self._conf.vector_similarity_metric,
+                indexed_properties={},
+            ),
         )
 
         # The manager owns this partition and provisions it when the storage is

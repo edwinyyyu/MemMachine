@@ -53,6 +53,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionDeletedError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
+    VectorStoreSchema,
 )
 from memmachine_server.common.vector_store.milvus_vector_store import (
     MilvusVectorStore,
@@ -102,14 +103,22 @@ def _make_record(
     )
 
 
+def _schema(**overrides) -> VectorStoreSchema:
+    fields: dict[str, Any] = {
+        "vector_dimensions": VECTOR_DIM,
+        "similarity_metric": SimilarityMetric.COSINE,
+        "indexed_properties": INDEXED_PROPERTIES,
+    }
+    fields.update(overrides)
+    return VectorStoreSchema(**fields)
+
+
 async def _params(client, registry_engine, **overrides) -> MilvusVectorStoreParams:
     """Parameters for one store: its own started registry over the shared registry database."""
     params: dict[str, Any] = {
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
-        "indexed_properties": INDEXED_PROPERTIES,
+        "vector_store_schema": _schema(),
         "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
         "max_varchar_length": MAX_VARCHAR_LENGTH,
         "purge_batch_size": PURGE_BATCH_SIZE,
@@ -200,9 +209,7 @@ def _with_purge_batch_size(
             client=store._client,
             partition_registry=store._partition_registry,
             vector_store_name=store._vector_store_name,
-            vector_dimensions=store._vector_dimensions,
-            similarity_metric=store._similarity_metric,
-            indexed_properties=dict(store._indexed_properties),
+            vector_store_schema=store._vector_store_schema,
             request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
             max_varchar_length=MAX_VARCHAR_LENGTH,
             purge_batch_size=purge_batch_size,
@@ -439,8 +446,9 @@ def test_a_setting_that_is_not_positive_is_refused(setting):
             client=MagicMock(spec=AsyncMilvusClient),
             partition_registry=MagicMock(spec=VectorStorePartitionRegistry),
             vector_store_name=VECTOR_STORE_NAME,
-            vector_dimensions=VECTOR_DIM,
-            indexed_properties=INDEXED_PROPERTIES,
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=VECTOR_DIM, indexed_properties=INDEXED_PROPERTIES
+            ),
             **{setting: 0},
         )
 
@@ -466,7 +474,7 @@ class TestPartitionLifecycle:
                 store._client,
                 store._partition_registry._engine,
                 vector_store_name=f"partial_{failing_step}",
-                indexed_properties={"name": str},
+                vector_store_schema=_schema(indexed_properties={"name": str}),
             )
         )
 
@@ -622,7 +630,7 @@ class TestPartitionLifecycle:
             store._client,
             store._partition_registry._engine,
             vector_store_name="longest_key",
-            indexed_properties={key: datetime},
+            vector_store_schema=_schema(indexed_properties={key: datetime}),
         )
         await longest.create_partition("longest_key")
         partition = await longest.open_partition("longest_key")
@@ -653,7 +661,9 @@ class TestPartitionLifecycle:
                     store._client,
                     store._partition_registry._engine,
                     vector_store_name="bad_metric",
-                    similarity_metric=SimilarityMetric.MANHATTAN,
+                    vector_store_schema=_schema(
+                        similarity_metric=SimilarityMetric.MANHATTAN
+                    ),
                 )
             )
 
@@ -689,7 +699,7 @@ class TestConcurrentPreparation:
                 store._client,
                 store._partition_registry._engine,
                 vector_store_name="raced_preparation",
-                indexed_properties={"name": str},
+                vector_store_schema=_schema(indexed_properties={"name": str}),
             )
         )
         second = MilvusVectorStore(
@@ -697,7 +707,7 @@ class TestConcurrentPreparation:
                 other_store._client,
                 other_store._partition_registry._engine,
                 vector_store_name="raced_preparation",
-                indexed_properties={"name": str},
+                vector_store_schema=_schema(indexed_properties={"name": str}),
             )
         )
         first_created = asyncio.Event()
@@ -1056,7 +1066,7 @@ class TestFilters:
 
     @pytest.mark.asyncio
     async def test_filters_on_undeclared_properties(self, partition):
-        """A property the schema does not declare is stored and filtered too."""
+        """A property the store does not declare is stored and filtered too."""
         v1 = _normalize([1.0, 0.0, 0.0])
         red = _make_record(vector=v1, properties={"color": "red", "size": 3})
         blue = _make_record(
@@ -1313,7 +1323,7 @@ class TestFilterModel:
             store._client,
             store._partition_registry._engine,
             vector_store_name="filter_model",
-            indexed_properties=_MODEL_DECLARED,
+            vector_store_schema=_schema(indexed_properties=_MODEL_DECLARED),
         )
         await modeled.create_partition("model")
         partition = await modeled.open_partition("model")
@@ -1426,7 +1436,7 @@ class TestOperationModel:
             store._client,
             store._partition_registry._engine,
             vector_store_name="operation_model",
-            indexed_properties=_MODEL_DECLARED,
+            vector_store_schema=_schema(indexed_properties=_MODEL_DECLARED),
         )
         partition_keys = ("alpha", "beta")
         # Few UUIDs, so each recurs in both partitions and across their lives.
@@ -1501,7 +1511,7 @@ class TestScores:
                 store._client,
                 store._partition_registry._engine,
                 vector_store_name=f"scores_{metric.value}",
-                similarity_metric=metric,
+                vector_store_schema=_schema(similarity_metric=metric),
             )
         )
         await scored.startup()
@@ -1553,7 +1563,7 @@ class TestScores:
             store._client,
             store._partition_registry._engine,
             vector_store_name=f"threshold_{metric.value}",
-            similarity_metric=metric,
+            vector_store_schema=_schema(similarity_metric=metric),
         )
         await scored.create_partition("threshold")
         partition = await scored.open_partition("threshold")
@@ -1587,7 +1597,7 @@ class TestScores:
             store._client,
             store._partition_registry._engine,
             vector_store_name=f"edge_{metric.value}",
-            similarity_metric=metric,
+            vector_store_schema=_schema(similarity_metric=metric),
         )
         await scored.create_partition("edge")
         partition = await scored.open_partition("edge")
@@ -1727,9 +1737,11 @@ def _partition_on(client: AsyncMilvusClient) -> MilvusVectorStorePartition:
             partition_key=NAME,
             incarnation=uuid4(),
         ),
-        vector_dimensions=VECTOR_DIM,
-        similarity_metric=SimilarityMetric.COSINE,
-        indexed_properties={},
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=VECTOR_DIM,
+            similarity_metric=SimilarityMetric.COSINE,
+            indexed_properties={},
+        ),
         tracker=OperationTracker(None, prefix="test"),
         request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
@@ -1840,7 +1852,9 @@ async def test_a_purge_round_milvus_does_not_accept_in_full_raises(registry_url)
     client.delete = AsyncMock(return_value={"delete_count": 1})
     registry_engine = create_async_engine(registry_url)
     try:
-        store = await _started_store(client, registry_engine, indexed_properties={})
+        store = await _started_store(
+            client, registry_engine, vector_store_schema=_schema(indexed_properties={})
+        )
         await store.create_partition(NAME)
         await store.delete_partition(NAME)
 
@@ -2283,7 +2297,7 @@ class TestChurn:
                     beside._client,
                     beside._partition_registry._engine,
                     vector_store_name=_CHURN_VECTOR_STORE_NAME,
-                    indexed_properties=_CHURN_DECLARED,
+                    vector_store_schema=_schema(indexed_properties=_CHURN_DECLARED),
                     purge_batch_size=2,
                 )
                 for beside in (store, other_store)

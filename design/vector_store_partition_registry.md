@@ -28,8 +28,8 @@ names across processes, which no consumer did.
 
 ## Design
 
-A store holds records of one dimensionality and declared schema, fixed at
-construction, and a partition is one tenant's records in it, addressed by a
+A store holds records of one schema (dimensionality, similarity metric, and
+declared properties), fixed at construction, and a partition is one tenant's records in it, addressed by a
 string key. A partition's catalog entry lives where a primary
 key and a transaction can arbitrate it: a relational database, reached
 through SQLAlchemy. The backend keeps only records, each carrying the
@@ -312,9 +312,9 @@ the backend is remote:
 
 ## Decisions
 
-- **A store's dimensions, metric, and schema are fixed at construction.** The
+- **A store's schema is fixed at construction.** The
   composition root builds the stores its services need, each with its
-  dimensions, metric, and declared schema fixed at construction, and
+  dimensions, metric, and declared properties fixed at construction, and
   partitions each by tenant. A partition key is all a
   caller names; the store, not each call, carries what the records share.
 - **`unregister` is keyed by partition key.** Callers delete partitions by

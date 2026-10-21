@@ -19,7 +19,7 @@ from memmachine_server.common.configuration.episodic_config import (
 from memmachine_server.common.data_types import PropertyType
 from memmachine_server.common.errors import ConfigurationError
 from memmachine_server.common.resource_manager import CommonResourceManager
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -155,16 +155,18 @@ async def event_backend_vector_store(
     return await resource_manager.get_vector_store(
         config.vector_store,
         vector_store_name=_EVENT_MEMORY_VECTOR_STORE_NAME,
-        vector_dimensions=embedder.dimensions,
-        similarity_metric=embedder.similarity_metric,
-        indexed_properties=event_backend_indexed_properties(),
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=embedder.dimensions,
+            similarity_metric=embedder.similarity_metric,
+            indexed_properties=event_backend_indexed_properties(),
+        ),
     )
 
 
 def event_backend_indexed_properties() -> dict[str, PropertyType]:
     """The system keys the event backend declares for its vector records."""
     return {
-        **EventMemory.expected_vector_store_collection_schema(),
+        **EventMemory.expected_vector_store_indexed_properties(),
         **EVENT_BACKEND_SYSTEM_FIELDS,
     }
 

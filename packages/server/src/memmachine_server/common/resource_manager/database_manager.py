@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from asyncio import Lock
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Self
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
@@ -22,7 +22,7 @@ from memmachine_server.common.configuration.database_conf import (
     SQLiteVectorStoreEngine,
     SQLiteVecVectorStoreConf,
 )
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
+from memmachine_server.common.data_types import SimilarityMetric
 from memmachine_server.common.errors import (
     MilvusConfigurationError,
     Neo4JConfigurationError,
@@ -36,7 +36,7 @@ from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import
     Neo4jVectorGraphStore,
     Neo4jVectorGraphStoreParams,
 )
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistry,
     SQLAlchemyVectorStorePartitionRegistryParams,
@@ -639,9 +639,7 @@ class DatabaseManager:
         backend: str,
         conf: QdrantConf,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
@@ -663,9 +661,7 @@ class DatabaseManager:
                 client=client,
                 partition_registry=partition_registry,
                 vector_store_name=vector_store_name,
-                vector_dimensions=vector_dimensions,
-                similarity_metric=similarity_metric,
-                indexed_properties=indexed_properties,
+                vector_store_schema=vector_store_schema,
                 metrics_factory=conf.get_metrics_factory(),
             )
         )
@@ -744,9 +740,7 @@ class DatabaseManager:
         backend: str,
         conf: MilvusConf,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
@@ -768,9 +762,7 @@ class DatabaseManager:
                 client=client,
                 partition_registry=partition_registry,
                 vector_store_name=vector_store_name,
-                vector_dimensions=vector_dimensions,
-                similarity_metric=similarity_metric,
-                indexed_properties=indexed_properties,
+                vector_store_schema=vector_store_schema,
                 request_timeout_seconds=conf.request_timeout_seconds,
                 max_varchar_length=conf.max_varchar_length,
                 purge_batch_size=conf.purge_batch_size,
@@ -857,9 +849,7 @@ class DatabaseManager:
         backend: str,
         conf: SQLiteVectorStoreConf,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         from memmachine_server.common.vector_store.sqlite_vector_store import (
             SQLiteVectorStore,
@@ -870,9 +860,7 @@ class DatabaseManager:
             SQLiteVectorStoreParams(
                 sqlalchemy_engine=self._vector_store_sql_engine(backend, conf.path),
                 vector_store_name=vector_store_name,
-                vector_dimensions=vector_dimensions,
-                similarity_metric=similarity_metric,
-                indexed_properties=indexed_properties,
+                vector_store_schema=vector_store_schema,
                 vector_search_engine_factory=self._make_sqlite_search_engine_factory(
                     conf
                 ),
@@ -886,9 +874,7 @@ class DatabaseManager:
         backend: str,
         conf: SQLiteVecVectorStoreConf,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
             SQLiteVecVectorStore,
@@ -899,9 +885,7 @@ class DatabaseManager:
             SQLiteVecVectorStoreParams(
                 engine=self._vector_store_sql_engine(backend, conf.path),
                 vector_store_name=vector_store_name,
-                vector_dimensions=vector_dimensions,
-                similarity_metric=similarity_metric,
-                indexed_properties=indexed_properties,
+                vector_store_schema=vector_store_schema,
             )
         )
 
@@ -921,15 +905,12 @@ class DatabaseManager:
         backend: str,
         *,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         """Return the store of one name on a configured backend, building it on first use.
 
-        The first call for a name builds the store with the given
-        dimensionality, similarity metric, and indexed properties. The vector
-        store name keeps stores on one backend apart.
+        The first call for a name builds the store with the given schema. The
+        vector store name keeps stores on one backend apart.
         """
         key = (backend, vector_store_name)
         if key not in self._vector_store_locks:
@@ -942,9 +923,7 @@ class DatabaseManager:
                 store = await self._build_vector_store(
                     backend,
                     vector_store_name,
-                    vector_dimensions,
-                    similarity_metric,
-                    indexed_properties,
+                    vector_store_schema,
                 )
                 self.vector_stores[key] = store
             return store
@@ -966,9 +945,7 @@ class DatabaseManager:
         self,
         backend: str,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         conf = self._vector_store_conf(backend)
         try:
@@ -978,36 +955,28 @@ class DatabaseManager:
                         backend,
                         conf,
                         vector_store_name,
-                        vector_dimensions,
-                        similarity_metric,
-                        indexed_properties,
+                        vector_store_schema,
                     )
                 case MilvusConf():
                     store = await self._build_milvus_store(
                         backend,
                         conf,
                         vector_store_name,
-                        vector_dimensions,
-                        similarity_metric,
-                        indexed_properties,
+                        vector_store_schema,
                     )
                 case SQLiteVectorStoreConf():
                     store = await self._build_sqlite_vector_store(
                         backend,
                         conf,
                         vector_store_name,
-                        vector_dimensions,
-                        similarity_metric,
-                        indexed_properties,
+                        vector_store_schema,
                     )
                 case SQLiteVecVectorStoreConf():
                     store = await self._build_sqlite_vec_vector_store(
                         backend,
                         conf,
                         vector_store_name,
-                        vector_dimensions,
-                        similarity_metric,
-                        indexed_properties,
+                        vector_store_schema,
                     )
             await store.startup()
         except Exception as e:

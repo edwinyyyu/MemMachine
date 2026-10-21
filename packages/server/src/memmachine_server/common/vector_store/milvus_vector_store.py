@@ -15,7 +15,6 @@ from pymilvus.exceptions import MilvusException
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
-    PropertyType,
     PropertyValue,
     SimilarityMetric,
 )
@@ -52,6 +51,7 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreSchema,
 )
 from .partition_registry import Registration
 from .registry_backed_vector_store import (
@@ -288,9 +288,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         collection_name: str,
         vector_store_name: str,
         registration: Registration,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
         tracker: OperationTracker,
         request_timeout_seconds: int,
     ) -> None:
@@ -298,9 +296,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         super().__init__(
             vector_store_name=vector_store_name,
             registration=registration,
-            vector_dimensions=vector_dimensions,
-            similarity_metric=similarity_metric,
-            indexed_properties=indexed_properties,
+            vector_store_schema=vector_store_schema,
             tracker=tracker,
         )
         self._client = client
@@ -520,7 +516,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
 
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        MilvusVectorStore._validate_metric(params.similarity_metric)
+        MilvusVectorStore._validate_metric(params.vector_store_schema.similarity_metric)
         super().__init__(params, metrics_prefix="vector_store_milvus")
         self._client = params.client
         self._collection_name = f"{_COLLECTION_NAME_PREFIX}{params.vector_store_name}"
@@ -538,11 +534,11 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             index_name=_VECTOR_FIELD,
             index_type=_VECTOR_INDEX_TYPE,
             metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                self._similarity_metric
+                self._vector_store_schema.similarity_metric
             ],
             params=_VECTOR_INDEX_PARAMS,
         )
-        for key in self._indexed_properties:
+        for key in self._vector_store_schema.indexed_properties:
             index_params.add_index(
                 field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                 index_name=f"{_DECLARED_FIELD_PREFIX}{key}",
@@ -574,13 +570,16 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             schema.add_field(
                 field_name=_VECTOR_FIELD,
                 datatype=DataType.FLOAT_VECTOR,
-                dim=self._vector_dimensions,
+                dim=self._vector_store_schema.vector_dimensions,
             )
             schema.add_field(
                 field_name=_PROPERTIES_FIELD,
                 datatype=DataType.JSON,
             )
-            for key, declared_type in self._indexed_properties.items():
+            for (
+                key,
+                declared_type,
+            ) in self._vector_store_schema.indexed_properties.items():
                 if declared_type is str:
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
@@ -654,9 +653,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             collection_name=self._collection_name,
             vector_store_name=self._vector_store_name,
             registration=registration,
-            vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
-            indexed_properties=self._indexed_properties,
+            vector_store_schema=self._vector_store_schema,
             tracker=self._tracker,
             request_timeout_seconds=self._request_timeout_seconds,
         )

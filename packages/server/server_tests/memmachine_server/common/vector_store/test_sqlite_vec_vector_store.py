@@ -27,6 +27,7 @@ from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
+    VectorStoreSchema,
 )
 from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
     SQLiteVecVectorStore,
@@ -94,13 +95,21 @@ async def store(tmp_path):
     await engine.dispose()
 
 
+def _schema(**overrides) -> VectorStoreSchema:
+    fields: dict[str, Any] = {
+        "vector_dimensions": VECTOR_DIM,
+        "similarity_metric": SimilarityMetric.COSINE,
+        "indexed_properties": INDEXED_PROPERTIES,
+    }
+    fields.update(overrides)
+    return VectorStoreSchema(**fields)
+
+
 def _params(engine, **overrides) -> SQLiteVecVectorStoreParams:
     params: dict[str, Any] = {
         "engine": engine,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
-        "indexed_properties": INDEXED_PROPERTIES,
+        "vector_store_schema": _schema(),
     }
     params.update(overrides)
     return SQLiteVecVectorStoreParams(**params)
@@ -111,7 +120,11 @@ async def _store_with(
 ) -> SQLiteVecVectorStore:
     """Another store over the fixture's engine: its own collection, dimensions or metric."""
     other = SQLiteVecVectorStore(
-        _params(store._engine, vector_store_name=vector_store_name, **overrides)
+        _params(
+            store._engine,
+            vector_store_name=vector_store_name,
+            vector_store_schema=_schema(**overrides),
+        )
     )
     await other.startup()
     return other
@@ -175,7 +188,7 @@ class TestPartitionLifecycle:
                 _params(
                     store._engine,
                     vector_store_name="bad_metric",
-                    similarity_metric=SimilarityMetric.DOT,
+                    vector_store_schema=_schema(similarity_metric=SimilarityMetric.DOT),
                 )
             )
 

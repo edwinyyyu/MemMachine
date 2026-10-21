@@ -32,6 +32,7 @@ from .data_types import (
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionDeletedError,
     VectorStorePartitionPendingError,
+    VectorStoreSchema,
 )
 from .partition_registry import (
     Registration,
@@ -79,37 +80,37 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         *,
         vector_store_name: str,
         registration: Registration,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
         tracker: OperationTracker,
     ) -> None:
         """Initialize with the registration the handle is bound to."""
         self._vector_store_name = vector_store_name
         self._registration = registration
         self._incarnation = registration.incarnation
-        self._vector_dimensions = vector_dimensions
-        self._similarity_metric = similarity_metric
-        self._indexed_properties = dict(indexed_properties)
+        self._vector_store_schema = vector_store_schema
         self._tracker = tracker
 
     @property
     @override
     def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
+        return self._vector_store_schema.similarity_metric
 
     @property
     @override
     def indexed_properties(self) -> Mapping[str, PropertyType]:
-        return self._indexed_properties
+        return self._vector_store_schema.indexed_properties
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         async with self._tracker("upsert"):
             records = list(records)
             for record in records:
-                validate_declared_types(record.properties, self._indexed_properties)
-                validate_dimensions(record.vector, self._vector_dimensions)
+                validate_declared_types(
+                    record.properties, self._vector_store_schema.indexed_properties
+                )
+                validate_dimensions(
+                    record.vector, self._vector_store_schema.vector_dimensions
+                )
             await self._registration.require_current()
             if not records:
                 return
@@ -128,7 +129,9 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         async with self._tracker("query"):
             query_vectors = [list(query_vector) for query_vector in query_vectors]
             for query_vector in query_vectors:
-                validate_query_vector(query_vector, self._vector_dimensions)
+                validate_query_vector(
+                    query_vector, self._vector_store_schema.vector_dimensions
+                )
             validate_score_threshold(score_threshold)
             validate_limit(limit)
             if property_filter is not None and not is_valid_filter(property_filter):
@@ -159,7 +162,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         Write records to the backend under the handle's incarnation.
 
         Called between two liveness checks, with at least one record, each
-        already checked against the store's declared schema and dimensions.
+        already checked against the store's schema.
         A record replaces the one with its UUID. The records are durable when
         it returns; a call that raises may have written some of them.
 
@@ -262,11 +265,11 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     VectorStorePartitionAlreadyExistsError. A partition a crash left pending
     stays pending until `delete_partition` deletes it.
 
-    For subclasses: `_vector_store_name`, `_vector_dimensions`,
-    `_similarity_metric`, and `_indexed_properties` are the store's
-    parameters, `_partition_registry` is the registry, and `_tracker` times
-    each operation, and a subclass implements `_prepare_storage`,
-    `_prepare_partition_storage`, `_partition_handle`, and `_purge_round`.
+    For subclasses: `_vector_store_name` and `_vector_store_schema` are the
+    store's parameters, `_partition_registry` is the registry, and
+    `_tracker` times each operation, and a subclass implements
+    `_prepare_storage`, `_prepare_partition_storage`, `_partition_handle`,
+    and `_purge_round`.
     """
 
     def __init__(
@@ -275,9 +278,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         """Initialize with the store's schema and registry, and the prefix of its metrics."""
         super().__init__()
         self._vector_store_name = params.vector_store_name
-        self._vector_dimensions = params.vector_dimensions
-        self._similarity_metric = params.similarity_metric
-        self._indexed_properties = params.indexed_properties
+        self._vector_store_schema = params.vector_store_schema
         self._partition_registry = params.partition_registry
         self._tracker = OperationTracker(params.metrics_factory, prefix=metrics_prefix)
         # Reservations cancelled after a failed preparation, held until done

@@ -42,6 +42,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionDeletedError,
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
+    VectorStoreSchema,
 )
 from memmachine_server.common.vector_store.partition_registry import (
     Registration,
@@ -134,14 +135,22 @@ async def registry_engine(tmp_path):
     await engine.dispose()
 
 
+def _schema(**overrides) -> VectorStoreSchema:
+    fields: dict[str, Any] = {
+        "vector_dimensions": VECTOR_DIM,
+        "similarity_metric": SimilarityMetric.COSINE,
+        "indexed_properties": INDEXED_PROPERTIES,
+    }
+    fields.update(overrides)
+    return VectorStoreSchema(**fields)
+
+
 async def _params(client, registry_engine, **overrides) -> QdrantVectorStoreParams:
     """Parameters for one store: its own started registry over the shared registry database."""
     params: dict[str, Any] = {
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_dimensions": VECTOR_DIM,
-        "similarity_metric": SimilarityMetric.COSINE,
-        "indexed_properties": INDEXED_PROPERTIES,
+        "vector_store_schema": _schema(),
     }
     params.update(overrides)
     params["partition_registry"] = SQLAlchemyVectorStorePartitionRegistry(
@@ -403,7 +412,7 @@ class TestSimilarityMetrics:
                 any_qdrant_client,
                 registry_engine,
                 vector_store_name=f"metric_{metric.value}",
-                similarity_metric=metric,
+                vector_store_schema=_schema(similarity_metric=metric),
             )
         )
         await store.startup()
@@ -455,7 +464,7 @@ class TestSimilarityMetrics:
                 any_qdrant_client,
                 registry_engine,
                 vector_store_name=f"metric_{metric.value}",
-                similarity_metric=metric,
+                vector_store_schema=_schema(similarity_metric=metric),
             )
         )
         await store.startup()
@@ -508,9 +517,11 @@ def _partition_on(client: AsyncQdrantClient) -> QdrantVectorStorePartition:
             partition_key=NAME,
             incarnation=uuid4(),
         ),
-        vector_dimensions=VECTOR_DIM,
-        similarity_metric=SimilarityMetric.COSINE,
-        indexed_properties={},
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=VECTOR_DIM,
+            similarity_metric=SimilarityMetric.COSINE,
+            indexed_properties={},
+        ),
         tracker=OperationTracker(None, prefix="test"),
     )
 
@@ -1304,7 +1315,7 @@ class TestPartitionIsolation:
         assert coll_b is not None
 
         vector = _normalize([1.0, 0.0, 0.0])
-        # "note" is not declared in the schema.
+        # "note" is not a declared property.
         properties: dict[str, PropertyValue] = {
             "name": "alice",
             "age": 30,
@@ -1527,7 +1538,7 @@ _MODEL_STEPS = 200
 _MODEL_POOL_SIZE = 12
 _MODEL_STORE_NAME = "model"
 _MODEL_KEYS = ("model_a", "model_b")
-# "tag" is not declared in the schema.
+# "tag" is not a declared property.
 _MODEL_INDEXED_PROPERTIES: dict[str, PropertyType] = {"color": str, "size": int}
 _MODEL_COLORS = ("red", "green", "blue")
 _MODEL_TAGS = ("x", "y")
@@ -1706,7 +1717,9 @@ class TestAgainstAModel:
                 any_qdrant_client,
                 registry_engine,
                 vector_store_name=_MODEL_STORE_NAME,
-                indexed_properties=_MODEL_INDEXED_PROPERTIES,
+                vector_store_schema=_schema(
+                    indexed_properties=_MODEL_INDEXED_PROPERTIES
+                ),
             )
         )
         await store.startup()
@@ -1921,7 +1934,9 @@ async def _stores_sharing_a_registry(
                 client,
                 engine,
                 vector_store_name=vector_store_name,
-                indexed_properties=_CHURN_INDEXED_PROPERTIES,
+                vector_store_schema=_schema(
+                    indexed_properties=_CHURN_INDEXED_PROPERTIES
+                ),
             )
         )
         await store.startup()

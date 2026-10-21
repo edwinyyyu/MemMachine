@@ -19,8 +19,8 @@ registry](vector_store_partition_registry.md),
   `is_tenant=true`, which also has Qdrant keep a tenant's points together.
   A handle's searches filter on it, as do the purge's scrolls and deletes. A
   handle's deletes name its points' ids instead (see [Point ids](#point-ids)).
-- **Declared properties:** a payload index per property of the store's
-  declared schema, typed by the property's type.
+- **Declared properties:** a payload index per property the store declares,
+  typed by the property's type.
 - **Startup converges:** the collection and each payload index are created at
   startup under separate already-exists guards, so a startup that failed
   between them is completed by the next.

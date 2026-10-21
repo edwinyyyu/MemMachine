@@ -116,9 +116,9 @@ class EventMemory:
     )
 
     @classmethod
-    def expected_vector_store_collection_schema(cls) -> dict[str, type[PropertyValue]]:
+    def expected_vector_store_indexed_properties(cls) -> dict[str, type[PropertyValue]]:
         """
-        Return the vector store collection schema EventMemory requires.
+        Return the properties EventMemory requires its vector store to declare.
 
         A vector record carries only the properties the vector store
         declares, so the vector search can filter only on those; a condition

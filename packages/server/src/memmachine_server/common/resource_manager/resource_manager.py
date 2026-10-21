@@ -3,14 +3,12 @@
 import asyncio
 import logging
 from asyncio import Lock
-from collections.abc import Mapping
 
 from neo4j import AsyncDriver
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from memmachine_server.common.configuration import Configuration
 from memmachine_server.common.configuration.mixin_confs import MetricsFactoryIdMixin
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.episode_store import (
     CountCachingEpisodeStorage,
@@ -39,7 +37,7 @@ from memmachine_server.common.session_manager.session_data_manager_sql_impl impo
 )
 from memmachine_server.common.sql_lease_lock import SQLLeaseLockService
 from memmachine_server.common.vector_graph_store import VectorGraphStore
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.episodic_memory.episodic_memory_manager import (
     EpisodicMemoryManager,
     EpisodicMemoryManagerParams,
@@ -214,9 +212,7 @@ class ResourceManagerImpl:
         backend: str,
         *,
         vector_store_name: str,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
         """Return the store of one name on a configured backend.
 
@@ -225,9 +221,7 @@ class ResourceManagerImpl:
         store = await self._database_manager.get_vector_store(
             backend,
             vector_store_name=vector_store_name,
-            vector_dimensions=vector_dimensions,
-            similarity_metric=similarity_metric,
-            indexed_properties=indexed_properties,
+            vector_store_schema=vector_store_schema,
         )
         key = (backend, vector_store_name)
         if key not in self._vector_store_purge_tasks:

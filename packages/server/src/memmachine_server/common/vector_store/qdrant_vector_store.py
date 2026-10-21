@@ -1,7 +1,6 @@
 """Qdrant-based vector store implementation."""
 
 import math
-from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
@@ -15,7 +14,6 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 from memmachine_server.common.data_types import (
     OrderedValue,
-    PropertyType,
     PropertyValue,
     SimilarityMetric,
 )
@@ -47,6 +45,7 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreSchema,
 )
 from .partition_registry import Registration
 from .registry_backed_vector_store import (
@@ -243,18 +242,14 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         client: AsyncQdrantClient,
         vector_store_name: str,
         registration: Registration,
-        vector_dimensions: int,
-        similarity_metric: SimilarityMetric,
-        indexed_properties: Mapping[str, PropertyType],
+        vector_store_schema: VectorStoreSchema,
         tracker: OperationTracker,
     ) -> None:
         """Initialize with a Qdrant client and the registration the handle is bound to."""
         super().__init__(
             vector_store_name=vector_store_name,
             registration=registration,
-            vector_dimensions=vector_dimensions,
-            similarity_metric=similarity_metric,
-            indexed_properties=indexed_properties,
+            vector_store_schema=vector_store_schema,
             tracker=tracker,
         )
         self._client = client
@@ -459,7 +454,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
     @override
     async def _prepare_storage(self) -> None:
         distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-            self._similarity_metric
+            self._vector_store_schema.similarity_metric
         ]
         # The collection and each payload index are created under their own
         # already-exists guard, so a creation that finds the collection there
@@ -468,7 +463,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
             await self._client.create_collection(
                 collection_name=self._vector_store_name,
                 vectors_config=models.VectorParams(
-                    size=self._vector_dimensions, distance=distance
+                    size=self._vector_store_schema.vector_dimensions, distance=distance
                 ),
                 hnsw_config=models.HnswConfigDiff(
                     m=0,
@@ -493,7 +488,10 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
                 ),
             )
         ]
-        for prop_name, prop_type in self._indexed_properties.items():
+        for (
+            prop_name,
+            prop_type,
+        ) in self._vector_store_schema.indexed_properties.items():
             index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(prop_type)
             if index_type is not None:
                 indexes.append((prop_name, index_type))
@@ -524,9 +522,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
             client=self._client,
             vector_store_name=self._vector_store_name,
             registration=registration,
-            vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
-            indexed_properties=self._indexed_properties,
+            vector_store_schema=self._vector_store_schema,
             tracker=self._tracker,
         )
 

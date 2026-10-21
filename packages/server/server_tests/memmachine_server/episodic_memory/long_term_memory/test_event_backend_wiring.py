@@ -161,7 +161,7 @@ def vector_store_partition(fake_embedder):
     return InMemoryVectorStorePartition(
         similarity_metric=fake_embedder.similarity_metric,
         indexed_properties={
-            **EventMemory.expected_vector_store_collection_schema(),
+            **EventMemory.expected_vector_store_indexed_properties(),
             **EVENT_BACKEND_SYSTEM_FIELDS,
         },
     )
@@ -460,7 +460,7 @@ def _make_ltm(
     vector_store_partition = InMemoryVectorStorePartition(
         similarity_metric=embedder.similarity_metric,
         indexed_properties={
-            **EventMemory.expected_vector_store_collection_schema(),
+            **EventMemory.expected_vector_store_indexed_properties(),
             **EVENT_BACKEND_SYSTEM_FIELDS,
         },
     )

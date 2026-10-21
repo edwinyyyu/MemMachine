@@ -19,6 +19,7 @@ from memmachine_server.common.vector_store import (
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionDeletedError,
     VectorStorePartitionPendingError,
+    VectorStoreSchema,
     registry_backed_vector_store,
 )
 from memmachine_server.common.vector_store.partition_registry import (
@@ -74,8 +75,9 @@ class _Store(RegistryBackedVectorStore[_Partition]):
             RegistryBackedVectorStoreParams(
                 partition_registry=registry,
                 vector_store_name="store",
-                vector_dimensions=vector_dimensions,
-                indexed_properties={},
+                vector_store_schema=VectorStoreSchema(
+                    vector_dimensions=vector_dimensions, indexed_properties={}
+                ),
             ),
             metrics_prefix="test",
         )
@@ -97,9 +99,7 @@ class _Store(RegistryBackedVectorStore[_Partition]):
         return _Partition(
             vector_store_name=self._vector_store_name,
             registration=registration,
-            vector_dimensions=self._vector_dimensions,
-            similarity_metric=self._similarity_metric,
-            indexed_properties=self._indexed_properties,
+            vector_store_schema=self._vector_store_schema,
             tracker=self._tracker,
         )
 
@@ -139,8 +139,9 @@ def test_a_vector_store_name_outside_the_rule_is_refused(registry, vector_store_
         RegistryBackedVectorStoreParams(
             partition_registry=registry,
             vector_store_name=vector_store_name,
-            vector_dimensions=VECTOR_DIMENSIONS,
-            indexed_properties={},
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=VECTOR_DIMENSIONS, indexed_properties={}
+            ),
         )
 
 

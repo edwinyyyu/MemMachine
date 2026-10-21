@@ -118,8 +118,8 @@ def _ts(minutes: int) -> datetime.datetime:
 
 
 class TestSchema:
-    def test_expected_vector_store_collection_schema_only_has_base_fields(self):
-        assert EventMemory.expected_vector_store_collection_schema() == {
+    def test_expected_vector_store_indexed_properties_only_has_base_fields(self):
+        assert EventMemory.expected_vector_store_indexed_properties() == {
             "_timestamp": datetime.datetime,
         }
 
@@ -878,7 +878,7 @@ class TestQueryWithFilter:
         collection = InMemoryVectorStorePartition(
             similarity_metric=fake_embedder.similarity_metric,
             indexed_properties={
-                **EventMemory.expected_vector_store_collection_schema(),
+                **EventMemory.expected_vector_store_indexed_properties(),
                 "color": str,
             },
         )
@@ -1122,7 +1122,7 @@ def declaring_event_memory(fake_embedder, fake_segment_store_partition) -> Event
     collection = InMemoryVectorStorePartition(
         similarity_metric=fake_embedder.similarity_metric,
         indexed_properties={
-            **EventMemory.expected_vector_store_collection_schema(),
+            **EventMemory.expected_vector_store_indexed_properties(),
             "_d1": int,
             "_d2": int,
             "_d3": int,
@@ -1406,7 +1406,7 @@ class TestIngestFormatOptions:
     def _build(embedder: FakeEmbedder) -> EventMemory:
         vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=embedder.similarity_metric,
-            indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
+            indexed_properties=(EventMemory.expected_vector_store_indexed_properties()),
         )
         return EventMemory(
             EventMemoryParams(
@@ -1445,7 +1445,7 @@ class TestIngestFormatOptions:
         partition = InMemorySegmentStorePartition()
         vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=embedder.similarity_metric,
-            indexed_properties=(EventMemory.expected_vector_store_collection_schema()),
+            indexed_properties=(EventMemory.expected_vector_store_indexed_properties()),
         )
         event_memory = EventMemory(
             EventMemoryParams(

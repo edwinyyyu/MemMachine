@@ -29,9 +29,10 @@ single-node (sqlite-vec) bounds.
 
 ## The store and its partitions
 
-A vector store is constructed with a name, a dimensionality, a similarity
-metric and a declared schema, and every record it holds has that
-dimensionality and schema. The composition root builds the stores its services
+A vector store is constructed with a name and a schema: a dimensionality, a
+similarity metric, and declared properties. Every record it holds has a vector
+of that dimensionality, and any declared property it carries has its declared
+type. The composition root builds the stores its services
 need, and the name keeps two stores over one backend apart. Within a store, a
 partition holds one tenant's records, addressed by a string key, and every
 search runs within one partition. Every partition of a store shares its
