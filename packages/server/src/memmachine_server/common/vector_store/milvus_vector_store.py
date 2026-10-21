@@ -313,7 +313,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        declared = self.indexed_properties
+        declared = self._vector_store_schema.indexed_properties
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
@@ -345,7 +345,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         Milvus returns cosine similarity and inner product as they are, and
         the squared Euclidean distance.
         """
-        if self.similarity_metric is SimilarityMetric.EUCLIDEAN:
+        if self._vector_store_schema.similarity_metric is SimilarityMetric.EUCLIDEAN:
             return math.sqrt(max(distance, 0.0))
         return distance
 
@@ -385,7 +385,9 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
     ) -> list[QueryResult]:
         filter_expr = _incarnation_filter(self._incarnation)
         if property_filter is not None:
-            property_expr = _filter_expression(property_filter, self.indexed_properties)
+            property_expr = _filter_expression(
+                property_filter, self._vector_store_schema.indexed_properties
+            )
             filter_expr = f"({filter_expr}) && ({property_expr})"
 
         raw_results = await self._client.search(
@@ -408,7 +410,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
                 entity = cast(Mapping[str, Any], raw_match["entity"])
                 score = self._score_from_distance(raw_match["distance"])
                 if not self._passes_threshold(
-                    score, score_threshold, self.similarity_metric
+                    score, score_threshold, self._vector_store_schema.similarity_metric
                 ):
                     continue
 

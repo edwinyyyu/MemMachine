@@ -2,11 +2,10 @@
 
 import math
 import operator
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from uuid import UUID
 
 from memmachine_server.common.data_types import (
-    PropertyType,
     PropertyValue,
     SimilarityMetric,
 )
@@ -19,7 +18,10 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.vector_store import VectorStorePartition
+from memmachine_server.common.vector_store import (
+    VectorStorePartition,
+    VectorStoreSchema,
+)
 from memmachine_server.common.vector_store.data_types import (
     QueryMatch,
     QueryResult,
@@ -118,23 +120,13 @@ class InMemoryVectorStorePartition(VectorStorePartition):
     and full FilterExpr evaluation on record properties.
     """
 
-    def __init__(
-        self,
-        *,
-        similarity_metric: SimilarityMetric = SimilarityMetric.COSINE,
-        indexed_properties: Mapping[str, PropertyType] | None = None,
-    ) -> None:
-        self._similarity_metric = similarity_metric
-        self._indexed_properties = dict(indexed_properties or {})
+    def __init__(self, *, vector_store_schema: VectorStoreSchema) -> None:
+        self._vector_store_schema = vector_store_schema
         self.records: dict[UUID, Record] = {}
 
     @property
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._similarity_metric
-
-    @property
-    def indexed_properties(self) -> Mapping[str, PropertyType]:
-        return self._indexed_properties
+    def vector_store_schema(self) -> VectorStoreSchema:
+        return self._vector_store_schema
 
     async def upsert(self, *, records: Iterable[Record]) -> None:
         for record in records:
@@ -152,7 +144,7 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
-        metric = self._similarity_metric
+        metric = self._vector_store_schema.similarity_metric
         higher_is_better = metric.higher_is_better
 
         results: list[QueryResult] = []

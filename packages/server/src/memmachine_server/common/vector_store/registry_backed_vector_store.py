@@ -15,13 +15,12 @@ import asyncio
 import contextlib
 import logging
 from abc import abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from typing import override
 from uuid import UUID
 
 from pydantic import Field, InstanceOf
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
@@ -92,13 +91,8 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
 
     @property
     @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._vector_store_schema.similarity_metric
-
-    @property
-    @override
-    def indexed_properties(self) -> Mapping[str, PropertyType]:
-        return self._vector_store_schema.indexed_properties
+    def vector_store_schema(self) -> VectorStoreSchema:
+        return self._vector_store_schema
 
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:

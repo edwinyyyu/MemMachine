@@ -21,6 +21,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
     map_filter_fields,
 )
+from memmachine_server.common.vector_store import VectorStoreSchema
 from memmachine_server.common.vector_store.data_types import (
     Record,
 )
@@ -250,8 +251,11 @@ class TestEncodeEvents:
     ):
         # A partition without context fields.
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=SimilarityMetric.COSINE,
-            indexed_properties={"_timestamp": datetime.datetime},
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=fake_embedder.dimensions,
+                similarity_metric=SimilarityMetric.COSINE,
+                indexed_properties={"_timestamp": datetime.datetime},
+            )
         )
         partition = InMemorySegmentStorePartition()
         em = EventMemory(
@@ -275,7 +279,11 @@ class TestEncodeEvents:
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
         # A partition without _timestamp — base field required at init.
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=SimilarityMetric.COSINE,
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=fake_embedder.dimensions,
+                similarity_metric=SimilarityMetric.COSINE,
+                indexed_properties={},
+            )
         )
         partition = InMemorySegmentStorePartition()
         with pytest.raises(
@@ -876,11 +884,14 @@ class TestQueryWithFilter:
     ):
         """A user key the partition declares is on the record, and its condition reaches the search under its bare name."""
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=fake_embedder.similarity_metric,
-            indexed_properties={
-                **EventMemory.expected_vector_store_indexed_properties(),
-                "color": str,
-            },
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=fake_embedder.dimensions,
+                similarity_metric=fake_embedder.similarity_metric,
+                indexed_properties={
+                    **EventMemory.expected_vector_store_indexed_properties(),
+                    "color": str,
+                },
+            )
         )
         event_memory = EventMemory(
             EventMemoryParams(
@@ -1120,13 +1131,16 @@ _FIELDS_ON_THE_SEGMENT_ONLY = ("m.u1", "m.u2")
 def declaring_event_memory(fake_embedder, fake_segment_store_partition) -> EventMemory:
     """Event memory whose vector store declares `_d1`, `_d2`, and `_d3` but not `u1` or `u2`."""
     vector_store_partition = InMemoryVectorStorePartition(
-        similarity_metric=fake_embedder.similarity_metric,
-        indexed_properties={
-            **EventMemory.expected_vector_store_indexed_properties(),
-            "_d1": int,
-            "_d2": int,
-            "_d3": int,
-        },
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=fake_embedder.dimensions,
+            similarity_metric=fake_embedder.similarity_metric,
+            indexed_properties={
+                **EventMemory.expected_vector_store_indexed_properties(),
+                "_d1": int,
+                "_d2": int,
+                "_d3": int,
+            },
+        )
     )
     return EventMemory(
         EventMemoryParams(
@@ -1405,8 +1419,11 @@ class TestIngestFormatOptions:
     @staticmethod
     def _build(embedder: FakeEmbedder) -> EventMemory:
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=embedder.similarity_metric,
-            indexed_properties=(EventMemory.expected_vector_store_indexed_properties()),
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=embedder.dimensions,
+                similarity_metric=embedder.similarity_metric,
+                indexed_properties=EventMemory.expected_vector_store_indexed_properties(),
+            )
         )
         return EventMemory(
             EventMemoryParams(
@@ -1444,8 +1461,11 @@ class TestIngestFormatOptions:
         embedder = _RecordingEmbedder()
         partition = InMemorySegmentStorePartition()
         vector_store_partition = InMemoryVectorStorePartition(
-            similarity_metric=embedder.similarity_metric,
-            indexed_properties=(EventMemory.expected_vector_store_indexed_properties()),
+            vector_store_schema=VectorStoreSchema(
+                vector_dimensions=embedder.dimensions,
+                similarity_metric=embedder.similarity_metric,
+                indexed_properties=EventMemory.expected_vector_store_indexed_properties(),
+            )
         )
         event_memory = EventMemory(
             EventMemoryParams(

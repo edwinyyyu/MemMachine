@@ -31,7 +31,7 @@ from memmachine_server.common.episode_store import (
 from memmachine_server.common.filter.filter_parser import (
     Comparison as FilterComparison,
 )
-from memmachine_server.common.vector_store import VectorStore
+from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     WholeTextDeriver,
 )
@@ -159,11 +159,14 @@ def vector_store():
 @pytest.fixture
 def vector_store_partition(fake_embedder):
     return InMemoryVectorStorePartition(
-        similarity_metric=fake_embedder.similarity_metric,
-        indexed_properties={
-            **EventMemory.expected_vector_store_indexed_properties(),
-            **EVENT_BACKEND_SYSTEM_FIELDS,
-        },
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=fake_embedder.dimensions,
+            similarity_metric=fake_embedder.similarity_metric,
+            indexed_properties={
+                **EventMemory.expected_vector_store_indexed_properties(),
+                **EVENT_BACKEND_SYSTEM_FIELDS,
+            },
+        )
     )
 
 
@@ -458,11 +461,14 @@ def _make_ltm(
     euclidean.
     """
     vector_store_partition = InMemoryVectorStorePartition(
-        similarity_metric=embedder.similarity_metric,
-        indexed_properties={
-            **EventMemory.expected_vector_store_indexed_properties(),
-            **EVENT_BACKEND_SYSTEM_FIELDS,
-        },
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=embedder.dimensions,
+            similarity_metric=embedder.similarity_metric,
+            indexed_properties={
+                **EventMemory.expected_vector_store_indexed_properties(),
+                **EVENT_BACKEND_SYSTEM_FIELDS,
+            },
+        )
     )
     return LongTermMemory(
         EventBackendParams(

@@ -327,7 +327,7 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         # Qdrant keeps only scores strictly better than its threshold, compared
         # in single precision, so send the next single-precision value on the
         # worse side; the check below applies the caller's threshold exactly.
-        higher_is_better = self.similarity_metric.higher_is_better
+        higher_is_better = self._vector_store_schema.similarity_metric.higher_is_better
         qdrant_score_threshold = None
         if score_threshold is not None:
             worse = np.float32(-np.inf if higher_is_better else np.inf)

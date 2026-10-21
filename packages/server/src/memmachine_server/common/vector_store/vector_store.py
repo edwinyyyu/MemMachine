@@ -1,12 +1,11 @@
 """Abstract base class for a vector store."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
@@ -37,21 +36,16 @@ class VectorStorePartition(ABC):
     reflect it right away. A store that guarantees more states it.
 
     A partition stores every property of a record and filters on any key;
-    the keys its store declares (`indexed_properties`) are indexed for
+    the keys its store declares (`vector_store_schema.indexed_properties`)
+    are indexed for
     filtering during a search, and their values are typed. Record
     properties not declared may have mixed-type values.
     """
 
     @property
     @abstractmethod
-    def similarity_metric(self) -> SimilarityMetric:
-        """The metric every query of this partition scores by."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def indexed_properties(self) -> Mapping[str, PropertyType]:
-        """The declared properties: every key this partition indexes for filtering."""
+    def vector_store_schema(self) -> VectorStoreSchema:
+        """The schema every record and query of this partition follows."""
         raise NotImplementedError
 
     @abstractmethod

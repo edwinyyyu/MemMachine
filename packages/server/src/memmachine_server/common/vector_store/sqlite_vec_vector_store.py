@@ -32,7 +32,6 @@ from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
 from memmachine_server.common.data_types import (
-    PropertyType,
     SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import FilterExpr
@@ -115,13 +114,8 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
 
     @property
     @override
-    def similarity_metric(self) -> SimilarityMetric:
-        return self._vector_store_schema.similarity_metric
-
-    @property
-    @override
-    def indexed_properties(self) -> Mapping[str, PropertyType]:
-        return self._vector_store_schema.indexed_properties
+    def vector_store_schema(self) -> VectorStoreSchema:
+        return self._vector_store_schema
 
     @staticmethod
     def _serialize_vector(vector: Sequence[float]) -> bytes:

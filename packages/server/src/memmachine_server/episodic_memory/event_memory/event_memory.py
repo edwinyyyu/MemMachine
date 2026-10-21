@@ -150,7 +150,7 @@ class EventMemory:
         )
 
         self._schema_fields = frozenset(
-            params.vector_store_partition.indexed_properties
+            params.vector_store_partition.vector_store_schema.indexed_properties
         )
 
         missing_base_fields = (
@@ -502,7 +502,7 @@ class EventMemory:
         # Embedding scores depend on the similarity metric.
         higher_is_better = (
             self._reranker is not None
-            or self._vector_store_partition.similarity_metric.higher_is_better
+            or self._vector_store_partition.vector_store_schema.similarity_metric.higher_is_better
         )
 
         # Return scored contexts ordered by score.

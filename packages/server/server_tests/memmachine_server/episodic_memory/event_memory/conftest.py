@@ -14,6 +14,7 @@ from memmachine_server.common.filter.filter_parser import (
     normalize_filter_field,
 )
 from memmachine_server.common.reranker import Reranker
+from memmachine_server.common.vector_store import VectorStoreSchema
 from memmachine_server.episodic_memory.event_memory.data_types import Segment
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
@@ -211,11 +212,14 @@ def fake_segment_store_partition():
 @pytest.fixture
 def fake_vector_store_partition(fake_embedder):
     return InMemoryVectorStorePartition(
-        similarity_metric=fake_embedder.similarity_metric,
-        indexed_properties={
-            **EventMemory.expected_vector_store_indexed_properties(),
-            "_episode_uid": str,
-        },
+        vector_store_schema=VectorStoreSchema(
+            vector_dimensions=fake_embedder.dimensions,
+            similarity_metric=fake_embedder.similarity_metric,
+            indexed_properties={
+                **EventMemory.expected_vector_store_indexed_properties(),
+                "_episode_uid": str,
+            },
+        )
     )
 
 
