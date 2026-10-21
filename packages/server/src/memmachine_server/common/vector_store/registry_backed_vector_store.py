@@ -227,8 +227,6 @@ class RegistryBackedVectorStoreParams(VectorStoreParams):
     """
     Parameters for a RegistryBackedVectorStore.
 
-    Stores of different names may share a client.
-
     Attributes:
         partition_registry (VectorStorePartitionRegistry):
             Registry of the store's partitions, shared by every process
@@ -290,8 +288,7 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
     @override
     async def startup(self) -> None:
         # The caller owns the registry's lifecycle and that of any client a
-        # subclass is given; starting the store prepares the storage its
-        # partitions share.
+        # subclass is given.
         async with self._tracker("startup"):
             await self._prepare_storage()
 
@@ -427,17 +424,15 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         Prepare the storage the store's partitions share.
 
         That is whatever a partition needs besides its incarnation and its
-        own storage: a native collection they all live in, a container of
-        per-partition units, or nothing. Storage of one partition's own is
-        prepared when it registers, by `_prepare_partition_storage`. What is
-        prepared for one store serves no other. It runs when the store starts,
-        by any number of processes at once, so it must be idempotent and safe to race, and must
+        own storage. Storage of one partition's own is prepared when it
+        registers, by `_prepare_partition_storage`. What is prepared for one
+        store serves no other. It runs when the store starts, by any number of
+        processes at once, so it must be idempotent and safe to race, and must
         complete what a failed call left part-made.
 
         Raises:
             Exception:
-                Whatever the backend raises. Startup then fails, and the next
-                startup completes what this call left.
+                Whatever the backend raises. Startup then fails.
         """
         raise NotImplementedError
 
@@ -449,10 +444,9 @@ class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
         Prepare the storage a newly reserved partition needs of its own.
 
         The partition is reserved, pending, under the incarnation, and its
-        reservation is confirmed once this returns. The storage the store's partitions
-        share was prepared at startup; this prepares what the partition
-        keeps of its own, such as a unit named by its
-        incarnation, or nothing. Whatever a failed or interrupted call leaves
+        reservation is confirmed once this returns. The storage the store's
+        partitions share was prepared at startup, so this may have nothing to
+        prepare. Whatever a failed or interrupted call leaves
         must be recoverable: reclaimed by the purge rounds of the incarnation
         once its pending partition is deleted.
 

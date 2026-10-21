@@ -2,9 +2,7 @@
 Vector store backed by SQLite + sqlite-vec.
 
 Each life of a partition gets its own records table and vec0 virtual table,
-named by the partition's incarnation, so different stores may share one
-engine; sqlite-vec's own partition keys are not used, since its ANN indexes
-may not support them.
+since sqlite-vec's ANN indexes may not support partition keys.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -389,8 +387,7 @@ class SQLiteVecVectorStoreParams(VectorStoreParams):
     Attributes:
         engine (AsyncEngine):
             Async SQLAlchemy engine (sqlite+aiosqlite), set up by
-            `enable_sqlite_explicit_begin` at its creation: the store's write
-            transactions take SQLite's write lock at BEGIN.
+            `enable_sqlite_explicit_begin` at its creation.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(
@@ -423,8 +420,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     Each life of a partition gets its own records table and vec0 virtual
     table. The database is a local file, so the processes sharing a partition
-    must run on one host. A handle used after its partition is deleted raises
-    VectorStorePartitionHandleStaleError.
+    must run on one host.
     """
 
     _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {

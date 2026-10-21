@@ -165,8 +165,6 @@ class DatabaseManager:
             for name in self.conf.milvus_confs
         ]
         # Lazy build will occur in get_* calls, but build_all can trigger them.
-        # A vector store is built by the service that names its collection,
-        # never here.
         tasks = (
             neo4j_tasks + relation_db_tasks + nebula_tasks + qdrant_tasks + milvus_tasks
         )
@@ -645,8 +643,6 @@ class DatabaseManager:
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
-        # The registry first, so a misconfigured registry fails before the
-        # backend's client is fetched.
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
                 engine=await self.async_get_sql_engine(conf.partition_registry),
@@ -752,8 +748,6 @@ class DatabaseManager:
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
     ) -> VectorStore:
-        # The registry first, so a misconfigured registry fails before the
-        # backend's client is fetched.
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
                 engine=await self.async_get_sql_engine(conf.partition_registry),
@@ -933,11 +927,9 @@ class DatabaseManager:
     ) -> VectorStore:
         """Return the store of one name on a configured backend, building it on first use.
 
-        A store is built with the dimensionality, similarity metric and
-        declared schema of the service that asks for it. On Qdrant and
-        Milvus it keeps its records in one native collection, and on the
-        SQLite backends in tables of the backend's file. The vector store
-        name keeps stores on one backend apart.
+        The first call for a name builds the store with the given
+        dimensionality, similarity metric, and indexed properties. The vector
+        store name keeps stores on one backend apart.
         """
         key = (backend, vector_store_name)
         if key not in self._vector_store_locks:

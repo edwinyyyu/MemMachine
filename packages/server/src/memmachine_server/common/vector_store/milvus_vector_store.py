@@ -65,8 +65,7 @@ _COLLECTION_NAME_PREFIX = "sys_"
 
 Milvus requires a collection name to begin with a letter or an underscore,
 and a vector store name may begin with a digit. Milvus names its own
-internals with a leading underscore (`_default`, `__virtual_pk__`), so the
-prefix begins with a letter.
+internals with a leading underscore, so the prefix begins with a letter.
 """
 _ID_FIELD = "id"
 _RECORD_UUID_FIELD = "record_uuid"
@@ -268,7 +267,7 @@ def _incarnation_filter(incarnation: UUID) -> str:
 
 
 class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
-    """A partition backed by Milvus: one partition-key value inside the store's native collection."""
+    """A partition backed by Milvus."""
 
     @staticmethod
     def _passes_threshold(
@@ -447,7 +446,8 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
 
     Attributes:
         client (AsyncMilvusClient):
-            Async Milvus client instance.
+            Async Milvus client instance, which stores of different names
+            may share.
         request_timeout_seconds (int):
             Seconds any request to Milvus may take (default: 30).
         max_varchar_length (int):
@@ -462,7 +462,7 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
 
     client: InstanceOf[AsyncMilvusClient] = Field(
         ...,
-        description="Async Milvus client instance",
+        description="Async Milvus client instance, which stores of different names may share",
     )
     request_timeout_seconds: int = Field(
         30, gt=0, description="Seconds any request to Milvus may take"
@@ -642,9 +642,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
     async def _prepare_partition_storage(
         self, partition_key: str, incarnation: UUID
     ) -> None:
-        # A partition is the entities carrying its incarnation in the
-        # store's one native collection, which startup prepared; it has no
-        # storage of its own.
+        # Every partition lives in the native collection startup prepared.
         pass
 
     @override

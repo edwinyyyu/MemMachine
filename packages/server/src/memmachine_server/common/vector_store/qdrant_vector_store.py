@@ -86,7 +86,7 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
 
 
 class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
-    """A partition backed by Qdrant: one payload value inside the store's native collection."""
+    """A partition backed by Qdrant."""
 
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
         ">": "gt",
@@ -394,12 +394,13 @@ class QdrantVectorStoreParams(RegistryBackedVectorStoreParams):
 
     Attributes:
         client (AsyncQdrantClient):
-            Async Qdrant client instance.
+            Async Qdrant client instance, which stores of different names
+            may share.
     """
 
     client: InstanceOf[AsyncQdrantClient] = Field(
         ...,
-        description="Async Qdrant client instance",
+        description="Async Qdrant client instance, which stores of different names may share",
     )
 
 
@@ -512,9 +513,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
     async def _prepare_partition_storage(
         self, partition_key: str, incarnation: UUID
     ) -> None:
-        # A partition is the points carrying its incarnation in the
-        # store's one native collection, which startup prepared; it has no
-        # storage of its own.
+        # Every partition lives in the native collection startup prepared.
         pass
 
     @override

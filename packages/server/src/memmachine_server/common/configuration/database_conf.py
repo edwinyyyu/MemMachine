@@ -432,7 +432,7 @@ class SQLiteVectorStoreConf(YamlSerializableMixin):
     index_directory: str | None = Field(
         default=None,
         description=(
-            "Directory used to persist each partition's ANN index file. "
+            "Directory used to persist ANN index files. "
             "If None, indexes are kept in-memory only and are lost on restart."
         ),
     )

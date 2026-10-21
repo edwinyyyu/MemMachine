@@ -434,7 +434,6 @@ class EventMemory:
                 allowed_fields=self._schema_fields,
             )
 
-        # Search the session's vector store partition for matching derivatives.
         [query_result] = await self._vector_store_partition.query(
             query_vectors=[query_embedding],
             limit=vector_search_limit,

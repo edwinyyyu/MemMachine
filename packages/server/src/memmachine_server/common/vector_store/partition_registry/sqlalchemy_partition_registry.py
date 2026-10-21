@@ -163,11 +163,9 @@ class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
         engine (AsyncEngine):
             Async SQLAlchemy engine, on PostgreSQL or SQLite.
         vector_store_name (str):
-            The name of the store the registry serves, under which its rows are
-            kept: registry objects with the same name on the same database are
-            one registry, so a name identifies one store among all the stores
-            whose registries share the database. It must match [a-z0-9_]+ and
-            be at most 32 bytes.
+            The name of the store the registry serves: registry objects with
+            the same name on the same database are one registry. It follows
+            the vector store name rule.
         tombstone_retention_seconds (int):
             Seconds a deleted partition's records are kept before its purge
             starts, on the database clock. It must exceed, by orders of
@@ -189,11 +187,9 @@ class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
     vector_store_name: str = Field(
         ...,
         description=(
-            "The name of the store the registry serves, under which its rows are "
-            "kept: registry objects with the same name on the same database are "
-            "one registry, so a name identifies one store among all the stores "
-            "whose registries share the database. It must match [a-z0-9_]+ and "
-            "be at most 32 bytes"
+            "The name of the store the registry serves: registry objects with "
+            "the same name on the same database are one registry. It follows the "
+            "vector store name rule"
         ),
     )
     tombstone_retention_seconds: int = Field(

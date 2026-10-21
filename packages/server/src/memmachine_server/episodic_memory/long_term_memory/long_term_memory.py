@@ -410,12 +410,8 @@ class LongTermMemory:
         """Delete all data for this session/partition.
 
         On the event backend, this drops the session's VectorStore and
-        SegmentStore partitions. After this returns the instance is no
-        longer usable — `EventMemory` still holds handles to the deleted
-        partitions, and any reuse would talk to deleted resources. We null
-        those handles so subsequent calls fail loudly rather than silently
-        corrupt state. If the caller needs the same session_id again, build
-        a fresh LongTermMemory (which will open or create new partitions).
+        SegmentStore partitions, and the instance is unusable afterward.
+        Build a fresh LongTermMemory to use the session again.
         """
         if self._backend == "declarative":
             assert self._declarative_memory is not None

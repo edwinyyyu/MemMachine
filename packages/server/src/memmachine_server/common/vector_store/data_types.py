@@ -24,8 +24,7 @@ from .utils import is_valid_identifier
 
 
 def _coerce_property_types(value: object) -> object:
-    # A caller may name a type ("str", "datetime") or pass the type itself;
-    # names are resolved here.
+    # A caller may name a type or pass the type itself.
     if not isinstance(value, Mapping):
         return value
     resolved: dict[object, object] = {}
@@ -58,8 +57,7 @@ IndexedProperties = Annotated[
 ]
 """
 The one schema a store declares for every partition it holds: each key a
-store indexes for filtering, with the type its values hold. Declared once,
-at construction, from the system keys of the consumer the store is built for.
+store indexes for filtering, with the type its values hold.
 """
 
 

@@ -3,8 +3,7 @@ Abstract base classes for a partition registry, its reservations, and registrati
 
 The catalog of a vector store whose backend cannot arbitrate one: which
 partitions exist, under which incarnation, and which deleted incarnations
-await purge. A registry belongs to one vector store. Its calls
-are arbitrated across every process sharing it: a reservation mints an
+await purge. Its calls are arbitrated across every process sharing it: a reservation mints an
 incarnation no registered or queued partition carries, unregistration makes
 the partition unreachable when it returns, and a purge round runs on a due
 tombstone, possibly on two purgers at once.
@@ -107,10 +106,7 @@ type PurgeRound = Callable[[UUID], Awaitable[bool]]
 
 class VectorStorePartitionRegistry(ABC):
     """
-    The partition registry of one vector store, identified by the store's name.
-
-    A store name identifies one store among all the stores whose registries
-    are kept together, so stores that must stay apart have distinct names.
+    The partition registry of one vector store.
 
     A deleted partition's incarnation waits on a queue as a tombstone. A
     write checked as live before the deletion can land in the backend after

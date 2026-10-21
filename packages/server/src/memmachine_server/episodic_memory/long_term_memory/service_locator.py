@@ -120,8 +120,6 @@ async def _event_params(
 
     partition_key = partition_key_for_session(config.session_id)
 
-    # A creation that loses a race to another caller, or finds another
-    # caller's still pending, opens that caller's partition once it is live.
     vector_store_partition = await vector_store.open_or_create_partition(partition_key)
 
     partition = await segment_store.open_or_create_partition(
@@ -164,11 +162,7 @@ async def event_backend_vector_store(
 
 
 def event_backend_indexed_properties() -> dict[str, PropertyType]:
-    """The system keys the event backend declares for its vector records.
-
-    EventMemory's reserved keys and the adapter's own event fields; the
-    vector store is built with these.
-    """
+    """The system keys the event backend declares for its vector records."""
     return {
         **EventMemory.expected_vector_store_collection_schema(),
         **EVENT_BACKEND_SYSTEM_FIELDS,

@@ -1,12 +1,4 @@
-"""
-Abstract base class for a vector store.
-
-A vector store is constructed with a name, a dimensionality, a similarity
-metric and a declared schema, and every record it holds has that
-dimensionality and schema. Within it, a partition holds one tenant's records,
-every search runs within one partition, and `VectorStorePartition` is the
-handle a data consumer holds for a partition.
-"""
+"""Abstract base class for a vector store."""
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
@@ -153,11 +145,9 @@ class VectorStore(ABC):
 
     A store is constructed with a name, a dimensionality, a similarity
     metric and a declared schema, and every record it holds has that
-    dimensionality and schema. The composition root builds the stores its
-    services need, and the name keeps two stores over one engine or one
-    client apart. Every partition of the store shares the store's
-    dimensions, metric and schema, and the schema is fixed for the life of
-    the store's data: changing it is a migration.
+    dimensionality and schema. Stores of different names hold separate
+    partitions. The schema is fixed for the life of the store's data:
+    changing it is a migration.
 
     A partition is identified by its key. A partition deleted and created
     again under the same key starts empty, and reclaiming the deleted one's
@@ -167,22 +157,14 @@ class VectorStore(ABC):
     Naming constraints:
         - Vector store names and property keys must match `[a-z0-9_]+`
           (lowercase alphanumeric and underscores only) and be at most 32
-          bytes. Every such name works on every backend: a store whose
-          backend restricts its native names further maps the name to one
-          it accepts.
+          bytes. Every such name works on every backend.
         - Partition keys are non-empty strings of at most 255 bytes, free of
           NUL characters. Every such key works on every backend.
     """
 
     @abstractmethod
     async def startup(self) -> None:
-        """
-        Start the store, creating its durable resources idempotently.
-
-        The native collection and its payload indexes, the registry
-        tables, or the tables and indexes beside the data: whatever must
-        exist before a partition can be created.
-        """
+        """Start the store, creating idempotently what must exist before a partition is created."""
         raise NotImplementedError
 
     @abstractmethod
@@ -291,19 +273,15 @@ class VectorStoreParams(BaseModel):
     """
     The parameters every vector store is constructed with.
 
-    Each store's parameters add what its backend needs.
-
     Attributes:
         vector_store_name (str):
-            The name of this store, which keeps two stores over one engine or
-            one client apart.
+            The name of this store.
         vector_dimensions (int):
             Dimensionality of every vector in the store.
         similarity_metric (SimilarityMetric):
             The metric every query of the store scores by (default: cosine).
         indexed_properties (IndexedProperties):
-            The declared schema every partition of this store carries: each
-            key is indexed for filtering, and its values are typed.
+            The declared schema every partition of this store carries.
     """
 
     vector_store_name: str = Field(..., description="The name of this store")

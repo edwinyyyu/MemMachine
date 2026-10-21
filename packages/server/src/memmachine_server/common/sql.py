@@ -1,4 +1,4 @@
-"""SQL engine setup and transactions shared by the stores built on SQLAlchemy."""
+"""SQL engine setup and write transactions."""
 
 import contextlib
 from collections.abc import AsyncGenerator
@@ -24,11 +24,10 @@ def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
 
     The driver emits no `BEGIN` before a SELECT and a deferred one before
     the first data-modifying statement, so a transaction's earlier reads
-    and DDL run outside it. With every connection in the driver's
-    autocommit mode, a hook emits `BEGIN` when a transaction starts:
-    `BEGIN IMMEDIATE`, which takes the write lock, for a transaction
-    `write_session` or `write_connection` opens, and a deferred `BEGIN`
-    for any other, so reads never take the write lock.
+    and DDL run outside it. A transaction `write_session` or
+    `write_connection` opens begins with `BEGIN IMMEDIATE`, which takes the
+    write lock; any other begins with a deferred `BEGIN`, so reads never take
+    the write lock.
 
     Registered at engine creation, before any connection is pooled: a
     listener added later misses the connections already pooled. Every

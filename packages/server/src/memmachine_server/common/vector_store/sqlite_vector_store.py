@@ -1,11 +1,10 @@
 """
 Vector store backed by SQLite + pluggable vector search engine.
 
-Each partition gets its own records table, vector search engine and index
-file, named by the partition's incarnation, and a pending operations table,
-shared by every store on the engine and keyed by incarnation, tracks search
-engine operations for crash recovery: on a store's startup, its partitions'
-unfinalized operations are replayed.
+Each life of a partition gets its own records table, vector search engine,
+and index file. A pending operations table tracks search engine operations
+for crash recovery: on a store's startup, its partitions' unfinalized
+operations are replayed.
 """
 
 import asyncio
@@ -98,11 +97,7 @@ class BaseSQLiteVectorStore(DeclarativeBase):
 
 
 class _PartitionRow(BaseSQLiteVectorStore):
-    """The registry: one row per partition, keyed by its vector store name and key.
-
-    Stores of different names may share one engine, so the vector store name
-    is part of the key and every read names it.
-    """
+    """The registry: one row per partition, keyed by its vector store name and key."""
 
     __tablename__ = "vector_store_sqlite_pt"
 
@@ -135,7 +130,6 @@ class _PendingOperationRow(BaseSQLiteVectorStore):
     3. Applied operations are deleted after the search engine is saved to disk.
     4. On a store's startup, its partitions' remaining rows (applied or not)
        are replayed.
-    Deleting a partition deletes its life's rows with it.
     """
 
     __tablename__ = "vector_store_sqlite_pd_op"
@@ -584,8 +578,7 @@ class SQLiteVectorStoreParams(VectorStoreParams):
     Attributes:
         sqlalchemy_engine (AsyncEngine):
             Async SQLAlchemy engine (sqlite+aiosqlite), set up by
-            `enable_sqlite_explicit_begin` at its creation: the store's write
-            transactions take SQLite's write lock at BEGIN.
+            `enable_sqlite_explicit_begin` at its creation.
         vector_search_engine_factory (Callable[[int, SimilarityMetric], VectorSearchEngine]):
             Factory for creating :class:`VectorSearchEngine` instances.
             Receives `(ndim, metric)` and returns a search engine.
@@ -649,9 +642,7 @@ class SQLiteVectorStore(VectorStore):
 
     Each life of a partition gets its own records table and engine
     instance. The engine and its index file live in the process that opened
-    the partition, so one process at a time may use a partition. A handle
-    used after its partition is deleted raises
-    VectorStorePartitionHandleStaleError.
+    the partition, so one process at a time may use a partition.
     """
 
     def __init__(self, params: SQLiteVectorStoreParams) -> None:

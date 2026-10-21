@@ -45,8 +45,7 @@ def is_valid_identifier(value: str) -> bool:
 
 
 def validate_partition_key(partition_key: str) -> None:
-    """Raise ValueError unless the partition key is non-empty, at most 255 bytes, and free of NUL."""
-    # PostgreSQL text cannot hold NUL, and the registry may live there.
+    """Raise ValueError unless the partition key is non-empty, at most `_PARTITION_KEY_MAX_BYTES` bytes, and free of NUL."""
     if (
         not partition_key
         or "\x00" in partition_key

@@ -156,8 +156,8 @@ class SemanticResourceManager:
             indexed_properties={},
         )
 
-        # The manager owns this partition, so opening it here, when the
-        # storage is built, is the owner's provisioning, not a request's.
+        # The manager owns this partition and provisions it when the storage is
+        # built.
         vector_partition = await vector_store.open_or_create_partition(
             _VECTOR_STORE_PARTITION_KEY
         )
