@@ -493,6 +493,42 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
 
 
 @pytest.mark.asyncio
+async def test_stores_of_two_names_on_one_backend_get_a_sweeper_each(
+    invalid_resource_manager, monkeypatch
+):
+    """Each store purges its own registry's deleted partitions."""
+    monkeypatch.setattr(
+        resource_manager_module, "_VECTOR_STORE_PURGE_INTERVAL_SECONDS", 3600
+    )
+    stores = {}
+    for name in ("first", "second"):
+        stores[name] = create_autospec(VectorStore, instance=True)
+        stores[name].purge_deleted_partitions.return_value = False
+
+    async def get_vector_store(backend: str, *, vector_store_name: str, **_):
+        return stores[vector_store_name]
+
+    monkeypatch.setattr(
+        invalid_resource_manager._database_manager, "get_vector_store", get_vector_store
+    )
+    monkeypatch.setattr(
+        invalid_resource_manager._database_manager, "close", AsyncMock()
+    )
+
+    for name in stores:
+        await invalid_resource_manager.get_vector_store(
+            "vs", **{**_VECTOR_STORE, "vector_store_name": name}
+        )
+    await asyncio.sleep(0)  # each loop makes its first call and parks in sleep
+
+    assert len(invalid_resource_manager._vector_store_purge_tasks) == 2
+    for store in stores.values():
+        assert store.purge_deleted_partitions.await_count == 1
+
+    await asyncio.wait_for(invalid_resource_manager.close(), 30)
+
+
+@pytest.mark.asyncio
 async def test_vector_store_purge_task_does_not_pin_the_manager(
     invalid_configure, monkeypatch
 ):

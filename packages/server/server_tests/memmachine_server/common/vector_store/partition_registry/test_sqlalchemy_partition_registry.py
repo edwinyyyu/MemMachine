@@ -46,6 +46,8 @@ from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partiti
 RETENTION = timedelta(days=1)
 RETENTION_SECONDS = int(RETENTION.total_seconds())
 PURGE_LEASE = timedelta(minutes=5)
+# A partition key of the longest length, with characters no identifier allows.
+ANY_CHARACTERS_KEY = "Session/ID-1 ü".ljust(254, "x")
 
 
 @pytest.fixture
@@ -405,6 +407,20 @@ async def test_a_taken_key_is_already_exists(sqlalchemy_engine, vector_store_nam
             await registry.reserve("c")
         if pending:
             await registration.confirm()
+
+
+@pytest.mark.asyncio
+async def test_a_partition_key_of_any_characters_and_the_longest_length_is_kept(
+    sqlalchemy_engine, vector_store_name
+):
+    registry = await _registry(sqlalchemy_engine, vector_store_name)
+    registration = await (await registry.reserve(ANY_CHARACTERS_KEY)).confirm()
+
+    resolved = await registry.resolve(ANY_CHARACTERS_KEY)
+    assert resolved is not None
+    assert resolved.incarnation == registration.incarnation
+    await registry.unregister(ANY_CHARACTERS_KEY)
+    assert await registry.resolve(ANY_CHARACTERS_KEY) is None
 
 
 @pytest.mark.parametrize(

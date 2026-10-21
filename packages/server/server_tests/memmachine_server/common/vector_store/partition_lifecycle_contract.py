@@ -86,7 +86,7 @@ class PartitionLifecycleContract:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("partition_key", ["", "k" * 256, "with\x00nul"])
+    @pytest.mark.parametrize("partition_key", ["", "k" * 256, "ü" * 128, "with\x00nul"])
     async def test_a_partition_key_outside_the_rule_is_refused(
         self, store, partition_key
     ):

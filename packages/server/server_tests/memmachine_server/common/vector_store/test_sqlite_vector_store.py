@@ -184,12 +184,23 @@ class TestPartitionLifecycle:
         await manhattan.shutdown()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("partition_key", ["", "k" * 256, "with\x00nul"])
+    @pytest.mark.parametrize("partition_key", ["", "k" * 256, "ü" * 128, "with\x00nul"])
     async def test_a_partition_key_outside_the_rule_is_refused(
         self, store, partition_key
     ):
         with pytest.raises(ValueError, match="Partition key"):
             await store.create_partition(partition_key)
+
+    @pytest.mark.parametrize(
+        "vector_store_name",
+        ["", "Upper", "with-hyphen", "trailing_newline\n", "x" * 33],
+    )
+    def test_a_vector_store_name_outside_the_rule_is_refused(
+        self, tmp_path, vector_store_name
+    ):
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+        with pytest.raises(ValidationError, match="Vector store name"):
+            _params(engine, vector_store_name=vector_store_name)
 
     @pytest.mark.asyncio
     async def test_a_partition_key_of_any_characters_and_the_longest_length_works(

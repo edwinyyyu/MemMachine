@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from memmachine_server.common.filter.filter_parser import FilterExpr
@@ -128,6 +129,19 @@ async def registry(tmp_path):
 @pytest.fixture
 def store(registry):
     return _Store(registry)
+
+
+@pytest.mark.parametrize(
+    "vector_store_name", ["", "Upper", "with-hyphen", "trailing_newline\n", "x" * 33]
+)
+def test_a_vector_store_name_outside_the_rule_is_refused(registry, vector_store_name):
+    with pytest.raises(ValidationError, match="Vector store name"):
+        RegistryBackedVectorStoreParams(
+            partition_registry=registry,
+            vector_store_name=vector_store_name,
+            vector_dimensions=VECTOR_DIMENSIONS,
+            indexed_properties={},
+        )
 
 
 async def _purged(store: _Store) -> list[UUID]:
