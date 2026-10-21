@@ -79,6 +79,7 @@ from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
+from memmachine_server.common.sql import write_connection, write_session
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
     NullContext,
@@ -345,8 +346,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
         async with (
             self._tracker("add_segments"),
-            self._create_session() as session,
-            session.begin(),
+            write_session(self._create_session) as session,
         ):
             await self._lock_partition_for_write(session)
             await self._insert_segments(session, segments_to_derivative_uuids.keys())
@@ -838,8 +838,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
 
         async with (
             self._tracker("delete_segments"),
-            self._create_session() as session,
-            session.begin(),
+            write_session(self._create_session) as session,
         ):
             await self._lock_partition_for_write(session)
             if not self._is_sqlite:
@@ -911,7 +910,10 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             Async SQLAlchemy engine. On SQLite it must enforce foreign
             keys on every connection, registered at engine creation
             (enable_sqlite_foreign_keys): the store relies on the
-            link-table cascade and does not verify enforcement.
+            link-table cascade and does not verify enforcement. It must
+            also begin its transactions explicitly, set up at engine
+            creation (enable_sqlite_explicit_begin): the store's write
+            transactions take SQLite's write lock at BEGIN.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -936,7 +938,10 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             "Async SQLAlchemy engine. On SQLite it must enforce foreign keys "
             "on every connection, registered at engine creation "
             "(enable_sqlite_foreign_keys): the store relies on the "
-            "link-table cascade and does not verify enforcement"
+            "link-table cascade and does not verify enforcement. It must "
+            "also begin its transactions explicitly, set up at engine "
+            "creation (enable_sqlite_explicit_begin): the store's write "
+            "transactions take SQLite's write lock at BEGIN"
         ),
     )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
@@ -1025,7 +1030,10 @@ class SQLAlchemySegmentStore(SegmentStore):
 
     @override
     async def startup(self) -> None:
-        async with self._tracker("startup"), self._engine.begin() as connection:
+        async with (
+            self._tracker("startup"),
+            write_connection(self._engine) as connection,
+        ):
             await connection.run_sync(BaseSegmentStore.metadata.create_all)
 
     @override
@@ -1095,7 +1103,7 @@ class SQLAlchemySegmentStore(SegmentStore):
                 key being taken.
         """
         try:
-            async with self._create_session() as session, session.begin():
+            async with write_session(self._create_session) as session:
                 await session.execute(
                     insert(PartitionRow).values(
                         partition_key=partition_key,
@@ -1234,8 +1242,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         validate_partition_key(partition_key)
         async with (
             self._tracker("delete_partition"),
-            self._create_session() as session,
-            session.begin(),
+            write_session(self._create_session) as session,
         ):
             if self._is_sqlite:
                 # Same primitive as _lock_partition_for_write: the row
@@ -1296,7 +1303,7 @@ class SQLAlchemySegmentStore(SegmentStore):
         # the batch loop needs.
         async with (
             self._tracker("purge_deleted_partitions"),
-            self._engine.begin() as connection,
+            write_connection(self._engine) as connection,
         ):
             while True:
                 if self._is_sqlite:
