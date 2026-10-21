@@ -3002,7 +3002,7 @@ async def test_delete_partition_touches_only_registry_and_queue(
 # Coverage, as verified by ablating locks one at a time in
 # source-patched variants of both this store and the pre-overhaul
 # partitioned store:
-# - The writer's shared registry-row pin (_lock_partition_for_write)
+# - The writer's shared registry-row pin (_ensure_partition_live with pin)
 #   blocks partition deletion while a write transaction is in flight:
 #   test_write_pin_blocks_partition_delete fails with the pin ablated
 #   in either generation and passes with it present.
