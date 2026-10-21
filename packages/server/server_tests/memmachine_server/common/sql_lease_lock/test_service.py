@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
@@ -23,7 +23,9 @@ from memmachine_server.common.sql_lease_lock._store import SQLLeaseStore, Stored
 
 
 @asynccontextmanager
-async def two_stores(path: Path) -> AsyncIterator[tuple[SQLLeaseStore, SQLLeaseStore]]:
+async def two_stores(
+    path: Path,
+) -> AsyncGenerator[tuple[SQLLeaseStore, SQLLeaseStore], None]:
     uri = f"sqlite+aiosqlite:///{path}"
     first_engine = create_async_engine(uri)
     enable_sqlite_explicit_begin(first_engine)
@@ -230,7 +232,7 @@ async def test_expired_public_handle_cannot_touch_replacement(tmp_path: Path) ->
 @asynccontextmanager
 async def one_service(
     path: Path,
-) -> AsyncIterator[tuple[SQLLeaseLockService, AsyncEngine]]:
+) -> AsyncGenerator[tuple[SQLLeaseLockService, AsyncEngine], None]:
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
     enable_sqlite_explicit_begin(engine)
     try:
