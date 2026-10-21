@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
@@ -24,6 +26,7 @@ from memmachine_server.common.errors import (
     VectorStoreConfigurationError,
 )
 from memmachine_server.common.resource_manager.database_manager import DatabaseManager
+from memmachine_server.common.sqlite_transactions import write_transaction
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partition_registry import (
     SQLAlchemyVectorStorePartitionRegistryParams,
@@ -924,6 +927,32 @@ async def test_sqlite_vector_store_creates_store_and_engine():
     mock_store_cls.return_value.startup.assert_awaited_once()
     assert ("vs1", "c") in builder.vector_stores
     assert "vs1" in builder.vector_store_sql_engines
+
+
+@pytest.mark.asyncio
+async def test_a_sqlite_vector_store_engine_takes_the_write_lock_at_begin(tmp_path):
+    """The engine behind a SQLite vector store backend is set up for write transactions."""
+    path = tmp_path / "vs.db"
+    conf = _sqlite_vector_store_only_conf(
+        sqlite_vector_store_confs={"vs1": SQLiteVectorStoreConf(path=str(path))}
+    )
+    builder = DatabaseManager(conf)
+    await builder.get_vector_store("vs1", **_STORE)
+    other = create_async_engine(
+        f"sqlite+aiosqlite:///{path}", connect_args={"timeout": 0.2}
+    )
+    try:
+        engine = builder.vector_store_sql_engines["vs1"]
+        # The write transaction has written nothing, and holds the lock already.
+        async with (
+            write_transaction(async_sessionmaker(engine)),
+            other.connect() as connection,
+        ):
+            with pytest.raises(OperationalError):
+                await connection.execute(text("CREATE TABLE probe (k INTEGER)"))
+    finally:
+        await other.dispose()
+        await builder.close()
 
 
 @pytest.mark.asyncio

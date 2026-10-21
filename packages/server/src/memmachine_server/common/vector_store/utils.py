@@ -34,9 +34,6 @@ from memmachine_server.common.filter.filter_parser import (
 _IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
 _IDENTIFIER_MAX_BYTES = 32
 _PARTITION_KEY_MAX_BYTES = 255
-# Attempts open-or-create makes before it gives up on a key it keeps losing,
-# or on a partition that stays pending.
-_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 
 
 def is_valid_identifier(value: str) -> bool:

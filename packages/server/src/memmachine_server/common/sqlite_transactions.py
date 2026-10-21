@@ -1,0 +1,74 @@
+"""SQLite transactions that take the write lock at BEGIN."""
+
+import contextlib
+from collections.abc import AsyncIterator
+
+from sqlalchemy import event
+from sqlalchemy.engine import Connection
+from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry
+
+_BEGIN_IMMEDIATE_OPTION = "memmachine_sqlite_begin_immediate"
+"""Execution option asking the begin hook for `BEGIN IMMEDIATE`."""
+
+
+def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
+    """
+    Begin every transaction of a SQLite engine explicitly, with `BEGIN IMMEDIATE` for a write transaction.
+
+    The driver emits no `BEGIN` before a SELECT and a deferred one before
+    the first data-modifying statement, so a transaction's earlier reads
+    and DDL run outside it. With every connection in the driver's
+    autocommit mode, a hook emits `BEGIN` when a transaction starts:
+    `BEGIN IMMEDIATE`, which takes the write lock, for a transaction
+    `write_transaction` opens, and a deferred `BEGIN` for any other, so
+    reads never take the write lock.
+
+    Registered at engine creation, before any connection is pooled: a
+    listener added later misses the connections already pooled. Every
+    user of the engine then opens its write transactions with
+    `write_transaction`. No-op for other dialects.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    event.listen(engine.sync_engine, "connect", _disable_implicit_begin)
+    event.listen(engine.sync_engine, "begin", _begin)
+
+
+@contextlib.asynccontextmanager
+async def write_transaction(
+    create_session: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """
+    A session whose transaction holds SQLite's write lock from `BEGIN`, committed when the block exits.
+
+    A deferred `BEGIN` takes the lock at the first write, so another writer
+    can commit between an earlier read and that write; taking it at `BEGIN`
+    makes read-then-write atomic. Requires an engine set up by
+    `enable_sqlite_explicit_begin`. On other dialects, an ordinary
+    transaction.
+    """
+    async with create_session() as session:
+        # Set before the transaction begins, where the begin hook reads it.
+        await session.connection(execution_options={_BEGIN_IMMEDIATE_OPTION: True})
+        yield session
+        # A block that raises is rolled back when the session closes. A
+        # rollback issued here could fail and mask the block's error; one
+        # issued by the pool is logged and invalidates the connection instead.
+        await session.commit()
+
+
+def _disable_implicit_begin(
+    dbapi_connection: DBAPIConnection, _record: ConnectionPoolEntry
+) -> None:
+    # In autocommit, the driver emits no BEGIN of its own, so the begin hook
+    # chooses the mode, per transaction.
+    dbapi_connection.isolation_level = None
+
+
+def _begin(connection: Connection) -> None:
+    if connection.get_execution_options().get(_BEGIN_IMMEDIATE_OPTION):
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+    else:
+        connection.exec_driver_sql("BEGIN")

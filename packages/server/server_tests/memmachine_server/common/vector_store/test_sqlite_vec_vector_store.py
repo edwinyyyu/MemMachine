@@ -22,6 +22,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.properties_json import decode_properties
+from memmachine_server.common.sqlite_transactions import enable_sqlite_explicit_begin
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
@@ -85,6 +86,7 @@ async def _stored(partition) -> dict[UUID, dict]:
 async def store(tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    enable_sqlite_explicit_begin(engine)
     vector_store = SQLiteVecVectorStore(_params(engine))
     await vector_store.startup()
     yield vector_store

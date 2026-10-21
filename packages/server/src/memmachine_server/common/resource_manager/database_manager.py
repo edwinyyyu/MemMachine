@@ -30,6 +30,7 @@ from memmachine_server.common.errors import (
     SQLConfigurationError,
     VectorStoreConfigurationError,
 )
+from memmachine_server.common.sqlite_transactions import enable_sqlite_explicit_begin
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
@@ -911,10 +912,11 @@ class DatabaseManager:
         )
 
     def _vector_store_sql_engine(self, backend: str, path: str) -> AsyncEngine:
-        """The engine behind a SQLite-backed vector store backend, shared by its collections."""
+        """The engine behind a SQLite-backed vector store backend, shared by its stores."""
         engine = self.vector_store_sql_engines.get(backend)
         if engine is None:
             engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+            enable_sqlite_explicit_begin(engine)
             self.vector_store_sql_engines[backend] = engine
         return engine
 

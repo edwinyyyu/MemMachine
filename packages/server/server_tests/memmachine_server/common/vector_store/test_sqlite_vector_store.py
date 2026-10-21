@@ -21,6 +21,7 @@ from memmachine_server.common.filter.filter_parser import (
     Or,
 )
 from memmachine_server.common.properties_json import decode_properties
+from memmachine_server.common.sqlite_transactions import enable_sqlite_explicit_begin
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
@@ -86,6 +87,7 @@ async def _stored(partition) -> dict[UUID, dict]:
 async def store(tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    enable_sqlite_explicit_begin(engine)
     vector_store = SQLiteVectorStore(_params(engine))
     await vector_store.startup()
     yield vector_store
@@ -1155,6 +1157,7 @@ class TestConcurrentAsync:
 async def _fresh_store(db_path, tmp_path, *, save_threshold=1000):
     """Create a new SQLiteVectorStore against the same DB file."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    enable_sqlite_explicit_begin(engine)
     params = _params(
         engine,
         index_directory=str(tmp_path / "indexes"),
@@ -1390,6 +1393,7 @@ class TestCrashRecovery:
         """Store methods raise RuntimeError before startup."""
         db_path = tmp_path / "test.db"
         engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        enable_sqlite_explicit_begin(engine)
         store = SQLiteVectorStore(_params(engine))
 
         with pytest.raises(RuntimeError, match="startup"):
@@ -1669,6 +1673,7 @@ class TestPartitionResources:
                 await super().save(path)
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+        enable_sqlite_explicit_begin(engine)
         store = SQLiteVectorStore(
             _params(
                 engine,

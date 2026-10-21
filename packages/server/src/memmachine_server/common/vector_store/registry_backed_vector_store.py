@@ -41,7 +41,6 @@ from .partition_registry import (
     VectorStorePartitionRegistry,
 )
 from .utils import (
-    _MAX_OPEN_OR_CREATE_ATTEMPTS,
     is_valid_filter,
     validate_declared_types,
     validate_dimensions,
@@ -54,7 +53,10 @@ from .vector_store import VectorStore, VectorStorePartition
 
 logger = logging.getLogger(__name__)
 
-# The pause between open-or-create attempts.
+# Attempts open-or-create makes, _OPEN_OR_CREATE_RETRY_DELAY_SECONDS apart,
+# before it gives up on a partition that stays pending or a key it keeps
+# losing.
+_MAX_OPEN_OR_CREATE_ATTEMPTS = 10
 _OPEN_OR_CREATE_RETRY_DELAY_SECONDS = 1
 
 
