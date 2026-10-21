@@ -12,12 +12,19 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from uuid import UUID
 
+from pydantic import BaseModel, Field, field_validator
+
 from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
 )
 
-from .data_types import QueryResult, Record
+from .data_types import (
+    IndexedProperties,
+    QueryResult,
+    Record,
+    validate_vector_store_name,
+)
 
 
 class VectorStorePartition(ABC):
@@ -278,3 +285,42 @@ class VectorStore(ABC):
                 Whether the call ran a round; False when nothing was due.
         """
         raise NotImplementedError
+
+
+class VectorStoreParams(BaseModel):
+    """
+    The parameters every vector store is constructed with.
+
+    Each store's parameters add what its backend needs.
+
+    Attributes:
+        vector_store_name (str):
+            The name of this store, which keeps two stores over one engine or
+            one client apart.
+        vector_dimensions (int):
+            Dimensionality of every vector in the store.
+        similarity_metric (SimilarityMetric):
+            The metric every query of the store scores by (default: cosine).
+        indexed_properties (IndexedProperties):
+            The declared schema every partition of this store carries: each
+            key is indexed for filtering, and its values are typed.
+    """
+
+    vector_store_name: str = Field(..., description="The name of this store")
+    vector_dimensions: int = Field(
+        ..., gt=0, description="Dimensionality of every vector in the store"
+    )
+    similarity_metric: SimilarityMetric = Field(
+        SimilarityMetric.COSINE,
+        description="The metric every query of the store scores by",
+    )
+    indexed_properties: IndexedProperties = Field(
+        ...,
+        description="The declared schema every partition of this store carries",
+    )
+
+    @field_validator("vector_store_name")
+    @classmethod
+    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
+        validate_vector_store_name(vector_store_name)
+        return vector_store_name

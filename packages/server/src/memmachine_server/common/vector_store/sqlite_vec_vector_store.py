@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import aiosqlite
 import sqlite_vec
-from pydantic import BaseModel, Field, InstanceOf, field_validator
+from pydantic import Field, InstanceOf, field_validator
 from sqlalchemy import (
     JSON,
     Column,
@@ -45,13 +45,11 @@ from memmachine_server.common.properties_json import (
 from memmachine_server.common.sql import write_connection, write_transaction
 
 from .data_types import (
-    IndexedProperties,
     QueryMatch,
     QueryResult,
     Record,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
-    validate_vector_store_name,
 )
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
@@ -64,7 +62,7 @@ from .utils import (
     validate_query_vector,
     validate_score_threshold,
 )
-from .vector_store import VectorStore, VectorStorePartition
+from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 
 
 class BaseSQLiteVecVectorStore(DeclarativeBase):
@@ -381,26 +379,18 @@ def _load_sqlite_vec(
     dbapi_connection.run_async(_load_extension)
 
 
-class SQLiteVecVectorStoreParams(BaseModel):
+class SQLiteVecVectorStoreParams(VectorStoreParams):
     """
     Parameters for constructing a SQLiteVecVectorStore.
+
+    Stores of different names may share the engine. The similarity metric is
+    cosine or euclidean.
 
     Attributes:
         engine (AsyncEngine):
             Async SQLAlchemy engine (sqlite+aiosqlite), set up by
             `enable_sqlite_explicit_begin` at its creation: the store's write
             transactions take SQLite's write lock at BEGIN.
-        vector_store_name (str):
-            The name of this store; stores of different names may share the
-            engine.
-        vector_dimensions (int):
-            Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by; cosine or
-            euclidean (default: cosine).
-        indexed_properties (IndexedProperties):
-            The declared schema every partition of this store carries: each
-            key is indexed for filtering, and its values are typed.
     """
 
     engine: InstanceOf[AsyncEngine] = Field(
@@ -410,24 +400,6 @@ class SQLiteVecVectorStoreParams(BaseModel):
             "enable_sqlite_explicit_begin at its creation"
         ),
     )
-    vector_store_name: str = Field(..., description="The name of this store")
-    vector_dimensions: int = Field(
-        ..., gt=0, description="Dimensionality of every vector in the store"
-    )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
-    )
-    indexed_properties: IndexedProperties = Field(
-        ...,
-        description="The declared schema every partition of this store carries",
-    )
-
-    @field_validator("vector_store_name")
-    @classmethod
-    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
-        validate_vector_store_name(vector_store_name)
-        return vector_store_name
 
     @field_validator("engine")
     @classmethod

@@ -9,13 +9,14 @@ from .data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStorePartitionPendingError,
 )
-from .vector_store import VectorStore, VectorStorePartition
+from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 
 __all__ = [
     "QueryResult",
     "Record",
     "VectorStore",
     "VectorStoreAttemptsExhaustedError",
+    "VectorStoreParams",
     "VectorStorePartition",
     "VectorStorePartitionAlreadyExistsError",
     "VectorStorePartitionDeletedError",

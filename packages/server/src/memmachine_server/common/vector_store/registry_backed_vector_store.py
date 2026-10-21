@@ -19,21 +19,19 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import override
 from uuid import UUID
 
-from pydantic import BaseModel, Field, InstanceOf, field_validator
+from pydantic import Field, InstanceOf
 
 from memmachine_server.common.data_types import PropertyType, SimilarityMetric
 from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.metrics_factory import MetricsFactory, OperationTracker
 
 from .data_types import (
-    IndexedProperties,
     QueryResult,
     Record,
     VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionDeletedError,
     VectorStorePartitionPendingError,
-    validate_vector_store_name,
 )
 from .partition_registry import (
     Registration,
@@ -49,7 +47,7 @@ from .utils import (
     validate_query_vector,
     validate_score_threshold,
 )
-from .vector_store import VectorStore, VectorStorePartition
+from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 
 logger = logging.getLogger(__name__)
 
@@ -225,25 +223,18 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
         raise NotImplementedError
 
 
-class RegistryBackedVectorStoreParams(BaseModel):
+class RegistryBackedVectorStoreParams(VectorStoreParams):
     """
     Parameters for a RegistryBackedVectorStore.
+
+    The store's name names its storage, so stores of different names may
+    share a client.
 
     Attributes:
         partition_registry (VectorStorePartitionRegistry):
             Registry of the store's partitions, shared by every process
             serving this store, and by no other store. Started by the
             caller.
-        vector_store_name (str):
-            The name of this store, which names its storage, so stores of
-            different names may share a client.
-        vector_dimensions (int):
-            Dimensionality of every vector in the store.
-        similarity_metric (SimilarityMetric):
-            The metric every query of the store scores by (default: cosine).
-        indexed_properties (IndexedProperties):
-            The declared schema every partition of this store carries: each
-            key is indexed by its declared type, which a search filters on.
         metrics_factory (MetricsFactory | None):
             An instance of MetricsFactory for collecting usage metrics
             (default: None).
@@ -256,37 +247,10 @@ class RegistryBackedVectorStoreParams(BaseModel):
             "this store, and by no other store. Started by the caller"
         ),
     )
-    vector_store_name: str = Field(
-        ...,
-        description=(
-            "The name of this store, which names its storage, so stores of "
-            "different names may share a client"
-        ),
-    )
-    vector_dimensions: int = Field(
-        ..., gt=0, description="Dimensionality of every vector in the store"
-    )
-    similarity_metric: SimilarityMetric = Field(
-        SimilarityMetric.COSINE,
-        description="The metric every query of the store scores by",
-    )
-    indexed_properties: IndexedProperties = Field(
-        ...,
-        description=(
-            "The declared schema every partition of this store carries: each key "
-            "is indexed by its declared type, which a search filters on"
-        ),
-    )
     metrics_factory: InstanceOf[MetricsFactory] | None = Field(
         None,
         description="An instance of MetricsFactory for collecting usage metrics",
     )
-
-    @field_validator("vector_store_name")
-    @classmethod
-    def _validate_vector_store_name(cls, vector_store_name: str) -> str:
-        validate_vector_store_name(vector_store_name)
-        return vector_store_name
 
 
 class RegistryBackedVectorStore[PartitionT: RegistryBackedVectorStorePartition](
