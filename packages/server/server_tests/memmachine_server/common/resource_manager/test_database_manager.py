@@ -1,4 +1,5 @@
 import importlib.util
+import sqlite3
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -36,6 +37,11 @@ from memmachine_server.common.vector_store.partition_registry.sqlalchemy_partiti
 requires_pymilvus = pytest.mark.skipif(
     importlib.util.find_spec("pymilvus") is None,
     reason="requires pymilvus optional dependency",
+)
+
+requires_sqlite_extension_loading = pytest.mark.skipif(
+    not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason="sqlite3 built without extension loading support",
 )
 
 
@@ -991,6 +997,7 @@ async def test_a_sqlite_vector_store_engine_enforces_foreign_keys(tmp_path):
         await builder.close()
 
 
+@requires_sqlite_extension_loading
 @pytest.mark.asyncio
 async def test_a_sqlite_vec_vector_store_engine_loads_sqlite_vec(tmp_path):
     """Every connection of a configured sqlite-vec vector store's engine has sqlite-vec loaded."""
