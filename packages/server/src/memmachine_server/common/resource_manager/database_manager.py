@@ -94,8 +94,10 @@ class DatabaseManager:
         """Initialize with database configuration."""
         self.conf = conf
         self.graph_stores: dict[str, VectorGraphStore] = {}
-        # One store per (vector store id, vector store name).
+        # One store per (vector store id, vector store name), and the schema
+        # it was built with.
         self.vector_stores: dict[tuple[str, str], VectorStore] = {}
+        self._vector_store_schemas: dict[tuple[str, str], VectorStoreSchema] = {}
         self.sql_engines: dict[str, AsyncEngine] = {}
         self.neo4j_drivers: dict[str, AsyncDriver] = {}
         # String annotation "NebulaAsyncClient" (forward reference) because the type
@@ -188,6 +190,7 @@ class DatabaseManager:
             await asyncio.gather(*tasks)
             self.graph_stores.clear()
             self.vector_stores.clear()
+            self._vector_store_schemas.clear()
             self.neo4j_drivers.clear()
             self.sql_engines.clear()
             self.vector_store_sql_engines.clear()
@@ -901,6 +904,10 @@ class DatabaseManager:
 
         The first call for a name builds the store with the given schema. The
         vector store name keeps stores on one configured vector store apart.
+
+        Raises:
+            VectorStoreConfigurationError:
+                If the store fails to start, or was built with another schema.
         """
         key = (vector_store_id, vector_store_name)
         if key not in self._vector_store_locks:
@@ -916,6 +923,12 @@ class DatabaseManager:
                     vector_store_schema,
                 )
                 self.vector_stores[key] = store
+                self._vector_store_schemas[key] = vector_store_schema
+            elif self._vector_store_schemas[key] != vector_store_schema:
+                raise VectorStoreConfigurationError(
+                    f"Vector store {vector_store_name!r} on '{vector_store_id}' "
+                    "was built with another schema"
+                )
             return store
 
     def _vector_store_conf(
