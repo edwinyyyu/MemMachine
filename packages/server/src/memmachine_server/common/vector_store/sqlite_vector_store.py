@@ -52,7 +52,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
-from memmachine_server.common.sql import write_connection, write_session
+from memmachine_server.common.sql import write_session
 
 from .data_types import (
     QueryMatch,
@@ -691,7 +691,7 @@ class SQLiteVectorStore(VectorStore):
 
         if self._index_directory is not None:
             self._index_directory.mkdir(parents=True, exist_ok=True)
-        async with write_connection(self._sqlalchemy_engine) as connection:
+        async with self._sqlalchemy_engine.begin() as connection:
             await connection.run_sync(BaseSQLiteVectorStore.metadata.create_all)
         await self._replay_pending_operations()
 
