@@ -39,8 +39,9 @@ the SQLite stores are bound to one node. The registries of every store share
 two tables there, keyed by vector store name, which identifies one store among
 all the stores whose registries share the database. Event memory's store is
 always named `event_memory`, and semantic memory's `semantic_memory`, so
-deployments that share a backend, or keep their registries in one database,
-share those stores. Every process must configure a given Qdrant server or
+deployments that share a backend share those stores, and deployments on
+different backends need different registry databases, which one database
+server can hold. Every process must configure a given Qdrant server or
 Milvus database with the same `partition_registry`; the processes then share
 its stores and their registries.
 
