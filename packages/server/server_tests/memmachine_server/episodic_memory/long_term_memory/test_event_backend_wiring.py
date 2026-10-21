@@ -1,7 +1,7 @@
 """End-to-end wiring test for the event-backed LongTermMemory.
 
 Builds a LongTermMemory(EventBackendParams(...)) using:
-- the in-memory vector_store collection from event_memory tests
+- the in-memory vector store partition from event_memory tests
 - the in-memory segment_store partition from event_memory tests
 - a fake embedder
 - a fake EpisodeStorage that satisfies the get_episode(uid) lookup used during
@@ -310,7 +310,7 @@ async def test_event_backend_unusable_after_drop_session_partition(
 ):
     """After dropping the partition, the EventMemory handles point at deleted
     resources. Reusing the LongTermMemory must fail loudly rather than
-    silently operate on a stale (or recreated) collection.
+    silently operate on a stale (or recreated) partition.
     """
     await long_term_memory.drop_session_partition()
     with pytest.raises(RuntimeError, match="drop_session_partition"):

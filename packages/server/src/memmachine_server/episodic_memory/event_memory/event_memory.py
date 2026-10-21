@@ -180,8 +180,7 @@ class EventMemory:
         """
         Validate a batch of events before encoding.
 
-        Raises ValueError if any event supplies a reserved field name in its properties,
-        or if the collection schema is missing fields required by EventMemory.
+        Raises ValueError if any event supplies a reserved field name in its properties.
         """
         events = list(events)
 
@@ -214,8 +213,7 @@ class EventMemory:
 
         Raises:
             ValueError:
-                If any event supplies a reserved field name in its properties,
-                or if the collection schema is missing fields required by any event's Context type.
+                If any event supplies a reserved field name in its properties.
         """
         async with self._tracker("encode_events"):
             await self._encode_events(events, format_options=format_options)
@@ -427,9 +425,9 @@ class EventMemory:
         # vector store gets the part of the filter on declared fields, which
         # only ever widens its search; the segment store, which holds every
         # property, gets the whole filter below and narrows it back.
-        collection_filter = None
+        vector_store_filter = None
         if property_filter is not None:
-            collection_filter = extract_filter(
+            vector_store_filter = extract_filter(
                 map_filter_fields(property_filter, self._to_vector_record_property),
                 allowed_fields=self._schema_fields,
             )
@@ -437,7 +435,7 @@ class EventMemory:
         [query_result] = await self._vector_store_partition.query(
             query_vectors=[query_embedding],
             limit=vector_search_limit,
-            property_filter=collection_filter,
+            property_filter=vector_store_filter,
         )
         t_vector_query = time.monotonic()
 

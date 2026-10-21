@@ -73,7 +73,7 @@ def _make_record(
 
 
 async def _stored(partition) -> dict[UUID, dict]:
-    """The records the collection's table holds, UUID to properties.
+    """The records the partition's table holds, UUID to properties.
 
     Read past the store, from the table itself.
     """
@@ -118,7 +118,7 @@ def _params(engine, **overrides) -> SQLiteVecVectorStoreParams:
 async def _store_with(
     store, vector_store_name: str, **overrides
 ) -> SQLiteVecVectorStore:
-    """Another store over the fixture's engine: its own collection, dimensions or metric."""
+    """Another store over the fixture's engine: its own name, dimensions, or metric."""
     other = SQLiteVecVectorStore(
         _params(
             store._engine,
@@ -133,9 +133,9 @@ async def _store_with(
 @pytest_asyncio.fixture
 async def partition(store):
     await store.create_partition(NAME)
-    coll = await store.open_partition(NAME)
-    assert coll is not None
-    yield coll
+    partition = await store.open_partition(NAME)
+    assert partition is not None
+    yield partition
     await store.delete_partition(NAME)
 
 
@@ -146,14 +146,15 @@ class TestPartitionLifecycle:
     @pytest.mark.asyncio
     async def test_create_open_delete(self, store):
         await store.create_partition("lifecycle")
-        coll = await store.open_partition("lifecycle")
-        assert isinstance(coll, SQLiteVecVectorStorePartition)
+        partition = await store.open_partition("lifecycle")
+        assert isinstance(partition, SQLiteVecVectorStorePartition)
         await store.delete_partition("lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_returns_correct_type(self, store, partition):
-        coll = await store.open_partition(NAME)
-        assert isinstance(coll, SQLiteVecVectorStorePartition)
+        assert isinstance(
+            await store.open_partition(NAME), SQLiteVecVectorStorePartition
+        )
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, partition):
@@ -166,15 +167,15 @@ class TestPartitionLifecycle:
 
     @pytest.mark.asyncio
     async def test_open_or_create_creates_when_missing(self, store):
-        coll = await store.open_or_create_partition("new")
-        assert isinstance(coll, SQLiteVecVectorStorePartition)
+        partition = await store.open_or_create_partition("new")
+        assert isinstance(partition, SQLiteVecVectorStorePartition)
         await store.delete_partition("new")
 
     @pytest.mark.asyncio
     async def test_open_or_create_opens_when_exists(self, store):
         await store.create_partition("existing")
-        coll = await store.open_or_create_partition("existing")
-        assert isinstance(coll, SQLiteVecVectorStorePartition)
+        partition = await store.open_or_create_partition("existing")
+        assert isinstance(partition, SQLiteVecVectorStorePartition)
         await store.delete_partition("existing")
 
     @pytest.mark.asyncio
@@ -731,23 +732,23 @@ class TestDelete:
 
 class TestPartitionIsolation:
     @pytest.mark.asyncio
-    async def test_query_only_returns_own_collection(self, store):
+    async def test_query_only_returns_own_partition(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
-        results_a = await coll_a.query(query_vectors=[v1], limit=10)
-        results_b = await coll_b.query(query_vectors=[v1], limit=10)
+        results_a = await partition_a.query(query_vectors=[v1], limit=10)
+        results_b = await partition_b.query(query_vectors=[v1], limit=10)
 
         uuids_a = {match.record_uuid for match in results_a[0].matches}
         uuids_b = {match.record_uuid for match in results_b[0].matches}
@@ -761,88 +762,88 @@ class TestPartitionIsolation:
     async def test_a_query_returns_only_its_own_partitions_records(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
-        [result] = await coll_a.query(query_vectors=[v1], limit=10)
+        [result] = await partition_a.query(query_vectors=[v1], limit=10)
         assert [match.record_uuid for match in result.matches] == [r1.uuid]
 
         await store.delete_partition("tenant_a")
         await store.delete_partition("tenant_b")
 
     @pytest.mark.asyncio
-    async def test_delete_only_affects_own_collection(self, store):
+    async def test_delete_only_affects_own_partition(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
-        await coll_a.delete(record_uuids=[r2.uuid])
+        await partition_a.delete(record_uuids=[r2.uuid])
 
-        assert set(await _stored(coll_b)) == {r2.uuid}
+        assert set(await _stored(partition_b)) == {r2.uuid}
 
         await store.delete_partition("tenant_a")
         await store.delete_partition("tenant_b")
 
     @pytest.mark.asyncio
-    async def test_collections_on_one_engine_are_isolated(self, store):
+    async def test_stores_on_one_engine_are_isolated(self, store):
         """Two stores over one engine, named differently, never see each other's rows."""
-        other = await _store_with(store, "other_collection")
-        await store.create_partition("coll")
-        await other.create_partition("coll")
-        coll_a = await store.open_partition("coll")
-        coll_b = await other.open_partition("coll")
-        assert coll_a is not None
-        assert coll_b is not None
+        other = await _store_with(store, "other_store")
+        await store.create_partition("shared_key")
+        await other.create_partition("shared_key")
+        partition_a = await store.open_partition("shared_key")
+        partition_b = await other.open_partition("shared_key")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
-        results_a = await coll_a.query(query_vectors=[v1], limit=10)
+        results_a = await partition_a.query(query_vectors=[v1], limit=10)
         assert {match.record_uuid for match in results_a[0].matches} == {r1.uuid}
 
-        await store.delete_partition("coll")
-        assert await other.open_partition("coll") is not None
-        await other.delete_partition("coll")
+        await store.delete_partition("shared_key")
+        assert await other.open_partition("shared_key") is not None
+        await other.delete_partition("shared_key")
         await other.shutdown()
 
     @pytest.mark.asyncio
     async def test_delete_partition_does_not_affect_sibling(self, store):
-        """Deleting one collection doesn't break a sibling sharing tables."""
-        coll_a = await store.open_or_create_partition("sibling_a")
-        coll_b = await store.open_or_create_partition("sibling_b")
+        """Deleting one partition doesn't break a sibling sharing tables."""
+        partition_a = await store.open_or_create_partition("sibling_a")
+        partition_b = await store.open_or_create_partition("sibling_b")
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
         await store.delete_partition("sibling_a")
 
-        results = await coll_b.query(query_vectors=[v1], limit=10)
+        results = await partition_b.query(query_vectors=[v1], limit=10)
         assert len(results[0].matches) == 1
         assert results[0].matches[0].record_uuid == r2.uuid
 
@@ -862,19 +863,19 @@ class TestEuclideanMetric:
             similarity_metric=SimilarityMetric.EUCLIDEAN,
             indexed_properties={},
         )
-        coll = await euclidean.open_or_create_partition("euclidean")
+        partition = await euclidean.open_or_create_partition("euclidean")
         r1 = _make_record(vector=[0.0, 0.0])
         r2 = _make_record(vector=[3.0, 4.0])
-        await coll.upsert(records=[r1, r2])
+        await partition.upsert(records=[r1, r2])
 
-        results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
+        results = await partition.query(query_vectors=[[0.0, 0.0]], limit=2)
         assert results[0].matches[0].score < results[0].matches[1].score
 
         await euclidean.delete_partition("euclidean")
         await euclidean.shutdown()
 
 
-# ── No-properties collection ──
+# ── No-properties store ──
 
 
 class TestNoProperties:
@@ -883,11 +884,11 @@ class TestNoProperties:
         bare = await _store_with(
             store, "no_props", vector_dimensions=2, indexed_properties={}
         )
-        coll = await bare.open_or_create_partition("no_props")
+        partition = await bare.open_or_create_partition("no_props")
         r1 = _make_record(vector=[1.0, 0.0])
-        await coll.upsert(records=[r1])
+        await partition.upsert(records=[r1])
 
-        results = await coll.query(query_vectors=[[1.0, 0.0]], limit=1)
+        results = await partition.query(query_vectors=[[1.0, 0.0]], limit=1)
         assert len(results[0].matches) == 1
 
         await bare.delete_partition("no_props")
@@ -996,12 +997,12 @@ class TestScoreSemantics:
             similarity_metric=SimilarityMetric.EUCLIDEAN,
             indexed_properties={},
         )
-        coll = await euclidean.open_or_create_partition("euclidean_score")
+        partition = await euclidean.open_or_create_partition("euclidean_score")
         r1 = _make_record(vector=[0.0, 0.0])
         r2 = _make_record(vector=[3.0, 4.0])
-        await coll.upsert(records=[r1, r2])
+        await partition.upsert(records=[r1, r2])
 
-        results = await coll.query(query_vectors=[[0.0, 0.0]], limit=2)
+        results = await partition.query(query_vectors=[[0.0, 0.0]], limit=2)
         scores = [m.score for m in results[0].matches]
         assert scores[0] < scores[1]
         assert scores[0] == pytest.approx(0.0, abs=0.01)

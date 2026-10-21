@@ -414,17 +414,17 @@ async def test_every_request_carries_the_timeout(store, monkeypatch):
     )
     await timed.startup()
     await timed.create_partition("timed")
-    coll = await timed.open_partition("timed")
-    assert coll is not None
+    partition = await timed.open_partition("timed")
+    assert partition is not None
     vector = _normalize([1.0, 0.0, 0.0])
     record, kept = (
         _make_record(vector=vector),
         _make_record(vector=_normalize([0.0, 1.0, 0.0])),
     )
-    await coll.upsert(records=[record, kept])
-    await _settle(coll)
-    await coll.query(query_vectors=[vector], limit=1)
-    await coll.delete(record_uuids=[record.uuid])
+    await partition.upsert(records=[record, kept])
+    await _settle(partition)
+    await partition.query(query_vectors=[vector], limit=1)
+    await partition.delete(record_uuids=[record.uuid])
     await timed.delete_partition("timed")
     # The purge finds the record the deletion left and reclaims it.
     await _drain(timed)
@@ -456,9 +456,9 @@ def test_a_setting_that_is_not_positive_is_refused(setting):
 @pytest_asyncio.fixture
 async def partition(store):
     await store.create_partition(NAME)
-    coll = await store.open_partition(NAME)
-    assert coll is not None
-    yield coll
+    partition = await store.open_partition(NAME)
+    assert partition is not None
+    yield partition
     await store.delete_partition(NAME)
 
 
@@ -488,13 +488,13 @@ class TestPartitionLifecycle:
 
         await partial.startup()
         await partial.create_partition("partial")
-        coll = await partial.open_partition("partial")
-        assert coll is not None
+        partition = await partial.open_partition("partial")
+        assert partition is not None
         vector = _normalize([1.0, 0.0, 0.0])
         record = _make_record(vector=vector, properties={"name": "alice"})
-        await coll.upsert(records=[record])
-        await _settle(coll)
-        [result] = await coll.query(
+        await partition.upsert(records=[record])
+        await _settle(partition)
+        [result] = await partition.query(
             query_vectors=[vector],
             limit=1,
             property_filter=Comparison(field="name", op="=", value="alice"),
@@ -509,8 +509,8 @@ class TestPartitionLifecycle:
     @pytest.mark.asyncio
     async def test_create_open_delete(self, store):
         await store.create_partition("lifecycle")
-        coll = await store.open_partition("lifecycle")
-        assert isinstance(coll, MilvusVectorStorePartition)
+        partition = await store.open_partition("lifecycle")
+        assert isinstance(partition, MilvusVectorStorePartition)
         await store.delete_partition("lifecycle")
 
     @pytest.mark.asyncio
@@ -572,11 +572,11 @@ class TestPartitionLifecycle:
         """Each declared property is a typed, nullable, indexed field, a
         datetime with a field for its offset; the collection isolates tenants."""
         await store.create_partition("schema")
-        coll = await store.open_partition("schema")
-        assert coll is not None
-        native = coll._collection_name
+        partition = await store.open_partition("schema")
+        assert partition is not None
+        native = partition._collection_name
 
-        schema = await store._client.describe_collection(coll._collection_name)
+        schema = await store._client.describe_collection(partition._collection_name)
         fields = {field["name"]: field for field in schema["fields"]}
         assert schema["auto_id"] is False
         assert schema["enable_dynamic_field"] is False
@@ -1870,35 +1870,35 @@ class TestPartitionIsolation:
         """The same UUID in two partitions is two records, written and deleted apart."""
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         record_uuid = uuid4()
         v1 = _normalize([1.0, 0.0, 0.0])
-        await coll_a.upsert(
+        await partition_a.upsert(
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "a"})]
         )
-        await _settle(coll_a)
-        await coll_b.upsert(
+        await _settle(partition_a)
+        await partition_b.upsert(
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
         )
-        await _settle(coll_b)
+        await _settle(partition_b)
 
-        stored_a = await _stored(coll_a, [record_uuid])
-        stored_b = await _stored(coll_b, [record_uuid])
+        stored_a = await _stored(partition_a, [record_uuid])
+        stored_b = await _stored(partition_b, [record_uuid])
 
         # `name` is declared, so each value is in its typed field.
         assert stored_a[record_uuid]["_p_name"] == "a"
         assert stored_b[record_uuid]["_p_name"] == "b"
 
-        await coll_a.delete(record_uuids=[record_uuid])
-        await _settle(coll_b)
+        await partition_a.delete(record_uuids=[record_uuid])
+        await _settle(partition_b)
 
-        assert await _stored(coll_a, [record_uuid]) == {}
-        assert set(await _stored(coll_b, [record_uuid])) == {record_uuid}
-        [kept] = await coll_b.query(query_vectors=[v1], limit=10)
+        assert await _stored(partition_a, [record_uuid]) == {}
+        assert set(await _stored(partition_b, [record_uuid])) == {record_uuid}
+        [kept] = await partition_b.query(query_vectors=[v1], limit=10)
         assert [match.record_uuid for match in kept.matches] == [record_uuid]
 
         await store.delete_partition("tenant_a")

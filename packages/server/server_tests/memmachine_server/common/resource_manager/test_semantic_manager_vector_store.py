@@ -22,8 +22,8 @@ from memmachine_server.semantic_memory.storage.vector_store_semantic_storage imp
 @pytest.mark.asyncio
 async def test_semantic_manager_builds_vector_store_backend(sqlalchemy_sqlite_engine):
     vector_store = MagicMock()
-    vector_collection = MagicMock()
-    vector_store.open_or_create_partition = AsyncMock(return_value=vector_collection)
+    partition = MagicMock()
+    vector_store.open_or_create_partition = AsyncMock(return_value=partition)
 
     resource_manager = MagicMock()
     resource_manager.get_sql_engine = AsyncMock(return_value=sqlalchemy_sqlite_engine)

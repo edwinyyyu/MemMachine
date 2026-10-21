@@ -181,7 +181,7 @@ class LongTermMemory:
         # Event backend only: whether scores from `EventMemory.query` are
         # higher-is-better. Matches the same derivation inside EventMemory.query
         # (reranker scores are higher-is-better; raw vector scores depend on the
-        # collection's similarity metric — cosine is higher-is-better, euclidean
+        # vector store's similarity metric — cosine is higher-is-better, euclidean
         # is lower-is-better). Used to apply `score_threshold` in the correct
         # direction so it doesn't invert under euclidean with no reranker.
         self._score_higher_is_better: bool = True

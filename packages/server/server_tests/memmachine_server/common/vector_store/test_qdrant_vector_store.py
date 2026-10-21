@@ -176,9 +176,9 @@ async def store(any_qdrant_client, registry_engine):
 @pytest_asyncio.fixture
 async def partition(store):
     await store.create_partition(NAME)
-    coll = await store.open_partition(NAME)
-    assert coll is not None
-    yield coll
+    partition = await store.open_partition(NAME)
+    assert partition is not None
+    yield partition
     await store.delete_partition(NAME)
 
 
@@ -207,14 +207,13 @@ class TestPartitionLifecycle:
     @pytest.mark.asyncio
     async def test_create_get_delete(self, store):
         await store.create_partition("lifecycle")
-        coll = await store.open_partition("lifecycle")
-        assert isinstance(coll, QdrantVectorStorePartition)
+        partition = await store.open_partition("lifecycle")
+        assert isinstance(partition, QdrantVectorStorePartition)
         await store.delete_partition("lifecycle")
 
     @pytest.mark.asyncio
     async def test_open_partition_returns_a_qdrant_partition(self, store, partition):
-        coll = await store.open_partition(NAME)
-        assert isinstance(coll, QdrantVectorStorePartition)
+        assert isinstance(await store.open_partition(NAME), QdrantVectorStorePartition)
 
     @pytest.mark.asyncio
     async def test_duplicate_name_raises(self, store, partition):
@@ -227,15 +226,15 @@ class TestPartitionLifecycle:
 
     @pytest.mark.asyncio
     async def test_open_or_create_creates_when_missing(self, store):
-        coll = await store.open_or_create_partition("new")
-        assert isinstance(coll, QdrantVectorStorePartition)
+        partition = await store.open_or_create_partition("new")
+        assert isinstance(partition, QdrantVectorStorePartition)
         await store.delete_partition("new")
 
     @pytest.mark.asyncio
     async def test_open_or_create_opens_when_exists(self, store):
         await store.create_partition("existing")
-        coll = await store.open_or_create_partition("existing")
-        assert isinstance(coll, QdrantVectorStorePartition)
+        partition = await store.open_or_create_partition("existing")
+        assert isinstance(partition, QdrantVectorStorePartition)
         await store.delete_partition("existing")
 
     @pytest.mark.asyncio
@@ -1247,7 +1246,7 @@ class TestDelete:
         assert await _stored_uuids(partition) == {r2.uuid}
 
 
-# ── Partition isolation (via separate logical collections) ──
+# ── Partition isolation ──
 
 
 class TestPartitionIsolation:
@@ -1255,20 +1254,20 @@ class TestPartitionIsolation:
     async def test_query_only_returns_own_partition(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1, properties={})
         r2 = _make_record(vector=v1, properties={})
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
-        results_a = list(await coll_a.query(query_vectors=[v1], limit=10))
-        results_b = list(await coll_b.query(query_vectors=[v1], limit=10))
+        results_a = list(await partition_a.query(query_vectors=[v1], limit=10))
+        results_b = list(await partition_b.query(query_vectors=[v1], limit=10))
 
         uuids_a = {m.record_uuid for m in results_a[0].matches}
         uuids_b = {m.record_uuid for m in results_b[0].matches}
@@ -1282,19 +1281,19 @@ class TestPartitionIsolation:
     async def test_a_query_returns_only_its_own_partitions_records(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
-        [result] = await coll_a.query(query_vectors=[v1], limit=10)
+        [result] = await partition_a.query(query_vectors=[v1], limit=10)
         assert [match.record_uuid for match in result.matches] == [r1.uuid]
 
         await store.delete_partition("tenant_a")
@@ -1309,10 +1308,10 @@ class TestPartitionIsolation:
         own records."""
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         vector = _normalize([1.0, 0.0, 0.0])
         # "note" is not a declared property.
@@ -1323,8 +1322,8 @@ class TestPartitionIsolation:
         }
         records_a = [_make_record(vector=vector, properties=properties)]
         records_b = [_make_record(vector=vector, properties=properties)]
-        await coll_a.upsert(records=records_a)
-        await coll_b.upsert(records=records_b)
+        await partition_a.upsert(records=records_a)
+        await partition_b.upsert(records=records_b)
 
         filters = [
             Comparison(field="name", op="=", value="alice"),
@@ -1341,7 +1340,7 @@ class TestPartitionIsolation:
             ),
         ]
         for property_filter in filters:
-            for partition, own in ((coll_a, records_a), (coll_b, records_b)):
+            for partition, own in ((partition_a, records_a), (partition_b, records_b)):
                 [result] = await partition.query(
                     query_vectors=[vector], limit=10, property_filter=property_filter
                 )
@@ -1390,32 +1389,32 @@ class TestPartitionIsolation:
     async def test_the_same_uuid_in_two_partitions_is_two_records(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         record_uuid = uuid4()
         v1 = _normalize([1.0, 0.0, 0.0])
-        await coll_a.upsert(
+        await partition_a.upsert(
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "a"})]
         )
-        await coll_b.upsert(
+        await partition_b.upsert(
             records=[Record(uuid=record_uuid, vector=v1, properties={"name": "b"})]
         )
 
-        assert await _stored_uuids(coll_a) == {record_uuid}
-        assert await _stored_uuids(coll_b) == {record_uuid}
-        [kept_a] = await coll_a.query(
+        assert await _stored_uuids(partition_a) == {record_uuid}
+        assert await _stored_uuids(partition_b) == {record_uuid}
+        [kept_a] = await partition_a.query(
             query_vectors=[v1],
             limit=10,
             property_filter=Comparison(field="name", op="=", value="a"),
         )
         assert [match.record_uuid for match in kept_a.matches] == [record_uuid]
 
-        await coll_a.delete(record_uuids=[record_uuid])
-        assert await _stored_uuids(coll_a) == set()
-        assert await _stored_uuids(coll_b) == {record_uuid}
+        await partition_a.delete(record_uuids=[record_uuid])
+        assert await _stored_uuids(partition_a) == set()
+        assert await _stored_uuids(partition_b) == {record_uuid}
 
         await store.delete_partition("tenant_a")
         await store.delete_partition("tenant_b")
@@ -1424,22 +1423,22 @@ class TestPartitionIsolation:
     async def test_delete_only_affects_own_partition(self, store):
         await store.create_partition("tenant_a")
         await store.create_partition("tenant_b")
-        coll_a = await store.open_partition("tenant_a")
-        coll_b = await store.open_partition("tenant_b")
-        assert coll_a is not None
-        assert coll_b is not None
+        partition_a = await store.open_partition("tenant_a")
+        partition_b = await store.open_partition("tenant_b")
+        assert partition_a is not None
+        assert partition_b is not None
 
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
         r2 = _make_record(vector=v1)
 
-        await coll_a.upsert(records=[r1])
-        await coll_b.upsert(records=[r2])
+        await partition_a.upsert(records=[r1])
+        await partition_b.upsert(records=[r2])
 
         # Attempt to delete r2 using tenant_a's partition — should not work
-        await coll_a.delete(record_uuids=[r2.uuid])
+        await partition_a.delete(record_uuids=[r2.uuid])
 
-        assert await _stored_uuids(coll_b) == {r2.uuid}
+        assert await _stored_uuids(partition_b) == {r2.uuid}
 
         await store.delete_partition("tenant_a")
         await store.delete_partition("tenant_b")
@@ -2067,11 +2066,11 @@ class TestMetrics:
 
         mock_histogram.reset_mock()
 
-        coll = await store.open_partition("metrics_test")
-        assert coll is not None
+        partition = await store.open_partition("metrics_test")
+        assert partition is not None
         v1 = _normalize([1.0, 0.0, 0.0])
         r1 = _make_record(vector=v1)
-        await coll.upsert(records=[r1])
+        await partition.upsert(records=[r1])
 
         assert mock_histogram.observe.called
         call_labels = mock_histogram.observe.call_args

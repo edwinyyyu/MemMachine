@@ -248,8 +248,8 @@ class TestEncodeEvents:
     async def test_missing_context_schema_fields_still_allows_ingest(
         self, fake_embedder
     ):
-        # Collection without context fields.
-        collection = InMemoryVectorStorePartition(
+        # A partition without context fields.
+        vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={"_timestamp": datetime.datetime},
         )
@@ -257,7 +257,7 @@ class TestEncodeEvents:
         em = EventMemory(
             EventMemoryParams(
                 segment_store_partition=partition,
-                vector_store_partition=collection,
+                vector_store_partition=vector_store_partition,
                 segmenter=TextSegmenter(),
                 deriver=WholeTextDeriver(),
                 embedder=fake_embedder,
@@ -266,15 +266,15 @@ class TestEncodeEvents:
         event = _make_event("hi", context=ProducerContext(producer="Alice"))
         await em.encode_events([event])
 
-        assert len(collection.records) == 1
-        record = next(iter(collection.records.values()))
+        assert len(vector_store_partition.records) == 1
+        record = next(iter(vector_store_partition.records.values()))
         props = _record_properties(record)
         assert "_context_type" not in props
         assert "_context_producer" not in props
 
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
-        # Collection without _timestamp — base field required at init.
-        collection = InMemoryVectorStorePartition(
+        # A partition without _timestamp — base field required at init.
+        vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=SimilarityMetric.COSINE,
         )
         partition = InMemorySegmentStorePartition()
@@ -284,7 +284,7 @@ class TestEncodeEvents:
         ):
             EventMemory(
                 EventMemoryParams(
-                    vector_store_partition=collection,
+                    vector_store_partition=vector_store_partition,
                     segment_store_partition=partition,
                     segmenter=TextSegmenter(),
                     embedder=fake_embedder,
@@ -875,7 +875,7 @@ class TestQueryWithFilter:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """A user key the partition declares is on the record, and its condition reaches the search under its bare name."""
-        collection = InMemoryVectorStorePartition(
+        vector_store_partition = InMemoryVectorStorePartition(
             similarity_metric=fake_embedder.similarity_metric,
             indexed_properties={
                 **EventMemory.expected_vector_store_indexed_properties(),
@@ -885,13 +885,13 @@ class TestQueryWithFilter:
         event_memory = EventMemory(
             EventMemoryParams(
                 segment_store_partition=fake_segment_store_partition,
-                vector_store_partition=collection,
+                vector_store_partition=vector_store_partition,
                 segmenter=TextSegmenter(),
                 deriver=WholeTextDeriver(),
                 embedder=fake_embedder,
             )
         )
-        seen = _record_query_filters(collection, monkeypatch)
+        seen = _record_query_filters(vector_store_partition, monkeypatch)
         await event_memory.encode_events(
             [_make_event("red thing", properties={"color": "red", "size": 1})]
         )
@@ -904,7 +904,7 @@ class TestQueryWithFilter:
             ),
         )
 
-        record = next(iter(collection.records.values()))
+        record = next(iter(vector_store_partition.records.values()))
         assert _record_properties(record)["color"] == "red"
         assert "size" not in _record_properties(record)
         assert seen == [Comparison(field="color", op="=", value="red")]
@@ -1119,7 +1119,7 @@ _FIELDS_ON_THE_SEGMENT_ONLY = ("m.u1", "m.u2")
 @pytest.fixture
 def declaring_event_memory(fake_embedder, fake_segment_store_partition) -> EventMemory:
     """Event memory whose vector store declares `_d1`, `_d2`, and `_d3` but not `u1` or `u2`."""
-    collection = InMemoryVectorStorePartition(
+    vector_store_partition = InMemoryVectorStorePartition(
         similarity_metric=fake_embedder.similarity_metric,
         indexed_properties={
             **EventMemory.expected_vector_store_indexed_properties(),
@@ -1131,7 +1131,7 @@ def declaring_event_memory(fake_embedder, fake_segment_store_partition) -> Event
     return EventMemory(
         EventMemoryParams(
             segment_store_partition=fake_segment_store_partition,
-            vector_store_partition=collection,
+            vector_store_partition=vector_store_partition,
             segmenter=TextSegmenter(),
             deriver=WholeTextDeriver(),
             embedder=fake_embedder,

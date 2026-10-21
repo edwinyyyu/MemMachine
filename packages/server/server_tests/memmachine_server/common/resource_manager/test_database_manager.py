@@ -309,7 +309,7 @@ async def test_sqlalchemy_pool_lifecycle_kwargs_none_omitted():
 def _qdrant_only_conf(registry_dir: Path) -> MagicMock:
     """Build a DatabasesConf mock with only a Qdrant entry.
 
-    Its collection registry is a SQLite file in `registry_dir`.
+    Its partition registry is a SQLite file in `registry_dir`.
     """
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
@@ -574,7 +574,7 @@ async def test_qdrant_close(tmp_path):
 def _milvus_only_conf(registry_dir: Path) -> MagicMock:
     """Build a DatabasesConf mock with only a Milvus entry.
 
-    Its collection registry is a SQLite file in `registry_dir`.
+    Its partition registry is a SQLite file in `registry_dir`.
     """
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
