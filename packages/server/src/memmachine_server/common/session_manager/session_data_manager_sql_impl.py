@@ -170,7 +170,12 @@ class SessionDataManagerSQL(SessionDataManager):
         """Close any underlying connections."""
 
     async def _migrate_pickle_to_json(self) -> None:
-        """Migrate param_data from pickle to JSON."""
+        """
+        Migrate param_data from pickle to JSON.
+
+        One transaction, DDL included: a migration that fails leaves the
+        table as it was, so the next startup migrates again.
+        """
         schema = self.SessionConfig.__table__.schema
         table_name = f"{schema}.sessions" if schema else "sessions"
         json_type = "JSON"
@@ -471,11 +476,13 @@ class SessionDataManagerSQL(SessionDataManager):
     ) -> None:
         """Update episodic memory configuration flags for a session."""
         async with write_session(self._async_session) as dbsession:
-            # Query for the existing session
+            # Read under the row lock (on SQLite, under the write lock the
+            # transaction holds), so a concurrent update of other flags waits
+            # instead of being overwritten with the flags read here.
             sessions = await dbsession.execute(
-                select(self.SessionConfig).where(
-                    self.SessionConfig.session_key == session_key,
-                ),
+                select(self.SessionConfig)
+                .where(self.SessionConfig.session_key == session_key)
+                .with_for_update(),
             )
             session = sessions.scalars().first()
             if session is None:
