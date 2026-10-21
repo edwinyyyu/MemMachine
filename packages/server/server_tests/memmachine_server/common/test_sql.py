@@ -4,7 +4,7 @@ import contextlib
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -89,6 +89,38 @@ async def test_a_write_transaction_commits_when_its_block_exits(database):
         await session.execute(text("INSERT INTO t VALUES (1)"))
 
     assert await _keys(engine) == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_write_transaction_whose_commit_fails_leaves_nothing_open(
+    database, other_writer
+):
+    """
+    A write transaction whose commit fails is rolled back, and its connection is reusable.
+
+    SQLite keeps a transaction whose COMMIT failed open, holding the write
+    lock, until it is rolled back.
+    """
+    _, engine = database
+
+    def fail(_connection) -> None:
+        raise RuntimeError("injected commit failure")
+
+    event.listen(engine.sync_engine, "commit", fail)
+    try:
+        with pytest.raises(RuntimeError, match="injected commit failure"):
+            async with write_transaction(async_sessionmaker(engine)) as session:
+                await session.execute(text("INSERT INTO t VALUES (1)"))
+    finally:
+        event.remove(engine.sync_engine, "commit", fail)
+
+    async with other_writer.connect() as connection:
+        await connection.execute(text("INSERT INTO t VALUES (2)"))
+        await connection.commit()
+    async with write_transaction(async_sessionmaker(engine)) as session:
+        await session.execute(text("INSERT INTO t VALUES (3)"))
+
+    assert await _keys(engine) == [2, 3]
 
 
 @pytest.mark.asyncio

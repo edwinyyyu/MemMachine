@@ -45,18 +45,18 @@ async def write_transaction(
 
     A deferred `BEGIN` takes the lock at the first write, so another writer
     can commit between an earlier read and that write; taking it at `BEGIN`
-    makes read-then-write atomic. Requires an engine set up by
+    makes read-then-write atomic. A block that raises, or a commit that
+    fails, rolls the transaction back. Requires an engine set up by
     `enable_sqlite_explicit_begin`. On other dialects, an ordinary
     transaction.
     """
-    async with create_session() as session:
+    # The transaction's context also rolls back a commit that fails: SQLite
+    # keeps such a transaction open, and closing the session alone would
+    # return its connection to the pool with the transaction still open.
+    async with create_session() as session, session.begin():
         # Set before the transaction begins, where the begin hook reads it.
         await session.connection(execution_options={_BEGIN_IMMEDIATE_OPTION: True})
         yield session
-        # A block that raises is rolled back when the session closes. A
-        # rollback issued here could fail and mask the block's error; one
-        # issued by the pool is logged and invalidates the connection instead.
-        await session.commit()
 
 
 def _disable_implicit_begin(
