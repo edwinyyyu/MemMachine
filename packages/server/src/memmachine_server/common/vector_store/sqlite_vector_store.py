@@ -777,6 +777,7 @@ class SQLiteVectorStore(VectorStore):
                     path=str(path),
                 )
         self._search_engines.clear()
+        self._sync_sqlalchemy_engine.dispose()
         self._started = False
 
     @override

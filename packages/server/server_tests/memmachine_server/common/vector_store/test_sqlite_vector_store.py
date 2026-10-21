@@ -1502,6 +1502,31 @@ class TestIndexFileDurability:
         await engine.dispose()
 
     @pytest.mark.asyncio
+    async def test_shutdown_closes_the_connections_a_filtered_query_opened(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "test.db"
+        store, engine = await _fresh_store(db_path, tmp_path)
+
+        partition = await store.open_or_create_partition(NAME)
+        vector = _normalize([1.0, 0.0, 0.0])
+        await partition.upsert(
+            records=[_make_record(vector=vector, properties={"name": "alice"})]
+        )
+        await partition.query(
+            query_vectors=[vector],
+            limit=1,
+            property_filter=Comparison(field="name", op="=", value="alice"),
+        )
+        pool = store._sync_sqlalchemy_engine.pool
+        assert pool.checkedin() == 1
+
+        await store.shutdown()
+        assert pool.checkedin() == 0
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
     async def test_missing_file_when_saved_raises(self, tmp_path):
         """If the index has been saved, a missing file is loud, not silent."""
         db_path = tmp_path / "test.db"
