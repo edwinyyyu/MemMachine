@@ -42,7 +42,7 @@ from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
 from memmachine_server.common.properties_json import (
     encode_properties,
 )
-from memmachine_server.common.sql import write_transaction
+from memmachine_server.common.sql import write_connection, write_transaction
 
 from .data_types import (
     IndexedProperties,
@@ -478,7 +478,7 @@ class SQLiteVecVectorStore(VectorStore):
 
     @override
     async def startup(self) -> None:
-        async with self._engine.begin() as connection:
+        async with write_connection(self._engine) as connection:
             await connection.run_sync(BaseSQLiteVecVectorStore.metadata.create_all)
 
     @override
