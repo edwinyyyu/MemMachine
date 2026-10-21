@@ -23,8 +23,10 @@ from memmachine_server.common.filter.filter_parser import (
 )
 from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.sql import enable_sqlite_explicit_begin
+from memmachine_server.common.vector_store import sqlite_vec_vector_store
 from memmachine_server.common.vector_store.data_types import (
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
@@ -183,6 +185,45 @@ class TestPartitionLifecycle:
     @pytest.mark.asyncio
     async def test_open_nonexistent_returns_none(self, store):
         assert await store.open_partition("nope") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("create_via", ["create", "open_or_create"])
+    async def test_an_incarnation_colliding_with_a_live_partitions_is_minted_again(
+        self, store, monkeypatch, create_via
+    ):
+        live = await store.open_or_create_partition("live")
+        offered: list[UUID] = []
+
+        def colliding_uuid4() -> UUID:
+            if not offered:
+                offered.append(live._incarnation)
+                return live._incarnation
+            return uuid4()
+
+        monkeypatch.setattr(sqlite_vec_vector_store, "uuid4", colliding_uuid4)
+        if create_via == "create":
+            await store.create_partition("other")
+            other = await store.open_partition("other")
+        else:
+            other = await store.open_or_create_partition("other")
+        assert other is not None
+        assert other._incarnation != live._incarnation
+        assert await store.open_partition("live") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_persistent_insert_rejection_raises_after_bounded_attempts(
+        self, store, monkeypatch
+    ):
+        attempts: list[UUID] = []
+
+        async def always_rejected(partition_key: str, incarnation: UUID) -> None:
+            attempts.append(incarnation)
+            raise sqlite_vec_vector_store._RegistryInsertRejectedError(str(incarnation))
+
+        monkeypatch.setattr(store, "_insert_partition", always_rejected)
+        with pytest.raises(VectorStoreAttemptsExhaustedError):
+            await store.create_partition("capped")
+        assert len(attempts) == sqlite_vec_vector_store._MAX_MINT_ATTEMPTS
 
     @pytest.mark.asyncio
     async def test_unsupported_metric_raises(self, store):
