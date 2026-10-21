@@ -7,10 +7,8 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Self
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
-from sqlalchemy import event, text
-from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import ConnectionPoolEntry
 
 from memmachine_server.common.configuration.database_conf import (
     DatabasesConf,
@@ -30,7 +28,10 @@ from memmachine_server.common.errors import (
     SQLConfigurationError,
     VectorStoreConfigurationError,
 )
-from memmachine_server.common.sql import enable_sqlite_explicit_begin
+from memmachine_server.common.sql import (
+    enable_sqlite_explicit_begin,
+    enable_sqlite_foreign_keys,
+)
 from memmachine_server.common.vector_graph_store import VectorGraphStore
 from memmachine_server.common.vector_graph_store.neo4j_vector_graph_store import (
     Neo4jVectorGraphStore,
@@ -54,28 +55,6 @@ if TYPE_CHECKING:
     from qdrant_client import AsyncQdrantClient
 
 logger = logging.getLogger(__name__)
-
-
-def enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
-    """Enforce foreign keys on every connection of a SQLite engine.
-
-    SQLite defaults foreign_keys to OFF, per connection. Registering the
-    pragma at engine creation, before any connection is pooled, is the
-    only placement that covers every connection: a listener added later
-    misses already-pooled connections, and mutating a live pool's
-    listeners races its event dispatch. No-op for other dialects.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def _enable_foreign_keys(
-        dbapi_connection: DBAPIConnection,
-        _connection_record: ConnectionPoolEntry,
-    ) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
 
 
 def _sql_engine_kwargs(conf: SqlAlchemyConf) -> dict[str, Any]:

@@ -18,6 +18,28 @@ _BEGIN_IMMEDIATE_OPTION = "memmachine_sqlite_begin_immediate"
 """Execution option asking the begin hook for `BEGIN IMMEDIATE`."""
 
 
+def enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
+    """Enforce foreign keys on every connection of a SQLite engine.
+
+    SQLite defaults foreign_keys to OFF, per connection. Registering the
+    pragma at engine creation, before any connection is pooled, is the
+    only placement that covers every connection: a listener added later
+    misses already-pooled connections, and mutating a live pool's
+    listeners races its event dispatch. No-op for other dialects.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_foreign_keys(
+        dbapi_connection: DBAPIConnection,
+        _connection_record: ConnectionPoolEntry,
+    ) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
     """
     Begin every transaction of a SQLite engine explicitly, with `BEGIN IMMEDIATE` for a write transaction.
