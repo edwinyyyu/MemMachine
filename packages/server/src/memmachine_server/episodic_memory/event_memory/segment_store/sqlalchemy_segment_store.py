@@ -278,18 +278,6 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
     def config(self) -> SegmentStorePartitionConfig:
         return self._config
 
-    async def _lock_partition_for_write(self, session: AsyncSession) -> None:
-        """Pin this incarnation's registry row; raise if the handle is stale.
-
-        The shared row lock blocks concurrent deletion (which takes the
-        exclusive row lock) until the write completes; the incarnation
-        predicate fences a handle that outlived its partition. SQLite
-        drops locking clauses; there the write transaction holds the
-        database's write lock from BEGIN, which deletion waits on just
-        the same.
-        """
-        await self._ensure_partition_live(session, pin=True)
-
     def _registry_row_query(self) -> Select[tuple[str]]:
         """This incarnation's registry row: absent once the handle is stale.
 
@@ -307,9 +295,12 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
         """Raise if this handle's incarnation is no longer registered.
 
         With `pin`, the row is read under a shared lock that blocks
-        deletion for the rest of the transaction. Reads call this without
-        the lock, and only when their data statement returned no rows: it
-        tells an empty partition from a stale handle.
+        deletion, which takes the exclusive row lock, for the rest of the
+        transaction. SQLite drops the locking clause; there a write
+        transaction holds the database's write lock from `BEGIN`, which
+        deletion waits on just the same. Reads call this without the lock,
+        and only when their data statement returned no rows: it tells an
+        empty partition from a stale handle.
         """
         query = self._registry_row_query()
         if pin:
@@ -332,7 +323,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("add_segments"),
             write_session(self._create_session) as session,
         ):
-            await self._lock_partition_for_write(session)
+            await self._ensure_partition_live(session, pin=True)
             await self._insert_segments(session, segments_to_derivative_uuids.keys())
             await self._insert_derivative_links(session, segments_to_derivative_uuids)
 
@@ -824,7 +815,7 @@ class SQLAlchemySegmentStorePartition(SegmentStorePartition):
             self._tracker("delete_segments"),
             write_session(self._create_session) as session,
         ):
-            await self._lock_partition_for_write(session)
+            await self._ensure_partition_live(session, pin=True)
             if not self._is_sqlite:
                 # Lock rows in deterministic order to prevent deadlocks
                 # from concurrent deletions with overlapping UUID sets.
