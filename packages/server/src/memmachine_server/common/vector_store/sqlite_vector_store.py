@@ -962,5 +962,6 @@ class SQLiteVectorStore(VectorStore):
                         self._vector_store_name, partition_key, index_path
                     ) from e
 
-        self._search_engines[incarnation] = search_engine
-        return search_engine
+        # Every handle of an incarnation shares one engine: an open that
+        # awaited past another's keeps the engine cached first.
+        return self._search_engines.setdefault(incarnation, search_engine)

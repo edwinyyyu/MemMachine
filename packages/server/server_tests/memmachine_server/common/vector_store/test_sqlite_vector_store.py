@@ -1175,6 +1175,29 @@ class TestConcurrentAsync:
 
         await asyncio.gather(query_loop(), upsert_more())
 
+    @pytest.mark.asyncio
+    async def test_concurrent_first_opens_share_one_search_engine(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        creator, creator_engine = await _fresh_store(db_path, tmp_path)
+        await creator.create_partition(NAME)
+        await creator.shutdown()
+        await creator_engine.dispose()
+
+        # A restarted store, whose first opens load the saved index.
+        store, engine = await _fresh_store(db_path, tmp_path)
+        first, second = await asyncio.gather(
+            store.open_partition(NAME), store.open_partition(NAME)
+        )
+        assert first is not None
+        assert second is not None
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await first.upsert(records=[record])
+        [result] = await second.query(query_vectors=[record.vector], limit=1)
+        assert [match.record_uuid for match in result.matches] == [record.uuid]
+
+        await store.shutdown()
+        await engine.dispose()
+
 
 # ── Crash recovery & pending operations ──
 
