@@ -1,16 +1,15 @@
 """
 Vector store backed by SQLite + sqlite-vec.
 
-Each partition gets its own records table and vec0 virtual table, named by
-the store and the partition key, so different stores may share one engine;
-sqlite-vec's own partition keys are not used, since its ANN indexes may not
-support them.
+Each life of a partition gets its own records table and vec0 virtual table,
+named by the partition's incarnation, so different stores may share one
+engine; sqlite-vec's own partition keys are not used, since its ANN indexes
+may not support them.
 """
 
-import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from typing import ClassVar, override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import aiosqlite
 import sqlite_vec
@@ -27,6 +26,7 @@ from sqlalchemy import (
     event,
     select,
     text,
+    update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -50,6 +50,7 @@ from .data_types import (
     QueryResult,
     Record,
     VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
     validate_vector_store_name,
 )
 from .utils import (
@@ -81,6 +82,10 @@ class _PartitionRow(BaseSQLiteVecVectorStore):
     partition_key: MappedColumn[str] = mapped_column(
         String(_PARTITION_KEY_MAX_BYTES), primary_key=True
     )
+    # The partition's current life. Its tables are named by it, so a
+    # partition created again under the key gets tables of its own, which a
+    # stale handle never reaches.
+    incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
 
 
 class SQLiteVecVectorStorePartition(VectorStorePartition):
@@ -95,14 +100,20 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         self,
         *,
         create_session: async_sessionmaker[AsyncSession],
+        vector_store_name: str,
+        partition_key: str,
+        incarnation: UUID,
         vector_dimensions: int,
         similarity_metric: SimilarityMetric,
         indexed_properties: Mapping[str, PropertyType],
         records_table: Table,
         vector_table_name: str,
     ) -> None:
-        """Initialize with session factory and table references."""
+        """Initialize a handle on one life of a partition."""
         self._create_session = create_session
+        self._vector_store_name = vector_store_name
+        self._partition_key = partition_key
+        self._incarnation = incarnation
         self._vector_dimensions = vector_dimensions
         self._similarity_metric = similarity_metric
         self._indexed_properties = dict(indexed_properties)
@@ -150,13 +161,14 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
     @override
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records = list(records)
-        if not records:
-            return
         for record in records:
             validate_declared_types(record.properties, self._indexed_properties)
             validate_dimensions(record.vector, self._vector_dimensions)
 
         async with self._create_session() as session, session.begin():
+            await self._lock_partition_for_write(session)
+            if not records:
+                return
             upsert_records = (
                 sqlite_insert(self._records_table)
                 .on_conflict_do_update(
@@ -218,8 +230,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
     ) -> list[QueryResult]:
         validate_limit(limit)
         query_vectors = list(query_vectors)
-        if not query_vectors:
-            return []
         for query_vector in query_vectors:
             validate_query_vector(query_vector, self._vector_dimensions)
         validate_score_threshold(score_threshold)
@@ -231,6 +241,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
 
         results: list[QueryResult] = []
         async with self._create_session() as session:
+            await self._require_current(session)
             for query_vector in query_vectors:
                 query_blob = self._serialize_vector(query_vector)
 
@@ -308,10 +319,11 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
     @override
     async def delete(self, *, record_uuids: Iterable[UUID]) -> None:
         record_uuids = list(record_uuids)
-        if not record_uuids:
-            return
 
         async with self._create_session() as session, session.begin():
+            await self._lock_partition_for_write(session)
+            if not record_uuids:
+                return
             rows = (
                 await session.execute(
                     select(self._records_table.c.rowid).where(
@@ -340,6 +352,41 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
                 )
             )
 
+    async def _lock_partition_for_write(self, session: AsyncSession) -> None:
+        """
+        Raise unless this handle's life is still its partition's; block its deletion.
+
+        Issued first in a write transaction, as a self-checking UPDATE of
+        the partition row: the driver defers BEGIN until the first
+        data-modifying statement, so a SELECT would run outside the
+        transaction and fence nothing. The UPDATE opens the transaction and
+        takes SQLite's write lock, which a deletion waits on until the
+        transaction ends, and its match count is the check.
+        """
+        fenced = await (await session.connection()).execute(
+            update(_PartitionRow)
+            .where(_PartitionRow.incarnation == self._incarnation)
+            .values(incarnation=self._incarnation)
+        )
+        if fenced.rowcount == 0:
+            raise VectorStorePartitionHandleStaleError(
+                self._vector_store_name, self._partition_key
+            )
+
+    async def _require_current(self, session: AsyncSession) -> None:
+        """Raise unless this handle's life is still its partition's."""
+        current = (
+            await session.execute(
+                select(_PartitionRow.incarnation).where(
+                    _PartitionRow.incarnation == self._incarnation
+                )
+            )
+        ).scalar_one_or_none()
+        if current is None:
+            raise VectorStorePartitionHandleStaleError(
+                self._vector_store_name, self._partition_key
+            )
+
 
 def _load_sqlite_vec(
     dbapi_connection: DBAPIConnection,
@@ -362,8 +409,8 @@ class SQLiteVecVectorStoreParams(BaseModel):
     Attributes:
         engine (AsyncEngine): Async SQLAlchemy engine (sqlite+aiosqlite).
         vector_store_name (str):
-            The name of this store; names its tables, so stores of
-            different names may share the engine.
+            The name of this store; stores of different names may share the
+            engine.
         vector_dimensions (int):
             Dimensionality of every vector in the store.
         similarity_metric (SimilarityMetric):
@@ -417,10 +464,10 @@ class SQLiteVecVectorStore(VectorStore):
     """
     Vector store backed by SQLite + sqlite-vec.
 
-    Each partition gets its own records table and vec0 virtual table. The
-    database is a local file, so the processes sharing a partition must run
-    on one host. A handle used after its partition is deleted acts on a
-    partition created again under its key.
+    Each life of a partition gets its own records table and vec0 virtual
+    table. The database is a local file, so the processes sharing a partition
+    must run on one host. A handle used after its partition is deleted raises
+    VectorStorePartitionHandleStaleError.
     """
 
     _SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE: ClassVar[dict[SimilarityMetric, str]] = {
@@ -458,18 +505,11 @@ class SQLiteVecVectorStore(VectorStore):
         validate_partition_key(partition_key)
 
         async with self._create_session() as session, session.begin():
-            if await self._partition_exists(session, partition_key):
+            if await self._partition_incarnation(session, partition_key) is not None:
                 raise VectorStorePartitionAlreadyExistsError(
                     self._vector_store_name, partition_key
                 )
-
-            await self._ensure_partition_tables(session, partition_key)
-            session.add(
-                _PartitionRow(
-                    vector_store_name=self._vector_store_name,
-                    partition_key=partition_key,
-                )
-            )
+            await self._add_partition(session, partition_key)
 
     @override
     async def open_or_create_partition(
@@ -478,43 +518,36 @@ class SQLiteVecVectorStore(VectorStore):
         validate_partition_key(partition_key)
 
         async with self._create_session() as session, session.begin():
-            if not await self._partition_exists(session, partition_key):
-                session.add(
-                    _PartitionRow(
-                        vector_store_name=self._vector_store_name,
-                        partition_key=partition_key,
-                    )
-                )
-            records_table, vector_table_name = await self._ensure_partition_tables(
-                session, partition_key
-            )
+            incarnation = await self._partition_incarnation(session, partition_key)
+            if incarnation is None:
+                incarnation = await self._add_partition(session, partition_key)
 
-        return self._partition_handle(records_table, vector_table_name)
+        return self._partition_handle(partition_key, incarnation)
 
     @override
     async def open_partition(self, partition_key: str) -> VectorStorePartition | None:
         validate_partition_key(partition_key)
 
         async with self._create_session() as session:
-            exists = await self._partition_exists(session, partition_key)
-        if not exists:
+            incarnation = await self._partition_incarnation(session, partition_key)
+        if incarnation is None:
             return None
 
-        return self._partition_handle(
-            self._records_table(partition_key),
-            self._vector_table_name(partition_key),
-        )
+        return self._partition_handle(partition_key, incarnation)
 
     def _partition_handle(
-        self, records_table: Table, vector_table_name: str
+        self, partition_key: str, incarnation: UUID
     ) -> SQLiteVecVectorStorePartition:
         return SQLiteVecVectorStorePartition(
             create_session=self._create_session,
+            vector_store_name=self._vector_store_name,
+            partition_key=partition_key,
+            incarnation=incarnation,
             vector_dimensions=self._vector_dimensions,
             similarity_metric=self._similarity_metric,
             indexed_properties=self._indexed_properties,
-            records_table=records_table,
-            vector_table_name=vector_table_name,
+            records_table=self._records_table(incarnation),
+            vector_table_name=self._vector_table_name(incarnation),
         )
 
     @override
@@ -522,29 +555,20 @@ class SQLiteVecVectorStore(VectorStore):
         validate_partition_key(partition_key)
 
         async with self._create_session() as session, session.begin():
-            exists = (
-                await session.execute(
-                    select(_PartitionRow.partition_key).where(
-                        _PartitionRow.vector_store_name == self._vector_store_name,
-                        _PartitionRow.partition_key == partition_key,
-                    )
-                )
-            ).scalar_one_or_none()
-            if exists is None:
+            incarnation = await self._partition_incarnation(session, partition_key)
+            if incarnation is None:
                 return
 
-            records_table = self._records_table(partition_key)
-            vector_table_name = self._vector_table_name(partition_key)
+            records_table = self._records_table(incarnation)
+            vector_table_name = self._vector_table_name(incarnation)
 
+            # The row first, so the drops are in the transaction (see
+            # _add_partition).
+            await session.execute(
+                delete(_PartitionRow).where(_PartitionRow.incarnation == incarnation)
+            )
             await session.execute(text(f"DROP TABLE IF EXISTS [{vector_table_name}]"))
             await session.execute(text(f"DROP TABLE IF EXISTS [{records_table.name}]"))
-
-            await session.execute(
-                delete(_PartitionRow).where(
-                    _PartitionRow.vector_store_name == self._vector_store_name,
-                    _PartitionRow.partition_key == partition_key,
-                )
-            )
 
             self._sa_metadata.remove(records_table)
 
@@ -555,18 +579,14 @@ class SQLiteVecVectorStore(VectorStore):
 
     # Helpers.
 
-    def _partition_prefix(self, partition_key: str) -> str:
-        # Named by a digest of the key, so any key names tables that SQLite
-        # accepts.
-        vector_store_name = self._vector_store_name
-        digest = hashlib.sha256(partition_key.encode()).hexdigest()
-        return f"vector_store_sqlite_vec_{len(vector_store_name)}_{vector_store_name}_{digest}"
+    def _partition_prefix(self, incarnation: UUID) -> str:
+        return f"vector_store_sqlite_vec_{incarnation.hex}"
 
-    def _records_table_name(self, partition_key: str) -> str:
-        return f"{self._partition_prefix(partition_key)}_rc"
+    def _records_table_name(self, incarnation: UUID) -> str:
+        return f"{self._partition_prefix(incarnation)}_rc"
 
-    def _vector_table_name(self, partition_key: str) -> str:
-        return f"{self._partition_prefix(partition_key)}_vc"
+    def _vector_table_name(self, incarnation: UUID) -> str:
+        return f"{self._partition_prefix(incarnation)}_vc"
 
     @staticmethod
     def _validate_metric(similarity_metric: SimilarityMetric) -> None:
@@ -583,22 +603,22 @@ class SQLiteVecVectorStore(VectorStore):
                 f"got {similarity_metric.value!r}"
             )
 
-    async def _partition_exists(
+    async def _partition_incarnation(
         self, session: AsyncSession, partition_key: str
-    ) -> bool:
-        partition_key_found = (
+    ) -> UUID | None:
+        """Return the incarnation of the partition under a key, or None if there is none."""
+        return (
             await session.execute(
-                select(_PartitionRow.partition_key).where(
+                select(_PartitionRow.incarnation).where(
                     _PartitionRow.vector_store_name == self._vector_store_name,
                     _PartitionRow.partition_key == partition_key,
                 )
             )
         ).scalar_one_or_none()
-        return partition_key_found is not None
 
-    def _records_table(self, partition_key: str) -> Table:
+    def _records_table(self, incarnation: UUID) -> Table:
         return Table(
-            self._records_table_name(partition_key),
+            self._records_table_name(incarnation),
             self._sa_metadata,
             Column("rowid", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
@@ -606,16 +626,26 @@ class SQLiteVecVectorStore(VectorStore):
             extend_existing=True,
         )
 
-    async def _ensure_partition_tables(
-        self,
-        session: AsyncSession,
-        partition_key: str,
-    ) -> tuple[Table, str]:
-        records_table = self._records_table(partition_key)
-        vector_table_name = self._vector_table_name(partition_key)
+    async def _add_partition(self, session: AsyncSession, partition_key: str) -> UUID:
+        """Add a partition under a new incarnation, with empty tables."""
+        incarnation = uuid4()
+        records_table = self._records_table(incarnation)
+        vector_table_name = self._vector_table_name(incarnation)
         distance_metric_value = self._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE[
             self._similarity_metric
         ]
+
+        # The row first: the driver defers BEGIN until the first
+        # data-modifying statement, and DDL before it would commit on its own,
+        # leaving tables no partition names if the transaction fails.
+        session.add(
+            _PartitionRow(
+                vector_store_name=self._vector_store_name,
+                partition_key=partition_key,
+                incarnation=incarnation,
+            )
+        )
+        await session.flush()
 
         connection = await session.connection()
         await connection.run_sync(
@@ -625,7 +655,7 @@ class SQLiteVecVectorStore(VectorStore):
 
         await session.execute(
             text(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS [{vector_table_name}] USING vec0("
+                f"CREATE VIRTUAL TABLE [{vector_table_name}] USING vec0("
                 f"vector float[{self._vector_dimensions}] distance_metric={distance_metric_value}"
                 f")"
             )
@@ -641,10 +671,10 @@ class SQLiteVecVectorStore(VectorStore):
             index_name = f"{records_table.name}__{field_name}_v"
             await session.execute(
                 text(
-                    f"CREATE INDEX IF NOT EXISTS [{index_name}] "
+                    f"CREATE INDEX [{index_name}] "
                     f"ON [{records_table.name}]"
                     f"({compiled_expr})"
                 )
             )
 
-        return records_table, vector_table_name
+        return incarnation

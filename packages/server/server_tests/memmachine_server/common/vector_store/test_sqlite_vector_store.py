@@ -1,5 +1,6 @@
 """Tests for SQLiteVectorStore."""
 
+import asyncio
 import math
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -8,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from pydantic import ValidationError
-from sqlalchemy import func, select, update
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from memmachine_server.common.data_types import PropertyType, SimilarityMetric
@@ -23,6 +24,7 @@ from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.vector_store.data_types import (
     Record,
     VectorStorePartitionAlreadyExistsError,
+    VectorStorePartitionHandleStaleError,
 )
 from memmachine_server.common.vector_store.sqlite_vector_store import (
     IndexLoadError,
@@ -202,6 +204,98 @@ class TestPartitionLifecycle:
 
         await store.delete_partition(key)
         assert await store.open_partition(key) is None
+
+    @pytest.mark.asyncio
+    async def test_a_handle_is_stale_once_its_partition_is_deleted(self, store):
+        await store.create_partition("lifecycle")
+        partition = await store.open_partition("lifecycle")
+        assert partition is not None
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await partition.upsert(records=[record])
+
+        await store.delete_partition("lifecycle")
+
+        with pytest.raises(VectorStorePartitionHandleStaleError, match="lifecycle"):
+            await partition.upsert(records=[record])
+        with pytest.raises(VectorStorePartitionHandleStaleError, match="lifecycle"):
+            await partition.query(query_vectors=[record.vector], limit=5)
+        with pytest.raises(VectorStorePartitionHandleStaleError, match="lifecycle"):
+            await partition.delete(record_uuids=[record.uuid])
+        # So does an operation with nothing to do.
+        with pytest.raises(VectorStorePartitionHandleStaleError, match="lifecycle"):
+            await partition.upsert(records=[])
+        with pytest.raises(VectorStorePartitionHandleStaleError, match="lifecycle"):
+            await partition.query(query_vectors=[], limit=5)
+        with pytest.raises(VectorStorePartitionHandleStaleError, match="lifecycle"):
+            await partition.delete(record_uuids=[])
+
+    @pytest.mark.asyncio
+    async def test_a_recreated_partition_starts_empty_and_the_old_handle_stays_stale(
+        self, store
+    ):
+        await store.create_partition("lifecycle")
+        old = await store.open_partition("lifecycle")
+        assert old is not None
+        old_record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        new_record = _make_record(vector=_normalize([0.0, 1.0, 0.0]))
+        await old.upsert(records=[old_record])
+
+        await store.delete_partition("lifecycle")
+        await store.create_partition("lifecycle")
+        new = await store.open_partition("lifecycle")
+        assert new is not None
+        [before] = await new.query(query_vectors=[old_record.vector], limit=5)
+        assert before.matches == []
+        await new.upsert(records=[new_record])
+
+        # The old life's handle cannot reach the new life's records.
+        with pytest.raises(VectorStorePartitionHandleStaleError):
+            await old.upsert(records=[old_record])
+        with pytest.raises(VectorStorePartitionHandleStaleError):
+            await old.query(query_vectors=[new_record.vector], limit=5)
+        with pytest.raises(VectorStorePartitionHandleStaleError):
+            await old.delete(record_uuids=[new_record.uuid])
+        assert set(await _stored(new)) == {new_record.uuid}
+
+        await store.delete_partition("lifecycle")
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_adopts_the_live_partition(self, store):
+        first = await store.open_or_create_partition("lifecycle")
+        second = await store.open_or_create_partition("lifecycle")
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await first.upsert(records=[record])
+        [found] = await second.query(query_vectors=[record.vector], limit=5)
+        assert [match.record_uuid for match in found.matches] == [record.uuid]
+
+        await store.delete_partition("lifecycle")
+        third = await store.open_or_create_partition("lifecycle")
+        [empty] = await third.query(query_vectors=[record.vector], limit=5)
+        assert empty.matches == []
+        with pytest.raises(VectorStorePartitionHandleStaleError):
+            await second.query(query_vectors=[record.vector], limit=5)
+
+        await store.delete_partition("lifecycle")
+
+    @pytest.mark.asyncio
+    async def test_keys_differing_only_in_case_are_different_partitions(self, store):
+        await store.create_partition("Key")
+        await store.create_partition("key")
+        upper = await store.open_partition("Key")
+        lower = await store.open_partition("key")
+        assert upper is not None
+        assert lower is not None
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await upper.upsert(records=[record])
+
+        [found] = await lower.query(query_vectors=[record.vector], limit=5)
+        assert found.matches == []
+        assert await _stored(lower) == {}
+
+        await store.delete_partition("Key")
+        assert await _stored(lower) == {}
+        assert await store.open_partition("key") is not None
+        await store.delete_partition("key")
 
 
 # ── Upsert + Query ──
@@ -1089,6 +1183,24 @@ async def _set_all_pending_operations_unapplied(engine) -> None:
         await session.execute(update(_PendingOperationRow).values(applied=False))
 
 
+async def _unapplied_operation_counts(engine) -> dict[str, int]:
+    """Count unapplied pending operations by the vector store they belong to."""
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(_PartitionRow.vector_store_name, func.count())
+                .join(
+                    _PendingOperationRow,
+                    _PendingOperationRow.incarnation == _PartitionRow.incarnation,
+                )
+                .where(_PendingOperationRow.applied.is_(False))
+                .group_by(_PartitionRow.vector_store_name)
+            )
+        ).all()
+    return {row[0]: row[1] for row in rows}
+
+
 class TestCrashRecovery:
     """Tests for pending operations replay on startup."""
 
@@ -1148,6 +1260,27 @@ class TestCrashRecovery:
             query_vectors=[_normalize([1.0, 0.0, 0.0])], limit=10
         )
         assert len(results[0].matches) == 2
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_replay_applies_only_its_own_stores_operations(self, tmp_path):
+        """A store's startup replays its own partitions' operations, not another store's."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+        other = await _store_with(store1, "other_store")
+        for vector_store in (store1, other):
+            partition = await vector_store.open_or_create_partition(NAME)
+            await partition.upsert(
+                records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))]
+            )
+
+        await _set_all_pending_operations_unapplied(engine1)
+        await engine1.dispose()
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        assert await _unapplied_operation_counts(engine2) == {"other_store": 1}
 
         await store2.shutdown()
         await engine2.dispose()
@@ -1419,3 +1552,88 @@ class TestIndexFileDurability:
 
         await store2.shutdown()
         await engine2.dispose()
+
+
+# ── Partition resources ──
+
+
+async def _table_names(engine) -> set[str]:
+    async with engine.connect() as connection:
+        return set(
+            await connection.run_sync(
+                lambda sync_connection: inspect(sync_connection).get_table_names()
+            )
+        )
+
+
+class TestPartitionResources:
+    """A partition's tables and index file live and die with it."""
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_partition_leaves_no_tables_or_index_files(self, tmp_path):
+        store, engine = await _fresh_store(
+            tmp_path / "test.db", tmp_path, save_threshold=1
+        )
+        baseline = await _table_names(engine)
+        partition = await store.open_or_create_partition(NAME)
+        await partition.upsert(
+            records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))]
+        )
+        assert len(await _table_names(engine) - baseline) == 1
+        assert len(list((tmp_path / "indexes").glob("*.idx"))) == 1
+
+        await store.delete_partition(NAME)
+
+        assert await _table_names(engine) == baseline
+        assert list((tmp_path / "indexes").glob("*.idx")) == []
+
+        await store.shutdown()
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_creation_that_loses_a_race_leaves_the_winners_engine(
+        self, tmp_path
+    ):
+        """The winner's records survive a restart, saved from the engine its handle holds."""
+        db_path = tmp_path / "test.db"
+        store1, engine1 = await _fresh_store(db_path, tmp_path)
+        outcomes = await asyncio.gather(
+            store1.open_or_create_partition(NAME),
+            store1.open_or_create_partition(NAME),
+            return_exceptions=True,
+        )
+        partitions = [
+            outcome
+            for outcome in outcomes
+            if isinstance(outcome, SQLiteVectorStorePartition)
+        ]
+        assert partitions
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await partitions[0].upsert(records=[record])
+        await store1.shutdown()
+        await engine1.dispose()
+
+        store2, engine2 = await _fresh_store(db_path, tmp_path)
+        partition = await store2.open_partition(NAME)
+        assert partition is not None
+        [found] = await partition.query(query_vectors=[record.vector], limit=5)
+        assert [match.record_uuid for match in found.matches] == [record.uuid]
+
+        await store2.shutdown()
+        await engine2.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_creation_that_loses_a_race_leaves_no_tables(self, store):
+        engine = store._sqlalchemy_engine
+        baseline = await _table_names(engine)
+
+        outcomes = await asyncio.gather(
+            store.create_partition(NAME),
+            store.create_partition(NAME),
+            return_exceptions=True,
+        )
+
+        assert sum(outcome is None for outcome in outcomes) == 1
+        assert len(await _table_names(engine) - baseline) == 1
+        await store.delete_partition(NAME)
+        assert await _table_names(engine) == baseline
