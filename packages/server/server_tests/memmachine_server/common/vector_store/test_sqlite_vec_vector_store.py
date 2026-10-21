@@ -1138,7 +1138,25 @@ class TestPartitionResources:
             return_exceptions=True,
         )
 
-        assert sum(outcome is None for outcome in outcomes) == 1
+        assert sorted(type(outcome).__name__ for outcome in outcomes) == [
+            "NoneType",
+            "VectorStorePartitionAlreadyExistsError",
+        ]
         assert len(await _table_names(engine) - baseline) == tables_per_partition
         await store.delete_partition(NAME)
         assert await _table_names(engine) == baseline
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_calls_racing_for_a_key_share_one_partition(
+        self, store
+    ):
+        first, second = await asyncio.gather(
+            store.open_or_create_partition(NAME),
+            store.open_or_create_partition(NAME),
+        )
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await first.upsert(records=[record])
+
+        [found] = await second.query(query_vectors=[record.vector], limit=5)
+        assert [match.record_uuid for match in found.matches] == [record.uuid]
+        await store.delete_partition(NAME)

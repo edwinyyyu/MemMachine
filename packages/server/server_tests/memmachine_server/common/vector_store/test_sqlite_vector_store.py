@@ -1607,7 +1607,7 @@ class TestPartitionResources:
             for outcome in outcomes
             if isinstance(outcome, SQLiteVectorStorePartition)
         ]
-        assert partitions
+        assert len(partitions) == 2
         record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
         await partitions[0].upsert(records=[record])
         await store1.shutdown()
@@ -1633,7 +1633,64 @@ class TestPartitionResources:
             return_exceptions=True,
         )
 
-        assert sum(outcome is None for outcome in outcomes) == 1
+        assert sorted(type(outcome).__name__ for outcome in outcomes) == [
+            "NoneType",
+            "VectorStorePartitionAlreadyExistsError",
+        ]
         assert len(await _table_names(engine) - baseline) == 1
         await store.delete_partition(NAME)
         assert await _table_names(engine) == baseline
+
+    @pytest.mark.asyncio
+    async def test_open_or_create_calls_racing_for_a_key_share_one_partition(
+        self, store
+    ):
+        first, second = await asyncio.gather(
+            store.open_or_create_partition(NAME),
+            store.open_or_create_partition(NAME),
+        )
+        record = _make_record(vector=_normalize([1.0, 0.0, 0.0]))
+        await first.upsert(records=[record])
+
+        [found] = await second.query(query_vectors=[record.vector], limit=5)
+        assert [match.record_uuid for match in found.matches] == [record.uuid]
+        await store.delete_partition(NAME)
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_a_deletion_overtakes_leaves_no_index_file(
+        self, tmp_path
+    ):
+        """No file holds a deleted partition's vectors, whichever finishes first."""
+        stores: list[SQLiteVectorStore] = []
+
+        class _DeletedWhileSaving(USearchVectorSearchEngine):
+            async def save(self, path: str) -> None:
+                await stores[0].delete_partition(NAME)
+                await super().save(path)
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+        store = SQLiteVectorStore(
+            _params(
+                engine,
+                index_directory=str(tmp_path / "indexes"),
+                save_threshold=1,
+                vector_search_engine_factory=lambda ndim, metric: _DeletedWhileSaving(
+                    num_dimensions=ndim, similarity_metric=metric
+                ),
+            )
+        )
+        stores.append(store)
+        await store.startup()
+        partition = await store.open_or_create_partition(NAME)
+
+        # Crossing the save threshold saves the index, and the deletion
+        # commits while the file is written.
+        await partition.upsert(
+            records=[_make_record(vector=_normalize([1.0, 0.0, 0.0]))]
+        )
+
+        assert await store.open_partition(NAME) is None
+        assert list((tmp_path / "indexes").glob("*.idx")) == []
+
+        await store.shutdown()
+        await engine.dispose()

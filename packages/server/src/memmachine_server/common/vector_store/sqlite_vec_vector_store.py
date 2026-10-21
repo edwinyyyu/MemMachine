@@ -30,6 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
@@ -49,12 +50,14 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
     validate_vector_store_name,
 )
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
+    _MAX_OPEN_OR_CREATE_ATTEMPTS,
     _PARTITION_KEY_MAX_BYTES,
     is_valid_filter,
     validate_declared_types,
@@ -504,12 +507,12 @@ class SQLiteVecVectorStore(VectorStore):
     async def create_partition(self, partition_key: str) -> None:
         validate_partition_key(partition_key)
 
-        async with self._create_session() as session, session.begin():
-            if await self._partition_incarnation(session, partition_key) is not None:
-                raise VectorStorePartitionAlreadyExistsError(
-                    self._vector_store_name, partition_key
-                )
-            await self._add_partition(session, partition_key)
+        try:
+            await self._add_partition(partition_key)
+        except IntegrityError as err:
+            raise VectorStorePartitionAlreadyExistsError(
+                self._vector_store_name, partition_key
+            ) from err
 
     @override
     async def open_or_create_partition(
@@ -517,12 +520,25 @@ class SQLiteVecVectorStore(VectorStore):
     ) -> VectorStorePartition:
         validate_partition_key(partition_key)
 
-        async with self._create_session() as session, session.begin():
-            incarnation = await self._partition_incarnation(session, partition_key)
+        # Read-then-create, retried: losing the creation means another
+        # caller created the key's partition meanwhile, which the next read
+        # opens.
+        lost_race: IntegrityError | None = None
+        for _ in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
+            async with self._create_session() as session:
+                incarnation = await self._partition_incarnation(session, partition_key)
             if incarnation is None:
-                incarnation = await self._add_partition(session, partition_key)
-
-        return self._partition_handle(partition_key, incarnation)
+                try:
+                    incarnation = await self._add_partition(partition_key)
+                except IntegrityError as err:
+                    lost_race = err
+                    continue
+            return self._partition_handle(partition_key, incarnation)
+        raise VectorStoreAttemptsExhaustedError(
+            f"Opening or creating partition {partition_key!r} of vector store "
+            f"{self._vector_store_name!r} made no progress after "
+            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
+        ) from lost_race
 
     @override
     async def open_partition(self, partition_key: str) -> VectorStorePartition | None:
@@ -626,8 +642,15 @@ class SQLiteVecVectorStore(VectorStore):
             extend_existing=True,
         )
 
-    async def _add_partition(self, session: AsyncSession, partition_key: str) -> UUID:
-        """Add a partition under a new incarnation, with empty tables."""
+    async def _add_partition(self, partition_key: str) -> UUID:
+        """
+        Add a partition under a new incarnation, with empty tables.
+
+        Raises:
+            IntegrityError:
+                If a partition exists under the key: the partition row's
+                primary key decides between racing creators.
+        """
         incarnation = uuid4()
         records_table = self._records_table(incarnation)
         vector_table_name = self._vector_table_name(incarnation)
@@ -635,46 +658,46 @@ class SQLiteVecVectorStore(VectorStore):
             self._similarity_metric
         ]
 
-        # The row first: the driver defers BEGIN until the first
-        # data-modifying statement, and DDL before it would commit on its own,
-        # leaving tables no partition names if the transaction fails.
-        session.add(
-            _PartitionRow(
-                vector_store_name=self._vector_store_name,
-                partition_key=partition_key,
-                incarnation=incarnation,
+        async with self._create_session() as session, session.begin():
+            # The row first: the driver defers BEGIN until the first
+            # data-modifying statement, and DDL before it would commit on its own,
+            # leaving tables no partition names if the transaction fails.
+            session.add(
+                _PartitionRow(
+                    vector_store_name=self._vector_store_name,
+                    partition_key=partition_key,
+                    incarnation=incarnation,
+                )
             )
-        )
-        await session.flush()
+            await session.flush()
 
-        connection = await session.connection()
-        await connection.run_sync(
-            self._sa_metadata.create_all,
-            tables=[records_table],
-        )
-
-        await session.execute(
-            text(
-                f"CREATE VIRTUAL TABLE [{vector_table_name}] USING vec0("
-                f"vector float[{self._vector_dimensions}] distance_metric={distance_metric_value}"
-                f")"
+            connection = await session.connection()
+            await connection.run_sync(
+                self._sa_metadata.create_all,
+                tables=[records_table],
             )
-        )
 
-        properties_column = Column("properties", JSON)
-        for field_name in self._indexed_properties:
-            value_expr = properties_column[field_name]["v"].as_string()
-            compiled_expr = value_expr.compile(
-                dialect=session.bind.dialect,
-                compile_kwargs={"literal_binds": True},
-            )
-            index_name = f"{records_table.name}__{field_name}_v"
             await session.execute(
                 text(
-                    f"CREATE INDEX [{index_name}] "
-                    f"ON [{records_table.name}]"
-                    f"({compiled_expr})"
+                    f"CREATE VIRTUAL TABLE [{vector_table_name}] USING vec0("
+                    f"vector float[{self._vector_dimensions}] distance_metric={distance_metric_value}"
+                    f")"
                 )
             )
 
+            properties_column = Column("properties", JSON)
+            for field_name in self._indexed_properties:
+                value_expr = properties_column[field_name]["v"].as_string()
+                compiled_expr = value_expr.compile(
+                    dialect=session.bind.dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
+                index_name = f"{records_table.name}__{field_name}_v"
+                await session.execute(
+                    text(
+                        f"CREATE INDEX [{index_name}] "
+                        f"ON [{records_table.name}]"
+                        f"({compiled_expr})"
+                    )
+                )
         return incarnation

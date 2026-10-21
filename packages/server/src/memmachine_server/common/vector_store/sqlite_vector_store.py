@@ -8,6 +8,7 @@ engine operations for crash recovery: on a store's startup, its partitions'
 unfinalized operations are replayed.
 """
 
+import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -38,6 +39,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
@@ -58,12 +60,14 @@ from .data_types import (
     QueryMatch,
     QueryResult,
     Record,
+    VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionHandleStaleError,
     validate_vector_store_name,
 )
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
+    _MAX_OPEN_OR_CREATE_ATTEMPTS,
     _PARTITION_KEY_MAX_BYTES,
     is_valid_filter,
     validate_declared_types,
@@ -171,25 +175,27 @@ async def _save_partition_index(
     search_engine: VectorSearchEngine,
     path: str,
 ) -> None:
-    """Save a partition life's index to disk."""
-    # Write index to path.
+    """Save a partition life's index to disk, leaving no file if the partition is deleted."""
     await search_engine.save(path)
 
-    # Delete applied pending operations and flip index_saved to True.
     async with create_session() as session, session.begin():
+        # A self-checking UPDATE, issued first: it opens the write
+        # transaction (the driver defers BEGIN until the first
+        # data-modifying statement), so a deletion that commits after it
+        # unlinks the file, and no match means one committed before it.
+        saved = await (await session.connection()).execute(
+            update(_PartitionRow)
+            .where(_PartitionRow.incarnation == incarnation)
+            .values(index_saved=True)
+        )
+        if saved.rowcount == 0:
+            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
+            return
         await session.execute(
             delete(_PendingOperationRow).where(
                 _PendingOperationRow.incarnation == incarnation,
                 _PendingOperationRow.applied.is_(True),
             )
-        )
-        await session.execute(
-            update(_PartitionRow)
-            .where(
-                _PartitionRow.incarnation == incarnation,
-                _PartitionRow.index_saved.is_(False),
-            )
-            .values(index_saved=True)
         )
 
 
@@ -836,18 +842,12 @@ class SQLiteVectorStore(VectorStore):
         self._require_started()
         validate_partition_key(partition_key)
 
-        async with self._create_session() as session, session.begin():
-            if await self._partition_incarnation(session, partition_key) is not None:
-                raise VectorStorePartitionAlreadyExistsError(
-                    self._vector_store_name, partition_key
-                )
-            incarnation, search_engine = await self._add_partition(
-                session, partition_key
-            )
-        # Cached once committed, so a failed creation leaves no engine behind.
-        # An open that saw the committed partition may have cached an engine
-        # for it first; both are empty, and handles already share that one.
-        self._search_engines.setdefault(incarnation, search_engine)
+        try:
+            await self._add_partition(partition_key)
+        except IntegrityError as err:
+            raise VectorStorePartitionAlreadyExistsError(
+                self._vector_store_name, partition_key
+            ) from err
 
     @override
     async def open_or_create_partition(
@@ -856,18 +856,25 @@ class SQLiteVectorStore(VectorStore):
         self._require_started()
         validate_partition_key(partition_key)
 
-        new_search_engine: VectorSearchEngine | None = None
-        async with self._create_session() as session, session.begin():
-            incarnation = await self._partition_incarnation(session, partition_key)
+        # Read-then-create, retried: losing the creation means another
+        # caller created the key's partition meanwhile, which the next read
+        # opens.
+        lost_race: IntegrityError | None = None
+        for _ in range(_MAX_OPEN_OR_CREATE_ATTEMPTS):
+            async with self._create_session() as session:
+                incarnation = await self._partition_incarnation(session, partition_key)
             if incarnation is None:
-                incarnation, new_search_engine = await self._add_partition(
-                    session, partition_key
-                )
-        if new_search_engine is not None:
-            # As in create_partition.
-            self._search_engines.setdefault(incarnation, new_search_engine)
-
-        return await self._partition_handle(partition_key, incarnation)
+                try:
+                    incarnation = await self._add_partition(partition_key)
+                except IntegrityError as err:
+                    lost_race = err
+                    continue
+            return await self._partition_handle(partition_key, incarnation)
+        raise VectorStoreAttemptsExhaustedError(
+            f"Opening or creating partition {partition_key!r} of vector store "
+            f"{self._vector_store_name!r} made no progress after "
+            f"{_MAX_OPEN_OR_CREATE_ATTEMPTS} attempts"
+        ) from lost_race
 
     @override
     async def open_partition(self, partition_key: str) -> VectorStorePartition | None:
@@ -926,11 +933,10 @@ class SQLiteVectorStore(VectorStore):
 
         self._sa_metadata.remove(records_table)
 
-        # If unlink fails, the orphan is harmless: no later partition is
-        # named by this incarnation.
+        # A save this deletion overtakes unlinks the file it writes.
         index_path = self._index_path(incarnation)
-        if index_path is not None and index_path.exists():
-            index_path.unlink()
+        if index_path is not None:
+            await asyncio.to_thread(index_path.unlink, missing_ok=True)
         self._search_engines.pop(incarnation, None)
 
     @override
@@ -940,31 +946,41 @@ class SQLiteVectorStore(VectorStore):
 
     # Helpers.
 
-    async def _add_partition(
-        self, session: AsyncSession, partition_key: str
-    ) -> tuple[UUID, VectorSearchEngine]:
-        """Add a partition under a new incarnation, with an empty records table and search engine."""
+    async def _add_partition(self, partition_key: str) -> UUID:
+        """
+        Add a partition under a new incarnation, with an empty records table and search engine.
+
+        Raises:
+            IntegrityError:
+                If a partition exists under the key: the partition row's
+                primary key decides between racing creators.
+        """
         incarnation = uuid4()
-        search_engine = self._vector_search_engine_factory(
-            self._vector_dimensions, self._similarity_metric
-        )
-        # The row first: the driver defers BEGIN until the first
-        # data-modifying statement, and DDL before it would commit on its own,
-        # leaving a table no partition names if the transaction fails.
-        session.add(
-            _PartitionRow(
-                vector_store_name=self._vector_store_name,
-                partition_key=partition_key,
-                incarnation=incarnation,
+        async with self._create_session() as session, session.begin():
+            # The row first: the driver defers BEGIN until the first
+            # data-modifying statement, and DDL before it would commit on its
+            # own, leaving a table no partition names if the transaction fails.
+            session.add(
+                _PartitionRow(
+                    vector_store_name=self._vector_store_name,
+                    partition_key=partition_key,
+                    incarnation=incarnation,
+                )
             )
-        )
-        await session.flush()
-        connection = await session.connection()
-        await connection.run_sync(
-            self._sa_metadata.create_all,
-            tables=[self._records_table(incarnation)],
-        )
-        return incarnation, search_engine
+            await session.flush()
+            search_engine = self._vector_search_engine_factory(
+                self._vector_dimensions, self._similarity_metric
+            )
+            connection = await session.connection()
+            await connection.run_sync(
+                self._sa_metadata.create_all,
+                tables=[self._records_table(incarnation)],
+            )
+        # Cached once committed, so a failed creation leaves no engine behind.
+        # An open that saw the committed partition may have cached an engine
+        # for it first; both are empty, and handles already share that one.
+        self._search_engines.setdefault(incarnation, search_engine)
+        return incarnation
 
     def _partition_prefix(self, incarnation: UUID) -> str:
         """Unique prefix for a partition life's native resources."""
