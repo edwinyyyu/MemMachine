@@ -72,7 +72,7 @@ async def test_older_than_compares_instants_not_wall_clocks(
 
 
 @pytest.mark.asyncio
-async def test_add_update_delete_feature_keeps_vector_collection_in_sync(
+async def test_add_update_delete_feature_keeps_the_vector_store_partition_in_sync(
     sqlalchemy_sqlite_engine,
     vector_store_partition: InMemoryVectorStorePartition,
 ):
