@@ -48,12 +48,12 @@ class CommonResourceManager(Protocol):
 
     async def get_vector_store(
         self,
-        backend: str,
+        vector_store_id: str,
         *,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
-        """Return the store of one name on a configured backend."""
+        """Return the store of one name on a configured vector store."""
         raise NotImplementedError
 
     async def get_segment_store(self, name: str) -> SegmentStore:

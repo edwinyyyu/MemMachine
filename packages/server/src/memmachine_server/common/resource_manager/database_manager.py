@@ -115,7 +115,7 @@ class DatabaseManager:
         """Initialize with database configuration."""
         self.conf = conf
         self.graph_stores: dict[str, VectorGraphStore] = {}
-        # One store per (backend, vector store name).
+        # One store per (vector store id, vector store name).
         self.vector_stores: dict[tuple[str, str], VectorStore] = {}
         self.sql_engines: dict[str, AsyncEngine] = {}
         self.neo4j_drivers: dict[str, AsyncDriver] = {}
@@ -198,12 +198,12 @@ class DatabaseManager:
             for name, client in self.milvus_clients.items():
                 tasks.append(self._close_milvus_client(name, client))
             for (
-                backend,
+                vector_store_id,
                 vector_store_name,
             ), vector_store in self.vector_stores.items():
                 tasks.append(
                     self._shutdown_vector_store(
-                        f"{backend}/{vector_store_name}", vector_store
+                        f"{vector_store_id}/{vector_store_name}", vector_store
                     )
                 )
             await asyncio.gather(*tasks)
@@ -636,7 +636,7 @@ class DatabaseManager:
 
     async def _build_qdrant_store(
         self,
-        backend: str,
+        vector_store_id: str,
         conf: QdrantConf,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
@@ -649,7 +649,7 @@ class DatabaseManager:
             )
         )
         await partition_registry.startup()
-        client = await self.async_get_qdrant_client(backend, validate=True)
+        client = await self.async_get_qdrant_client(vector_store_id, validate=True)
 
         from memmachine_server.common.vector_store.qdrant_vector_store import (
             QdrantVectorStore,
@@ -737,7 +737,7 @@ class DatabaseManager:
 
     async def _build_milvus_store(
         self,
-        backend: str,
+        vector_store_id: str,
         conf: MilvusConf,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
@@ -750,7 +750,7 @@ class DatabaseManager:
             )
         )
         await partition_registry.startup()
-        client = await self.async_get_milvus_client(backend, validate=True)
+        client = await self.async_get_milvus_client(vector_store_id, validate=True)
 
         from memmachine_server.common.vector_store.milvus_vector_store import (
             MilvusVectorStore,
@@ -846,7 +846,7 @@ class DatabaseManager:
 
     async def _build_sqlite_vector_store(
         self,
-        backend: str,
+        vector_store_id: str,
         conf: SQLiteVectorStoreConf,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
@@ -858,7 +858,9 @@ class DatabaseManager:
 
         return SQLiteVectorStore(
             SQLiteVectorStoreParams(
-                sqlalchemy_engine=self._vector_store_sql_engine(backend, conf.path),
+                sqlalchemy_engine=self._vector_store_sql_engine(
+                    vector_store_id, conf.path
+                ),
                 vector_store_name=vector_store_name,
                 vector_store_schema=vector_store_schema,
                 vector_search_engine_factory=self._make_sqlite_search_engine_factory(
@@ -871,7 +873,7 @@ class DatabaseManager:
 
     async def _build_sqlite_vec_vector_store(
         self,
-        backend: str,
+        vector_store_id: str,
         conf: SQLiteVecVectorStoreConf,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
@@ -883,36 +885,36 @@ class DatabaseManager:
 
         return SQLiteVecVectorStore(
             SQLiteVecVectorStoreParams(
-                engine=self._vector_store_sql_engine(backend, conf.path),
+                engine=self._vector_store_sql_engine(vector_store_id, conf.path),
                 vector_store_name=vector_store_name,
                 vector_store_schema=vector_store_schema,
             )
         )
 
-    def _vector_store_sql_engine(self, backend: str, path: str) -> AsyncEngine:
-        """The engine behind a SQLite-backed vector store backend, shared by its stores."""
-        engine = self.vector_store_sql_engines.get(backend)
+    def _vector_store_sql_engine(self, vector_store_id: str, path: str) -> AsyncEngine:
+        """The engine behind a configured SQLite vector store, shared by its stores."""
+        engine = self.vector_store_sql_engines.get(vector_store_id)
         if engine is None:
             engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
             enable_sqlite_explicit_begin(engine)
-            self.vector_store_sql_engines[backend] = engine
+            self.vector_store_sql_engines[vector_store_id] = engine
         return engine
 
     # --- Vector stores ---
 
     async def get_vector_store(
         self,
-        backend: str,
+        vector_store_id: str,
         *,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
-        """Return the store of one name on a configured backend, building it on first use.
+        """Return the store of one name on a configured vector store, building it on first use.
 
         The first call for a name builds the store with the given schema. The
-        vector store name keeps stores on one backend apart.
+        vector store name keeps stores on one configured vector store apart.
         """
-        key = (backend, vector_store_name)
+        key = (vector_store_id, vector_store_name)
         if key not in self._vector_store_locks:
             async with self._lock:
                 self._vector_store_locks.setdefault(key, Lock())
@@ -921,7 +923,7 @@ class DatabaseManager:
             store = self.vector_stores.get(key)
             if store is None:
                 store = await self._build_vector_store(
-                    backend,
+                    vector_store_id,
                     vector_store_name,
                     vector_store_schema,
                 )
@@ -929,7 +931,7 @@ class DatabaseManager:
             return store
 
     def _vector_store_conf(
-        self, backend: str
+        self, vector_store_id: str
     ) -> QdrantConf | MilvusConf | SQLiteVectorStoreConf | SQLiteVecVectorStoreConf:
         for confs in (
             self.conf.qdrant_confs,
@@ -937,43 +939,43 @@ class DatabaseManager:
             self.conf.sqlite_vector_store_confs,
             self.conf.sqlite_vec_vector_store_confs,
         ):
-            if backend in confs:
-                return confs[backend]
-        raise ValueError(f"VectorStore '{backend}' not found")
+            if vector_store_id in confs:
+                return confs[vector_store_id]
+        raise ValueError(f"VectorStore '{vector_store_id}' not found")
 
     async def _build_vector_store(
         self,
-        backend: str,
+        vector_store_id: str,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
-        conf = self._vector_store_conf(backend)
+        conf = self._vector_store_conf(vector_store_id)
         try:
             match conf:
                 case QdrantConf():
                     store = await self._build_qdrant_store(
-                        backend,
+                        vector_store_id,
                         conf,
                         vector_store_name,
                         vector_store_schema,
                     )
                 case MilvusConf():
                     store = await self._build_milvus_store(
-                        backend,
+                        vector_store_id,
                         conf,
                         vector_store_name,
                         vector_store_schema,
                     )
                 case SQLiteVectorStoreConf():
                     store = await self._build_sqlite_vector_store(
-                        backend,
+                        vector_store_id,
                         conf,
                         vector_store_name,
                         vector_store_schema,
                     )
                 case SQLiteVecVectorStoreConf():
                     store = await self._build_sqlite_vec_vector_store(
-                        backend,
+                        vector_store_id,
                         conf,
                         vector_store_name,
                         vector_store_schema,
@@ -981,6 +983,6 @@ class DatabaseManager:
             await store.startup()
         except Exception as e:
             raise VectorStoreConfigurationError(
-                f"Vector store {vector_store_name!r} on backend '{backend}' failed to start: {e}",
+                f"Vector store {vector_store_name!r} on '{vector_store_id}' failed to start: {e}",
             ) from e
         return store

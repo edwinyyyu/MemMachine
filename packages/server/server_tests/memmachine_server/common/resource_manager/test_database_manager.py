@@ -926,7 +926,7 @@ async def test_sqlite_vector_store_creates_store_and_engine():
 
 @pytest.mark.asyncio
 async def test_a_sqlite_vector_store_engine_takes_the_write_lock_at_begin(tmp_path):
-    """The engine behind a SQLite vector store backend is set up for write transactions."""
+    """The engine behind a configured SQLite vector store is set up for write transactions."""
     path = tmp_path / "vs.db"
     conf = _sqlite_vector_store_only_conf(
         sqlite_vector_store_confs={"vs1": SQLiteVectorStoreConf(path=str(path))}
@@ -951,8 +951,8 @@ async def test_a_sqlite_vector_store_engine_takes_the_write_lock_at_begin(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_stores_of_one_sqlite_backend_share_the_engine():
-    """Two stores on one SQLite backend are two stores over one engine."""
+async def test_stores_of_one_sqlite_vector_store_share_its_engine():
+    """Two stores on one configured SQLite vector store share its engine."""
     conf = _sqlite_vector_store_only_conf(
         sqlite_vector_store_confs={"vs1": SQLiteVectorStoreConf(path="vs.db")}
     )
@@ -1076,7 +1076,7 @@ async def test_sqlite_vector_store_caches_after_first_call():
 
 @pytest.mark.asyncio
 async def test_sqlite_vector_store_startup_failure_keeps_no_store():
-    """If startup() fails, no store is kept; the backend's engine stays for close()."""
+    """If startup() fails, no store is kept; the configured vector store's engine stays for close()."""
     conf = _sqlite_vector_store_only_conf(
         sqlite_vector_store_confs={"vs1": SQLiteVectorStoreConf(path="vs.db")}
     )

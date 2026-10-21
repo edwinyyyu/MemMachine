@@ -135,8 +135,8 @@ class SemanticResourceManager:
                 "semantic_memory",
             )
 
-        backend = self._conf.vector_collection
-        if not backend:
+        vector_store_id = self._conf.vector_collection
+        if not vector_store_id:
             raise ResourceNotReadyError(
                 "No vector_collection configured for vector-backed semantic storage.",
                 "semantic_memory",
@@ -150,7 +150,7 @@ class SemanticResourceManager:
         if vector_dimensions is None:
             vector_dimensions = (await self._get_default_embedder()).dimensions
         vector_store = await self._resource_manager.get_vector_store(
-            backend,
+            vector_store_id,
             vector_store_name=_VECTOR_STORE_NAME,
             vector_store_schema=VectorStoreSchema(
                 vector_dimensions=vector_dimensions,

@@ -145,7 +145,7 @@ class ResourceManagerImpl:
         self._semantic_manager: SemanticResourceManager | None = None
         self._segment_stores: dict[str, SegmentStore] = {}
         self._segment_store_purge_tasks: list[asyncio.Task[None]] = []
-        # One sweeper per vector store, keyed by its backend and its name.
+        # One sweeper per store, keyed by its vector store id and its name.
         self._vector_store_purge_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
         self._session_data_manager_lock = Lock()
@@ -209,25 +209,25 @@ class ResourceManagerImpl:
 
     async def get_vector_store(
         self,
-        backend: str,
+        vector_store_id: str,
         *,
         vector_store_name: str,
         vector_store_schema: VectorStoreSchema,
     ) -> VectorStore:
-        """Return the store of one name on a configured backend.
+        """Return the store of one name on a configured vector store.
 
         The first time a store is handed out, its purge sweeper starts.
         """
         store = await self._database_manager.get_vector_store(
-            backend,
+            vector_store_id,
             vector_store_name=vector_store_name,
             vector_store_schema=vector_store_schema,
         )
-        key = (backend, vector_store_name)
+        key = (vector_store_id, vector_store_name)
         if key not in self._vector_store_purge_tasks:
             self._vector_store_purge_tasks[key] = asyncio.create_task(
                 _purge_deleted_vector_store_partitions_forever(
-                    store, f"Vector store {backend}/{vector_store_name}"
+                    store, f"Vector store {vector_store_id}/{vector_store_name}"
                 )
             )
         return store

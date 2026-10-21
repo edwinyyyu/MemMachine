@@ -495,7 +495,7 @@ async def test_get_vector_store_starts_one_sweeper_per_store(
 
 
 @pytest.mark.asyncio
-async def test_stores_of_two_names_on_one_backend_get_a_sweeper_each(
+async def test_stores_of_two_names_on_one_vector_store_get_a_sweeper_each(
     invalid_resource_manager, monkeypatch
 ):
     """Each store purges its own registry's deleted partitions."""
@@ -507,7 +507,7 @@ async def test_stores_of_two_names_on_one_backend_get_a_sweeper_each(
         stores[name] = create_autospec(VectorStore, instance=True)
         stores[name].purge_deleted_partitions.return_value = False
 
-    async def get_vector_store(backend: str, *, vector_store_name: str, **_):
+    async def get_vector_store(vector_store_id: str, *, vector_store_name: str, **_):
         return stores[vector_store_name]
 
     monkeypatch.setattr(
