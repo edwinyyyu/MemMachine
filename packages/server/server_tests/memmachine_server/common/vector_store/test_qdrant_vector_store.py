@@ -150,7 +150,7 @@ async def _params(client, registry_engine, **overrides) -> QdrantVectorStorePara
     params: dict[str, Any] = {
         "client": client,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_store_schema": _schema(),
+        "store_schema": _schema(),
     }
     params.update(overrides)
     params["partition_registry"] = SQLAlchemyVectorStorePartitionRegistry(
@@ -411,7 +411,7 @@ class TestSimilarityMetrics:
                 any_qdrant_client,
                 registry_engine,
                 vector_store_name=f"metric_{metric.value}",
-                vector_store_schema=_schema(similarity_metric=metric),
+                store_schema=_schema(similarity_metric=metric),
             )
         )
         await store.startup()
@@ -463,7 +463,7 @@ class TestSimilarityMetrics:
                 any_qdrant_client,
                 registry_engine,
                 vector_store_name=f"metric_{metric.value}",
-                vector_store_schema=_schema(similarity_metric=metric),
+                store_schema=_schema(similarity_metric=metric),
             )
         )
         await store.startup()
@@ -516,7 +516,7 @@ def _partition_on(client: AsyncQdrantClient) -> QdrantVectorStorePartition:
             partition_key=NAME,
             incarnation=uuid4(),
         ),
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=VECTOR_DIM,
             similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={},
@@ -1716,9 +1716,7 @@ class TestAgainstAModel:
                 any_qdrant_client,
                 registry_engine,
                 vector_store_name=_MODEL_STORE_NAME,
-                vector_store_schema=_schema(
-                    indexed_properties=_MODEL_INDEXED_PROPERTIES
-                ),
+                store_schema=_schema(indexed_properties=_MODEL_INDEXED_PROPERTIES),
             )
         )
         await store.startup()
@@ -1933,9 +1931,7 @@ async def _stores_sharing_a_registry(
                 client,
                 engine,
                 vector_store_name=vector_store_name,
-                vector_store_schema=_schema(
-                    indexed_properties=_CHURN_INDEXED_PROPERTIES
-                ),
+                store_schema=_schema(indexed_properties=_CHURN_INDEXED_PROPERTIES),
             )
         )
         await store.startup()

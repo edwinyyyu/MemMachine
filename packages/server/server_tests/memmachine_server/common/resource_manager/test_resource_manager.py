@@ -452,7 +452,7 @@ async def test_vector_store_purge_drains_backlog_without_waiting(monkeypatch):
 
 _VECTOR_STORE: dict[str, Any] = {
     "vector_store_name": "c",
-    "vector_store_schema": VectorStoreSchema(
+    "store_schema": VectorStoreSchema(
         vector_dimensions=3,
         similarity_metric=SimilarityMetric.COSINE,
         indexed_properties={},

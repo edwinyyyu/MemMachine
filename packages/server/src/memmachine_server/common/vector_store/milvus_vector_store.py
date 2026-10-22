@@ -288,7 +288,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         collection_name: str,
         vector_store_name: str,
         registration: Registration,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
         tracker: OperationTracker,
         request_timeout_seconds: int,
     ) -> None:
@@ -296,7 +296,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         super().__init__(
             vector_store_name=vector_store_name,
             registration=registration,
-            vector_store_schema=vector_store_schema,
+            store_schema=store_schema,
             tracker=tracker,
         )
         self._client = client
@@ -313,7 +313,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
 
     def _build_entity(self, record: Record) -> dict[str, Any]:
         """Build a Milvus entity from a vector store record."""
-        declared = self._vector_store_schema.indexed_properties
+        declared = self._store_schema.indexed_properties
         entity: dict[str, Any] = {
             _ID_FIELD: self._primary_id(record.uuid),
             _RECORD_UUID_FIELD: str(record.uuid),
@@ -345,7 +345,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         Milvus returns cosine similarity and inner product as they are, and
         the squared Euclidean distance.
         """
-        if self._vector_store_schema.similarity_metric is SimilarityMetric.EUCLIDEAN:
+        if self._store_schema.similarity_metric is SimilarityMetric.EUCLIDEAN:
             return math.sqrt(max(distance, 0.0))
         return distance
 
@@ -386,7 +386,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         filter_expr = _incarnation_filter(self._incarnation)
         if property_filter is not None:
             property_expr = _filter_expression(
-                property_filter, self._vector_store_schema.indexed_properties
+                property_filter, self._store_schema.indexed_properties
             )
             filter_expr = f"({filter_expr}) && ({property_expr})"
 
@@ -410,7 +410,7 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
                 entity = cast(Mapping[str, Any], raw_match["entity"])
                 score = self._score_from_distance(raw_match["distance"])
                 if not self._passes_threshold(
-                    score, score_threshold, self._vector_store_schema.similarity_metric
+                    score, score_threshold, self._store_schema.similarity_metric
                 ):
                     continue
 
@@ -518,7 +518,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
 
     def __init__(self, params: MilvusVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        MilvusVectorStore._validate_metric(params.vector_store_schema.similarity_metric)
+        MilvusVectorStore._validate_metric(params.store_schema.similarity_metric)
         super().__init__(params, metrics_prefix="vector_store_milvus")
         self._client = params.client
         self._collection_name = f"{_COLLECTION_NAME_PREFIX}{params.vector_store_name}"
@@ -536,11 +536,11 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             index_name=_VECTOR_FIELD,
             index_type=_VECTOR_INDEX_TYPE,
             metric_type=self._SIMILARITY_METRIC_TO_MILVUS_METRIC[
-                self._vector_store_schema.similarity_metric
+                self._store_schema.similarity_metric
             ],
             params=_VECTOR_INDEX_PARAMS,
         )
-        for key in self._vector_store_schema.indexed_properties:
+        for key in self._store_schema.indexed_properties:
             index_params.add_index(
                 field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
                 index_name=f"{_DECLARED_FIELD_PREFIX}{key}",
@@ -572,7 +572,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             schema.add_field(
                 field_name=_VECTOR_FIELD,
                 datatype=DataType.FLOAT_VECTOR,
-                dim=self._vector_store_schema.vector_dimensions,
+                dim=self._store_schema.vector_dimensions,
             )
             schema.add_field(
                 field_name=_PROPERTIES_FIELD,
@@ -581,7 +581,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             for (
                 key,
                 declared_type,
-            ) in self._vector_store_schema.indexed_properties.items():
+            ) in self._store_schema.indexed_properties.items():
                 if declared_type is str:
                     schema.add_field(
                         field_name=f"{_DECLARED_FIELD_PREFIX}{key}",
@@ -655,7 +655,7 @@ class MilvusVectorStore(RegistryBackedVectorStore[MilvusVectorStorePartition]):
             collection_name=self._collection_name,
             vector_store_name=self._vector_store_name,
             registration=registration,
-            vector_store_schema=self._vector_store_schema,
+            store_schema=self._store_schema,
             tracker=self._tracker,
             request_timeout_seconds=self._request_timeout_seconds,
         )

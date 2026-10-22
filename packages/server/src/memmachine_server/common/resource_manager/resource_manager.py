@@ -212,7 +212,7 @@ class ResourceManagerImpl:
         vector_store_id: str,
         *,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         """Return the store of one name on a configured vector store.
 
@@ -221,7 +221,7 @@ class ResourceManagerImpl:
         store = await self._database_manager.get_vector_store(
             vector_store_id,
             vector_store_name=vector_store_name,
-            vector_store_schema=vector_store_schema,
+            store_schema=store_schema,
         )
         key = (vector_store_id, vector_store_name)
         if key not in self._vector_store_purge_tasks:

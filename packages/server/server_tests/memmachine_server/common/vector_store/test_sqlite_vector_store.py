@@ -120,7 +120,7 @@ def _params(engine, **overrides) -> SQLiteVectorStoreParams:
     params: dict[str, Any] = {
         "sqlalchemy_engine": engine,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_store_schema": _schema(),
+        "store_schema": _schema(),
         "vector_search_engine_factory": _engine_factory,
     }
     params.update(overrides)
@@ -133,7 +133,7 @@ async def _store_with(store, vector_store_name: str, **overrides) -> SQLiteVecto
         _params(
             store._sqlalchemy_engine,
             vector_store_name=vector_store_name,
-            vector_store_schema=_schema(**overrides),
+            store_schema=_schema(**overrides),
         )
     )
     await other.startup()

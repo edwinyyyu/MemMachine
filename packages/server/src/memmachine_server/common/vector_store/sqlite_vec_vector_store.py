@@ -114,7 +114,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         vector_store_name: str,
         partition_key: str,
         incarnation: UUID,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
         records_table: Table,
         vector_table_name: str,
     ) -> None:
@@ -123,14 +123,14 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         self._vector_store_name = vector_store_name
         self._partition_key = partition_key
         self._incarnation = incarnation
-        self._vector_store_schema = vector_store_schema
+        self._store_schema = store_schema
         self._records_table = records_table
         self._vector_table_name = vector_table_name
 
     @property
     @override
-    def vector_store_schema(self) -> VectorStoreSchema:
-        return self._vector_store_schema
+    def store_schema(self) -> VectorStoreSchema:
+        return self._store_schema
 
     @staticmethod
     def _serialize_vector(vector: Sequence[float]) -> bytes:
@@ -165,11 +165,9 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         records = list(records)
         for record in records:
             validate_declared_types(
-                record.properties, self._vector_store_schema.indexed_properties
+                record.properties, self._store_schema.indexed_properties
             )
-            validate_dimensions(
-                record.vector, self._vector_store_schema.vector_dimensions
-            )
+            validate_dimensions(record.vector, self._store_schema.vector_dimensions)
 
         async with write_session(self._create_session) as session:
             await self._require_current(session)
@@ -237,9 +235,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         validate_limit(limit)
         query_vectors = list(query_vectors)
         for query_vector in query_vectors:
-            validate_query_vector(
-                query_vector, self._vector_store_schema.vector_dimensions
-            )
+            validate_query_vector(query_vector, self._store_schema.vector_dimensions)
         validate_score_threshold(score_threshold)
 
         if property_filter is not None and not is_valid_filter(property_filter):
@@ -309,11 +305,11 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
                 continue
 
             score = self._distance_to_score(
-                distance, self._vector_store_schema.similarity_metric
+                distance, self._store_schema.similarity_metric
             )
             if score_threshold is not None and (
                 score < score_threshold
-                if self._vector_store_schema.similarity_metric.higher_is_better
+                if self._store_schema.similarity_metric.higher_is_better
                 else score > score_threshold
             ):
                 continue
@@ -322,7 +318,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
 
         matches.sort(
             key=lambda match: match.score,
-            reverse=self._vector_store_schema.similarity_metric.higher_is_better,
+            reverse=self._store_schema.similarity_metric.higher_is_better,
         )
         return matches
 
@@ -454,12 +450,10 @@ class SQLiteVecVectorStore(VectorStore):
 
     def __init__(self, params: SQLiteVecVectorStoreParams) -> None:
         """Initialize the vector store with the provided parameters."""
-        SQLiteVecVectorStore._validate_metric(
-            params.vector_store_schema.similarity_metric
-        )
+        SQLiteVecVectorStore._validate_metric(params.store_schema.similarity_metric)
         self._engine = params.engine
         self._vector_store_name = params.vector_store_name
-        self._vector_store_schema = params.vector_store_schema
+        self._store_schema = params.store_schema
         self._create_session = async_sessionmaker(self._engine, expire_on_commit=False)
         self._sa_metadata = MetaData()
 
@@ -554,7 +548,7 @@ class SQLiteVecVectorStore(VectorStore):
             vector_store_name=self._vector_store_name,
             partition_key=partition_key,
             incarnation=incarnation,
-            vector_store_schema=self._vector_store_schema,
+            store_schema=self._store_schema,
             records_table=self._records_table(incarnation),
             vector_table_name=self._vector_table_name(incarnation),
         )
@@ -663,7 +657,7 @@ class SQLiteVecVectorStore(VectorStore):
                 records_table = self._records_table(incarnation)
                 vector_table_name = self._vector_table_name(incarnation)
                 distance_metric_value = self._SIMILARITY_METRIC_TO_SQLITE_VEC_DISTANCE[
-                    self._vector_store_schema.similarity_metric
+                    self._store_schema.similarity_metric
                 ]
 
                 connection = await session.connection()
@@ -675,13 +669,13 @@ class SQLiteVecVectorStore(VectorStore):
                 await session.execute(
                     text(
                         f"CREATE VIRTUAL TABLE [{vector_table_name}] USING vec0("
-                        f"vector float[{self._vector_store_schema.vector_dimensions}] distance_metric={distance_metric_value}"
+                        f"vector float[{self._store_schema.vector_dimensions}] distance_metric={distance_metric_value}"
                         f")"
                     )
                 )
 
                 properties_column = Column("properties", JSON)
-                for field_name in self._vector_store_schema.indexed_properties:
+                for field_name in self._store_schema.indexed_properties:
                     value_expr = properties_column[field_name]["v"].as_string()
                     compiled_expr = value_expr.compile(
                         dialect=session.bind.dialect,

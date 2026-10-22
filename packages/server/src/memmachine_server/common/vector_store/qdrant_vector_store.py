@@ -242,14 +242,14 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         client: AsyncQdrantClient,
         vector_store_name: str,
         registration: Registration,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
         tracker: OperationTracker,
     ) -> None:
         """Initialize with a Qdrant client and the registration the handle is bound to."""
         super().__init__(
             vector_store_name=vector_store_name,
             registration=registration,
-            vector_store_schema=vector_store_schema,
+            store_schema=store_schema,
             tracker=tracker,
         )
         self._client = client
@@ -327,7 +327,7 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         # Qdrant keeps only scores strictly better than its threshold, compared
         # in single precision, so send the next single-precision value on the
         # worse side; the check below applies the caller's threshold exactly.
-        higher_is_better = self._vector_store_schema.similarity_metric.higher_is_better
+        higher_is_better = self._store_schema.similarity_metric.higher_is_better
         qdrant_score_threshold = None
         if score_threshold is not None:
             worse = np.float32(-np.inf if higher_is_better else np.inf)
@@ -454,7 +454,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
     @override
     async def _prepare_storage(self) -> None:
         distance = QdrantVectorStore._SIMILARITY_METRIC_TO_QDRANT_DISTANCE[
-            self._vector_store_schema.similarity_metric
+            self._store_schema.similarity_metric
         ]
         # The collection and each payload index are created under their own
         # already-exists guard, so a creation that finds the collection there
@@ -463,7 +463,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
             await self._client.create_collection(
                 collection_name=self._vector_store_name,
                 vectors_config=models.VectorParams(
-                    size=self._vector_store_schema.vector_dimensions, distance=distance
+                    size=self._store_schema.vector_dimensions, distance=distance
                 ),
                 hnsw_config=models.HnswConfigDiff(
                     m=0,
@@ -491,7 +491,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
         for (
             prop_name,
             prop_type,
-        ) in self._vector_store_schema.indexed_properties.items():
+        ) in self._store_schema.indexed_properties.items():
             index_type = QdrantVectorStore._PROPERTY_TYPE_TO_INDEX_TYPE.get(prop_type)
             if index_type is not None:
                 indexes.append((prop_name, index_type))
@@ -522,7 +522,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
             client=self._client,
             vector_store_name=self._vector_store_name,
             registration=registration,
-            vector_store_schema=self._vector_store_schema,
+            store_schema=self._store_schema,
             tracker=self._tracker,
         )
 

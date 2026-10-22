@@ -23,7 +23,7 @@ from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_p
 @pytest.fixture
 def vector_store_partition() -> InMemoryVectorStorePartition:
     return InMemoryVectorStorePartition(
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={

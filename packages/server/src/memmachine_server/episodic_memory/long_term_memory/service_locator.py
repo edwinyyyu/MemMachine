@@ -164,7 +164,7 @@ async def event_backend_vector_store(
     return await resource_manager.get_vector_store(
         config.vector_store,
         vector_store_name=_EVENT_MEMORY_VECTOR_STORE_NAME,
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=embedder.dimensions,
             similarity_metric=embedder.similarity_metric,
             indexed_properties=event_backend_indexed_properties(),

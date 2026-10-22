@@ -113,7 +113,7 @@ def _params(engine, **overrides) -> SQLiteVecVectorStoreParams:
     params: dict[str, Any] = {
         "engine": engine,
         "vector_store_name": VECTOR_STORE_NAME,
-        "vector_store_schema": _schema(),
+        "store_schema": _schema(),
     }
     params.update(overrides)
     return SQLiteVecVectorStoreParams(**params)
@@ -127,7 +127,7 @@ async def _store_with(
         _params(
             store._engine,
             vector_store_name=vector_store_name,
-            vector_store_schema=_schema(**overrides),
+            store_schema=_schema(**overrides),
         )
     )
     await other.startup()
@@ -232,7 +232,7 @@ class TestPartitionLifecycle:
                 _params(
                     store._engine,
                     vector_store_name="bad_metric",
-                    vector_store_schema=_schema(similarity_metric=SimilarityMetric.DOT),
+                    store_schema=_schema(similarity_metric=SimilarityMetric.DOT),
                 )
             )
 

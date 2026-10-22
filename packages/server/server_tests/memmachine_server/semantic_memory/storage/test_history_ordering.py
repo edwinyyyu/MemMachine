@@ -43,7 +43,7 @@ async def sqlite_pgvector_history_storage(sqlalchemy_sqlite_engine: AsyncEngine)
 @pytest_asyncio.fixture
 async def sqlite_vector_history_storage(sqlalchemy_sqlite_engine: AsyncEngine):
     partition = InMemoryVectorStorePartition(
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={},

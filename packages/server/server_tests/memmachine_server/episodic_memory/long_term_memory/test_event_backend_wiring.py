@@ -159,7 +159,7 @@ def vector_store():
 @pytest.fixture
 def vector_store_partition(fake_embedder):
     return InMemoryVectorStorePartition(
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=fake_embedder.dimensions,
             similarity_metric=fake_embedder.similarity_metric,
             indexed_properties={
@@ -461,7 +461,7 @@ def _make_ltm(
     euclidean.
     """
     vector_store_partition = InMemoryVectorStorePartition(
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=embedder.dimensions,
             similarity_metric=embedder.similarity_metric,
             indexed_properties={

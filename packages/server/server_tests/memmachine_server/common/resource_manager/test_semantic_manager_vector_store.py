@@ -56,7 +56,7 @@ async def test_semantic_manager_builds_vector_store_backend(sqlalchemy_sqlite_en
     resource_manager.get_vector_store.assert_awaited_once_with(
         "semantic_vectors",
         vector_store_name="semantic_memory",
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=2,
             similarity_metric=SimilarityMetric.COSINE,
             indexed_properties={},

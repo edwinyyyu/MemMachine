@@ -50,7 +50,7 @@ _SCHEMA = VectorStoreSchema(
     similarity_metric=SimilarityMetric.COSINE,
     indexed_properties={},
 )
-_STORE: dict[str, Any] = {"vector_store_name": "c", "vector_store_schema": _SCHEMA}
+_STORE: dict[str, Any] = {"vector_store_name": "c", "store_schema": _SCHEMA}
 
 
 def _empty_vector_store_confs(conf: MagicMock) -> None:
@@ -459,7 +459,7 @@ async def test_get_vector_store_builds_a_qdrant_store(tmp_path):
     assert kwargs["client"] is mock_client
     assert kwargs["partition_registry"] is mock_registry_cls.return_value
     assert kwargs["vector_store_name"] == "c"
-    assert kwargs["vector_store_schema"] is _SCHEMA
+    assert kwargs["store_schema"] is _SCHEMA
     # Asserted as "not None" rather than pinned to a value: OperationTracker
     # accepts None and then discards every timing without error, so passing the
     # keyword is not the property that matters - passing a factory is.
@@ -728,7 +728,7 @@ async def test_get_vector_store_builds_a_milvus_store(tmp_path):
         client=mock_client,
         partition_registry=mock_registry_cls.return_value,
         vector_store_name="c",
-        vector_store_schema=_SCHEMA,
+        store_schema=_SCHEMA,
         request_timeout_seconds=7,
         max_varchar_length=2048,
         purge_batch_size=500,
@@ -920,7 +920,7 @@ async def test_sqlite_vector_store_creates_store_and_engine():
     params_kwargs = mock_params_cls.call_args.kwargs
     assert params_kwargs["sqlalchemy_engine"] is mock_engine
     assert params_kwargs["vector_store_name"] == "c"
-    assert params_kwargs["vector_store_schema"] is _SCHEMA
+    assert params_kwargs["store_schema"] is _SCHEMA
     assert params_kwargs["index_directory"] == "/tmp/vs"
     assert params_kwargs["save_threshold"] == 200
     assert callable(params_kwargs["vector_search_engine_factory"])
@@ -970,7 +970,7 @@ async def test_a_store_requested_with_another_schema_is_refused(tmp_path):
             await builder.get_vector_store(
                 "vs1",
                 vector_store_name="c",
-                vector_store_schema=VectorStoreSchema(
+                store_schema=VectorStoreSchema(
                     vector_dimensions=4, indexed_properties={}
                 ),
             )
@@ -1051,7 +1051,7 @@ async def test_stores_of_one_sqlite_vector_store_share_its_engine():
         second = await builder.get_vector_store(
             "vs1",
             vector_store_name="d",
-            vector_store_schema=_SCHEMA,
+            store_schema=_SCHEMA,
         )
 
     assert first is not second
@@ -1214,7 +1214,7 @@ async def test_sqlite_vec_vector_store_creates_store_and_engine():
     params_kwargs = mock_params_cls.call_args.kwargs
     assert params_kwargs["engine"] is mock_engine
     assert params_kwargs["vector_store_name"] == "c"
-    assert params_kwargs["vector_store_schema"] is _SCHEMA
+    assert params_kwargs["store_schema"] is _SCHEMA
 
     mock_store_cls.return_value.startup.assert_awaited_once()
     assert ("vec1", "c") in builder.vector_stores

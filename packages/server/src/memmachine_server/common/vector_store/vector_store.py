@@ -36,7 +36,7 @@ class VectorStorePartition(ABC):
     reflect it right away. A store that guarantees more states it.
 
     A partition stores every property of a record and filters on any key;
-    the keys its store declares (`vector_store_schema.indexed_properties`)
+    the keys its store declares (`store_schema.indexed_properties`)
     are indexed for
     filtering during a search, and their values are typed. Record
     properties not declared may have mixed-type values.
@@ -44,7 +44,7 @@ class VectorStorePartition(ABC):
 
     @property
     @abstractmethod
-    def vector_store_schema(self) -> VectorStoreSchema:
+    def store_schema(self) -> VectorStoreSchema:
         """The schema every record and query of this partition follows."""
         raise NotImplementedError
 
@@ -271,12 +271,12 @@ class VectorStoreParams(BaseModel):
     Attributes:
         vector_store_name (str):
             The name of this store.
-        vector_store_schema (VectorStoreSchema):
+        store_schema (VectorStoreSchema):
             The shape of this store's records and the metric its queries score by.
     """
 
     vector_store_name: str = Field(..., description="The name of this store")
-    vector_store_schema: VectorStoreSchema = Field(
+    store_schema: VectorStoreSchema = Field(
         ...,
         description=(
             "The shape of this store's records and the metric its queries score by"

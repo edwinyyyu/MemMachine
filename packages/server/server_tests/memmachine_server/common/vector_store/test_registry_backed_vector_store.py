@@ -75,7 +75,7 @@ class _Store(RegistryBackedVectorStore[_Partition]):
             RegistryBackedVectorStoreParams(
                 partition_registry=registry,
                 vector_store_name="store",
-                vector_store_schema=VectorStoreSchema(
+                store_schema=VectorStoreSchema(
                     vector_dimensions=vector_dimensions, indexed_properties={}
                 ),
             ),
@@ -99,7 +99,7 @@ class _Store(RegistryBackedVectorStore[_Partition]):
         return _Partition(
             vector_store_name=self._vector_store_name,
             registration=registration,
-            vector_store_schema=self._vector_store_schema,
+            store_schema=self._store_schema,
             tracker=self._tracker,
         )
 
@@ -139,7 +139,7 @@ def test_a_vector_store_name_outside_the_rule_is_refused(registry, vector_store_
         RegistryBackedVectorStoreParams(
             partition_registry=registry,
             vector_store_name=vector_store_name,
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=VECTOR_DIMENSIONS, indexed_properties={}
             ),
         )

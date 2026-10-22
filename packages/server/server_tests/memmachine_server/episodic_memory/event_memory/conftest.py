@@ -212,7 +212,7 @@ def fake_segment_store_partition():
 @pytest.fixture
 def fake_vector_store_partition(fake_embedder):
     return InMemoryVectorStorePartition(
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=fake_embedder.dimensions,
             similarity_metric=fake_embedder.similarity_metric,
             indexed_properties={

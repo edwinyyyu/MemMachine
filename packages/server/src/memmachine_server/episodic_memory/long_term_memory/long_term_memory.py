@@ -216,7 +216,7 @@ class LongTermMemory:
                 self._episode_storage = params.episode_storage
                 self._score_higher_is_better = (
                     params.reranker is not None
-                    or params.vector_store_partition.vector_store_schema.similarity_metric.higher_is_better
+                    or params.vector_store_partition.store_schema.similarity_metric.higher_is_better
                 )
 
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:

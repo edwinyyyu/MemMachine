@@ -152,7 +152,7 @@ class SemanticResourceManager:
         vector_store = await self._resource_manager.get_vector_store(
             vector_store_id,
             vector_store_name=_VECTOR_STORE_NAME,
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=vector_dimensions,
                 similarity_metric=self._conf.vector_similarity_metric,
                 indexed_properties={},

@@ -251,7 +251,7 @@ class TestEncodeEvents:
     ):
         # A partition without context fields.
         vector_store_partition = InMemoryVectorStorePartition(
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=fake_embedder.dimensions,
                 similarity_metric=SimilarityMetric.COSINE,
                 indexed_properties={"_timestamp": datetime.datetime},
@@ -279,7 +279,7 @@ class TestEncodeEvents:
     async def test_init_raises_on_missing_base_field(self, fake_embedder):
         # A partition without _timestamp — base field required at init.
         vector_store_partition = InMemoryVectorStorePartition(
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=fake_embedder.dimensions,
                 similarity_metric=SimilarityMetric.COSINE,
                 indexed_properties={},
@@ -884,7 +884,7 @@ class TestQueryWithFilter:
     ):
         """A user key the partition declares is on the record, and its condition reaches the search under its bare name."""
         vector_store_partition = InMemoryVectorStorePartition(
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=fake_embedder.dimensions,
                 similarity_metric=fake_embedder.similarity_metric,
                 indexed_properties={
@@ -1131,7 +1131,7 @@ _FIELDS_ON_THE_SEGMENT_ONLY = ("m.u1", "m.u2")
 def declaring_event_memory(fake_embedder, fake_segment_store_partition) -> EventMemory:
     """Event memory whose vector store declares `_d1`, `_d2`, and `_d3` but not `u1` or `u2`."""
     vector_store_partition = InMemoryVectorStorePartition(
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=fake_embedder.dimensions,
             similarity_metric=fake_embedder.similarity_metric,
             indexed_properties={
@@ -1419,7 +1419,7 @@ class TestIngestFormatOptions:
     @staticmethod
     def _build(embedder: FakeEmbedder) -> EventMemory:
         vector_store_partition = InMemoryVectorStorePartition(
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=embedder.dimensions,
                 similarity_metric=embedder.similarity_metric,
                 indexed_properties=EventMemory.expected_vector_store_indexed_properties(),
@@ -1461,7 +1461,7 @@ class TestIngestFormatOptions:
         embedder = _RecordingEmbedder()
         partition = InMemorySegmentStorePartition()
         vector_store_partition = InMemoryVectorStorePartition(
-            vector_store_schema=VectorStoreSchema(
+            store_schema=VectorStoreSchema(
                 vector_dimensions=embedder.dimensions,
                 similarity_metric=embedder.similarity_metric,
                 indexed_properties=EventMemory.expected_vector_store_indexed_properties(),

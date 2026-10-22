@@ -260,7 +260,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         vector_store_name: str,
         partition_key: str,
         incarnation: UUID,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
         index_path: str | None,
         save_threshold: int,
     ) -> None:
@@ -274,15 +274,15 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         self._partition_key = partition_key
         self._incarnation = incarnation
 
-        self._vector_store_schema = vector_store_schema
+        self._store_schema = store_schema
 
         self._index_path = index_path
         self._save_threshold = save_threshold
 
     @property
     @override
-    def vector_store_schema(self) -> VectorStoreSchema:
-        return self._vector_store_schema
+    def store_schema(self) -> VectorStoreSchema:
+        return self._store_schema
 
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold."""
@@ -312,11 +312,9 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         records = list(records)
         for record in records:
             validate_declared_types(
-                record.properties, self._vector_store_schema.indexed_properties
+                record.properties, self._store_schema.indexed_properties
             )
-            validate_dimensions(
-                record.vector, self._vector_store_schema.vector_dimensions
-            )
+            validate_dimensions(record.vector, self._store_schema.vector_dimensions)
 
         async with write_session(self._create_session) as session:
             await self._require_current(session)
@@ -417,9 +415,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         validate_limit(limit)
         query_vectors = list(query_vectors)
         for query_vector in query_vectors:
-            validate_query_vector(
-                query_vector, self._vector_store_schema.vector_dimensions
-            )
+            validate_query_vector(query_vector, self._store_schema.vector_dimensions)
         validate_score_threshold(score_threshold)
 
         if property_filter is not None and not is_valid_filter(property_filter):
@@ -487,7 +483,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
         async with self._create_session() as session:
             matched_rows = (await session.execute(fetch_records)).all()
 
-        higher_is_better = self._vector_store_schema.similarity_metric.higher_is_better
+        higher_is_better = self._store_schema.similarity_metric.higher_is_better
         matches: list[QueryMatch] = []
         for row in matched_rows:
             score = row_id_to_score.get(row.row_id)
@@ -503,7 +499,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         matches.sort(
             key=lambda match: match.score,
-            reverse=self._vector_store_schema.similarity_metric.higher_is_better,
+            reverse=self._store_schema.similarity_metric.higher_is_better,
         )
         return matches
 
@@ -666,13 +662,13 @@ class SQLiteVectorStore(VectorStore):
         """Initialize the vector store with the provided parameters."""
         self._sqlalchemy_engine = params.sqlalchemy_engine
         self._vector_store_name = params.vector_store_name
-        self._vector_store_schema = params.vector_store_schema
+        self._store_schema = params.store_schema
         self._vector_search_engine_factory = params.vector_search_engine_factory
         # An engine refuses a metric or dimensionality it cannot serve; one
         # built now refuses them before any partition is created.
         self._vector_search_engine_factory(
-            self._vector_store_schema.vector_dimensions,
-            self._vector_store_schema.similarity_metric,
+            self._store_schema.vector_dimensions,
+            self._store_schema.similarity_metric,
         )
 
         self._index_directory = (
@@ -889,7 +885,7 @@ class SQLiteVectorStore(VectorStore):
             vector_store_name=self._vector_store_name,
             partition_key=partition_key,
             incarnation=incarnation,
-            vector_store_schema=self._vector_store_schema,
+            store_schema=self._store_schema,
             index_path=str(index_path) if index_path is not None else None,
             save_threshold=self._save_threshold,
         )
@@ -1010,8 +1006,8 @@ class SQLiteVectorStore(VectorStore):
             return self._search_engines[incarnation]
 
         search_engine = self._vector_search_engine_factory(
-            self._vector_store_schema.vector_dimensions,
-            self._vector_store_schema.similarity_metric,
+            self._store_schema.vector_dimensions,
+            self._store_schema.similarity_metric,
         )
 
         index_path = self._index_path(incarnation)

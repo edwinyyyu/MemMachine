@@ -186,7 +186,7 @@ async def test_event_params_opens_the_session_partition_in_the_event_store():
     resource_manager.get_vector_store.assert_awaited_once_with(
         "vs",
         vector_store_name="event_memory",
-        vector_store_schema=VectorStoreSchema(
+        store_schema=VectorStoreSchema(
             vector_dimensions=3,
             similarity_metric=SimilarityMetric.COSINE,
             indexed_properties=event_backend_indexed_properties(),

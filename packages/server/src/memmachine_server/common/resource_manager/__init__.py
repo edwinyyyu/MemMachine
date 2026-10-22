@@ -51,7 +51,7 @@ class CommonResourceManager(Protocol):
         vector_store_id: str,
         *,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         """Return the store of one name on a configured vector store."""
         raise NotImplementedError

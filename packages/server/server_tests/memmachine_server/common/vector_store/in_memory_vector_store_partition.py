@@ -120,13 +120,13 @@ class InMemoryVectorStorePartition(VectorStorePartition):
     and full FilterExpr evaluation on record properties.
     """
 
-    def __init__(self, *, vector_store_schema: VectorStoreSchema) -> None:
-        self._vector_store_schema = vector_store_schema
+    def __init__(self, *, store_schema: VectorStoreSchema) -> None:
+        self._store_schema = store_schema
         self.records: dict[UUID, Record] = {}
 
     @property
-    def vector_store_schema(self) -> VectorStoreSchema:
-        return self._vector_store_schema
+    def store_schema(self) -> VectorStoreSchema:
+        return self._store_schema
 
     async def upsert(self, *, records: Iterable[Record]) -> None:
         for record in records:
@@ -144,7 +144,7 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
-        metric = self._vector_store_schema.similarity_metric
+        metric = self._store_schema.similarity_metric
         higher_is_better = metric.higher_is_better
 
         results: list[QueryResult] = []

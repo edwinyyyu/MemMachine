@@ -621,7 +621,7 @@ class DatabaseManager:
         vector_store_id: str,
         conf: QdrantConf,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
@@ -643,7 +643,7 @@ class DatabaseManager:
                 client=client,
                 partition_registry=partition_registry,
                 vector_store_name=vector_store_name,
-                vector_store_schema=vector_store_schema,
+                store_schema=store_schema,
                 metrics_factory=conf.get_metrics_factory(),
             )
         )
@@ -722,7 +722,7 @@ class DatabaseManager:
         vector_store_id: str,
         conf: MilvusConf,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         partition_registry = SQLAlchemyVectorStorePartitionRegistry(
             SQLAlchemyVectorStorePartitionRegistryParams(
@@ -744,7 +744,7 @@ class DatabaseManager:
                 client=client,
                 partition_registry=partition_registry,
                 vector_store_name=vector_store_name,
-                vector_store_schema=vector_store_schema,
+                store_schema=store_schema,
                 request_timeout_seconds=conf.request_timeout_seconds,
                 max_varchar_length=conf.max_varchar_length,
                 purge_batch_size=conf.purge_batch_size,
@@ -831,7 +831,7 @@ class DatabaseManager:
         vector_store_id: str,
         conf: SQLiteVectorStoreConf,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         from memmachine_server.common.vector_store.sqlite_vector_store import (
             SQLiteVectorStore,
@@ -842,7 +842,7 @@ class DatabaseManager:
             SQLiteVectorStoreParams(
                 sqlalchemy_engine=self._vector_store_sql_engine(vector_store_id, conf),
                 vector_store_name=vector_store_name,
-                vector_store_schema=vector_store_schema,
+                store_schema=store_schema,
                 vector_search_engine_factory=self._make_sqlite_search_engine_factory(
                     conf
                 ),
@@ -856,7 +856,7 @@ class DatabaseManager:
         vector_store_id: str,
         conf: SQLiteVecVectorStoreConf,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         from memmachine_server.common.vector_store.sqlite_vec_vector_store import (
             SQLiteVecVectorStore,
@@ -867,7 +867,7 @@ class DatabaseManager:
             SQLiteVecVectorStoreParams(
                 engine=self._vector_store_sql_engine(vector_store_id, conf),
                 vector_store_name=vector_store_name,
-                vector_store_schema=vector_store_schema,
+                store_schema=store_schema,
             )
         )
 
@@ -898,7 +898,7 @@ class DatabaseManager:
         vector_store_id: str,
         *,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         """Return the store of one name on a configured vector store, building it on first use.
 
@@ -920,11 +920,11 @@ class DatabaseManager:
                 store = await self._build_vector_store(
                     vector_store_id,
                     vector_store_name,
-                    vector_store_schema,
+                    store_schema,
                 )
                 self.vector_stores[key] = store
-                self._vector_store_schemas[key] = vector_store_schema
-            elif self._vector_store_schemas[key] != vector_store_schema:
+                self._vector_store_schemas[key] = store_schema
+            elif self._vector_store_schemas[key] != store_schema:
                 raise VectorStoreConfigurationError(
                     f"Vector store {vector_store_name!r} on '{vector_store_id}' "
                     "was built with another schema"
@@ -948,7 +948,7 @@ class DatabaseManager:
         self,
         vector_store_id: str,
         vector_store_name: str,
-        vector_store_schema: VectorStoreSchema,
+        store_schema: VectorStoreSchema,
     ) -> VectorStore:
         conf = self._vector_store_conf(vector_store_id)
         try:
@@ -958,28 +958,28 @@ class DatabaseManager:
                         vector_store_id,
                         conf,
                         vector_store_name,
-                        vector_store_schema,
+                        store_schema,
                     )
                 case MilvusConf():
                     store = await self._build_milvus_store(
                         vector_store_id,
                         conf,
                         vector_store_name,
-                        vector_store_schema,
+                        store_schema,
                     )
                 case SQLiteVectorStoreConf():
                     store = await self._build_sqlite_vector_store(
                         vector_store_id,
                         conf,
                         vector_store_name,
-                        vector_store_schema,
+                        store_schema,
                     )
                 case SQLiteVecVectorStoreConf():
                     store = await self._build_sqlite_vec_vector_store(
                         vector_store_id,
                         conf,
                         vector_store_name,
-                        vector_store_schema,
+                        store_schema,
                     )
             await store.startup()
         except Exception as e:
