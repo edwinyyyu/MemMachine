@@ -440,7 +440,7 @@ class MilvusVectorStoreParams(RegistryBackedVectorStoreParams):
     """
     Parameters for MilvusVectorStore.
 
-    The similarity metric is cosine, dot, or euclidean.
+    The schema's similarity metric must be cosine, dot, or euclidean.
 
     Attributes:
         client (AsyncMilvusClient):

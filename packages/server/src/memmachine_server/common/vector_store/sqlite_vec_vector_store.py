@@ -399,8 +399,8 @@ class SQLiteVecVectorStoreParams(VectorStoreParams):
     """
     Parameters for constructing a SQLiteVecVectorStore.
 
-    Stores of different names may share the engine. The similarity metric is
-    cosine or euclidean.
+    Stores of different names may share the engine. The schema's similarity
+    metric must be cosine or euclidean.
 
     Attributes:
         engine (AsyncEngine):
