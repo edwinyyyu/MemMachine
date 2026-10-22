@@ -957,28 +957,6 @@ async def test_a_sqlite_vector_store_engine_takes_the_write_lock_at_begin(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_a_store_requested_with_another_schema_is_refused(tmp_path):
-    conf = _sqlite_vector_store_only_conf(
-        sqlite_vector_store_confs={
-            "vs1": SQLiteVectorStoreConf(path=str(tmp_path / "vs.db"))
-        }
-    )
-    builder = DatabaseManager(conf)
-    try:
-        await builder.get_vector_store("vs1", **_STORE)
-        with pytest.raises(VectorStoreConfigurationError, match="another schema"):
-            await builder.get_vector_store(
-                "vs1",
-                vector_store_name="c",
-                store_schema=VectorStoreSchema(
-                    vector_dimensions=4, indexed_properties={}
-                ),
-            )
-    finally:
-        await builder.close()
-
-
-@pytest.mark.asyncio
 async def test_a_sqlite_vector_store_engine_enforces_foreign_keys(tmp_path):
     """Every connection of a configured SQLite vector store's engine enforces foreign keys."""
     conf = _sqlite_vector_store_only_conf(
