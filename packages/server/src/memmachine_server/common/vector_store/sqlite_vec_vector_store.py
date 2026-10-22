@@ -93,9 +93,6 @@ class _PartitionRow(BaseSQLiteVecVectorStore):
     partition_key: MappedColumn[str] = mapped_column(
         String(_PARTITION_KEY_MAX_BYTES), primary_key=True
     )
-    # The partition's current life. Its tables are named by it, so a
-    # partition created again under the key gets tables of its own, which a
-    # stale handle never reaches.
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
 
 

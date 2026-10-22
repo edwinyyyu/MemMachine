@@ -119,9 +119,6 @@ class _PartitionRow(BaseSQLiteVectorStore):
     partition_key: MappedColumn[str] = mapped_column(
         String(_PARTITION_KEY_MAX_BYTES), primary_key=True
     )
-    # The partition's current life. Its records table, search engine and
-    # index file are named by it, so a partition created again under the key
-    # gets resources of its own, which a stale handle never reaches.
     incarnation: MappedColumn[UUID] = mapped_column(Uuid, nullable=False, unique=True)
     # Flips to True after the first successful index save.
     # Once True, the on-disk index file is part of the durable contract:
