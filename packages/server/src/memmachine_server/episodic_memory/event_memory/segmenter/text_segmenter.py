@@ -1,5 +1,6 @@
 """Segmenters for events containing TextBlocks."""
 
+from collections.abc import Iterable
 from typing import override
 from uuid import uuid4
 
@@ -17,7 +18,12 @@ from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import (
 
 
 class TextSegmenter(Segmenter):
-    """Segments events via recursive character splitting."""
+    """Segments events via recursive character splitting.
+
+    A text block's segments, joined in offset order, are its text exactly.
+    Whitespace between two segments ends the earlier one, so only a block's
+    first segment begins with whitespace.
+    """
 
     def __init__(self, max_chunk_length: int = 500) -> None:
         """
@@ -25,7 +31,8 @@ class TextSegmenter(Segmenter):
 
         Args:
             max_chunk_length (int):
-                Max code-point length for text chunks
+                Max code-point length for text chunks, not counting
+                the whitespace at their ends
                 (default: 500).
         """
         self._text_splitter = RecursiveCharacterTextSplitter(
@@ -64,6 +71,7 @@ class TextSegmenter(Segmenter):
                 "",
             ],
             keep_separator="end",
+            strip_whitespace=False,
         )
 
     @override
@@ -77,7 +85,9 @@ class TextSegmenter(Segmenter):
         for index, block in enumerate(event.blocks):
             match block:
                 case TextBlock(text=text):
-                    chunks = self._text_splitter.split_text(text)
+                    chunks = _move_leading_whitespace_back(
+                        self._text_splitter.split_text(text)
+                    )
                     segments.extend(
                         Segment(
                             uuid=uuid4(),
@@ -96,3 +106,27 @@ class TextSegmenter(Segmenter):
                         f"Unsupported block type: {type(block).__name__}"
                     )
         return segments
+
+
+def _move_leading_whitespace_back(chunks: Iterable[str]) -> list[str]:
+    """Move whitespace that begins a chunk to the end of the chunk before it.
+
+    Whitespace before any content begins the first chunk instead, so only
+    the first chunk begins with whitespace, and only text of whitespace
+    alone yields a chunk of whitespace alone.
+    """
+    moved: list[str] = []
+    leading = ""
+    for chunk in chunks:
+        content = chunk.lstrip()
+        whitespace = chunk[: len(chunk) - len(content)]
+        if moved:
+            moved[-1] += whitespace
+        else:
+            leading += whitespace
+        if content:
+            moved.append(leading + content)
+            leading = ""
+    if leading:
+        moved.append(leading)
+    return moved
