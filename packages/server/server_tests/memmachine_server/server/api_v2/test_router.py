@@ -191,15 +191,15 @@ def test_create_project_with_explicit_event_backend(client, mock_memmachine):
     body = response.json()
     assert body["config"]["backend"] == "event"
     assert body["config"]["embedder"] == ""
-    assert body["config"]["vector_store"] == ""
-    assert body["config"]["segment_store"] == ""
+    assert "vector_store" not in body["config"]
+    assert "segment_store" not in body["config"]
 
-    # Server forwards the event-shaped partial to create_session unchanged.
+    # The request's store ids are not part of the API, so none reach the session.
     mock_memmachine.create_session.assert_awaited_once()
     user_conf = mock_memmachine.create_session.call_args[1]["user_conf"]
     assert user_conf.long_term_memory.backend == "event"
-    assert user_conf.long_term_memory.vector_store == "vstore"
-    assert user_conf.long_term_memory.segment_store == "pgengine"
+    assert user_conf.long_term_memory.vector_store is None
+    assert user_conf.long_term_memory.segment_store is None
 
 
 def test_create_project_without_backend_passes_none_through(client, mock_memmachine):
