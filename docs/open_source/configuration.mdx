@@ -144,7 +144,9 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
     vector store, segment store, or embedder is refused when it is created.
     Each session keeps the vector store, segment store, and embedder it was
     created with, so changing them here, or switching the backend, leaves
-    the event memory of existing sessions unopenable.
+    the event memory of existing sessions unopenable. Deleting such a
+    session deletes its event memory from the stores configured here, if
+    any; what it kept in other stores stays there.
   </Accordion>
 
   <Accordion title="Retrieval Agent">

@@ -155,6 +155,26 @@ def is_deployment_event_memory(
     ) == (deployment.vector_store, deployment.segment_store, deployment.embedder)
 
 
+def deployment_event_memory(
+    config: EventLongTermMemoryConf, deployment: LongTermMemoryConfPartial | None
+) -> EventLongTermMemoryConf | None:
+    """An event memory on the deployment's vector store, segment store, and embedder, or None if the deployment configures none."""
+    if (
+        deployment is None
+        or deployment.vector_store is None
+        or deployment.segment_store is None
+        or deployment.embedder is None
+    ):
+        return None
+    return config.model_copy(
+        update={
+            "vector_store": deployment.vector_store,
+            "segment_store": deployment.segment_store,
+            "embedder": deployment.embedder,
+        }
+    )
+
+
 async def event_backend_vector_store(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
