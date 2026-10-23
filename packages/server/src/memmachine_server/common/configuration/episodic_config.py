@@ -144,7 +144,10 @@ class TextSegmenterConf(BaseModel):
     type: Literal["text"] = "text"
     max_chunk_length: int = Field(
         500,
-        description="Max code-point length for text chunks",
+        description=(
+            "Max code-point length for text chunks, not counting the whitespace "
+            "at their ends"
+        ),
     )
 
 
