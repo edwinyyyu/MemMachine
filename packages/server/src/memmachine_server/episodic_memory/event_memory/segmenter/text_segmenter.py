@@ -1,6 +1,8 @@
 """Segmenters for events containing TextBlocks."""
 
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Sequence
+from itertools import pairwise
 from typing import override
 from uuid import uuid4
 
@@ -53,9 +55,11 @@ _SEPARATORS = (
 class TextSegmenter(Segmenter):
     """Segments events via recursive character splitting.
 
-    A text block's segments, joined in offset order, are its text exactly.
-    Whitespace between two segments ends the earlier one, so only a block's
-    first segment begins with whitespace.
+    A text block's segments, joined in offset order, are its text exactly,
+    and none is longer than `max_chunk_length`. Whitespace between two
+    segments ends the earlier one through its last newline, and the rest, a
+    line's indentation, begins the later one, unless the whitespace is too
+    long for a segment to hold, in which case it is cut to fit.
     """
 
     def __init__(self, max_chunk_length: int = 500) -> None:
@@ -64,8 +68,7 @@ class TextSegmenter(Segmenter):
 
         Args:
             max_chunk_length (int):
-                Max code-point length for text chunks, not counting
-                the whitespace at their ends
+                Max code-point length for text chunks
                 (default: 500).
 
         Raises:
@@ -88,9 +91,7 @@ class TextSegmenter(Segmenter):
         for index, block in enumerate(event.blocks):
             match block:
                 case TextBlock(text=text):
-                    chunks = _move_leading_whitespace_back(
-                        _split(text, _SEPARATORS, self._max_chunk_length)
-                    )
+                    chunks = _split(text, _SEPARATORS, self._max_chunk_length)
                     segments.extend(
                         Segment(
                             uuid=uuid4(),
@@ -114,10 +115,11 @@ class TextSegmenter(Segmenter):
 def _split(text: str, separators: Sequence[str], max_length: int) -> list[str]:
     """Split text into chunks of at most `max_length` that join to it.
 
-    Splits at the first separator the text contains, then merges adjacent
-    splits while they fit. A split of `max_length` or more is split again
-    at the separators after that one. The last separator must be the empty
-    string.
+    Cuts at `_cuts` for the first separator the text contains, then merges
+    adjacent pieces while they fit. A piece of `max_length` or more is split
+    again at the separators after that one. The last separator must be the
+    empty string, which cuts between characters; a piece still over
+    `max_length` there is cut every `max_length` code points.
     """
     position, separator = next(
         (position, separator)
@@ -125,52 +127,67 @@ def _split(text: str, separators: Sequence[str], max_length: int) -> list[str]:
         if not separator or separator in text
     )
     remaining = separators[position + 1 :]
-    if separator:
-        parts = text.split(separator)
-        splits = [part + separator for part in parts[:-1]] + parts[-1:]
-    else:
-        splits = list(text)
 
     chunks: list[str] = []
     chunk = ""
-    for split in splits:
-        if len(split) >= max_length:
+    for start, end in pairwise([0, *_cuts(text, separator), len(text)]):
+        piece = text[start:end]
+        if len(piece) >= max_length:
             if chunk:
                 chunks.append(chunk)
                 chunk = ""
             if remaining:
-                chunks.extend(_split(split, remaining, max_length))
+                chunks.extend(_split(piece, remaining, max_length))
             else:
-                chunks.append(split)
-        elif len(chunk) + len(split) > max_length:
+                chunks.extend(
+                    piece[offset : offset + max_length]
+                    for offset in range(0, len(piece), max_length)
+                )
+        elif len(chunk) + len(piece) > max_length:
             chunks.append(chunk)
-            chunk = split
+            chunk = piece
         else:
-            chunk += split
+            chunk += piece
     if chunk:
         chunks.append(chunk)
     return chunks
 
 
-def _move_leading_whitespace_back(chunks: Iterable[str]) -> list[str]:
-    """Move whitespace that begins a chunk to the end of the chunk before it.
+def _cuts(text: str, separator: str) -> list[int]:
+    """Cut after each occurrence of `separator`, in ascending order.
 
-    Whitespace before any content begins the first chunk instead, so only
-    the first chunk begins with whitespace, and only text of whitespace
-    alone yields a chunk of whitespace alone.
+    A cut that touches whitespace moves to where `_whitespace_cut` cuts that
+    whitespace, and is dropped if the whitespace has no cut.
     """
-    moved: list[str] = []
-    leading = ""
-    for chunk in chunks:
-        content = chunk.lstrip()
-        whitespace = chunk[: len(chunk) - len(content)]
-        if moved:
-            moved[-1] += whitespace
-        else:
-            leading += whitespace
-        if content:
-            moved.append(leading + content)
-            leading = ""
-    if leading:
-        moved.append(leading)
-    return moved
+    cuts: list[int] = []
+    run_end = -1
+    run_cut: int | None = None
+    for match in re.finditer(re.escape(separator), text):
+        cut: int | None = match.end()
+        if (cut > 0 and text[cut - 1].isspace()) or (
+            cut < len(text) and text[cut].isspace()
+        ):
+            if cut > run_end:
+                run_end, run_cut = _whitespace_cut(text, cut)
+            cut = run_cut
+        if cut is not None and 0 < cut < len(text) and (not cuts or cut > cuts[-1]):
+            cuts.append(cut)
+    return cuts
+
+
+def _whitespace_cut(text: str, position: int) -> tuple[int, int | None]:
+    """Find where the whitespace run at `position` ends and where it is cut.
+
+    The text before the run takes it through its last newline, or all of it
+    if it has none. A run at either end of the text belongs to the text it
+    touches, so it has no cut (None).
+    """
+    start = position
+    while start > 0 and text[start - 1].isspace():
+        start -= 1
+    end = position
+    while end < len(text) and text[end].isspace():
+        end += 1
+    if start == 0 or end == len(text):
+        return end, None
+    return end, text.rfind("\n", start, end) + 1 or end
