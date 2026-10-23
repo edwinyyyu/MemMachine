@@ -412,6 +412,13 @@ curl -X GET "http://localhost:8080/metrics"
 
 **Response**: Returns Prometheus-formatted metrics.
 
+These metrics show how close the server is to saturation:
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `db_client_connection_count{pool_name, state="used"}` | Gauge | Connections checked out of a relational database's pool, summed over the worker processes. `pool_name` is the database's name under `resources.databases`. |
+| `db_client_connection_wait_time_seconds{pool_name}` | Histogram | Time each checkout took to get a connection from the pool, including checkouts that failed. |
+
 ## Common Integration Patterns
 
 ### Pattern 1: Chatbot with Memory
