@@ -36,7 +36,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStoreCollectionConfig,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
-    WholeTextDeriver,
+    TrimmedTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from memmachine_server.episodic_memory.event_memory.segment_store import (
@@ -206,7 +206,7 @@ def long_term_memory(
             episode_storage=fake_episode_storage,
             embedder=fake_embedder,
             segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            deriver=TrimmedTextDeriver(),
         ),
     )
 
@@ -464,7 +464,7 @@ async def test_unknown_user_metadata_field_raises_when_schema_configured(
             episode_storage=fake_episode_storage,
             embedder=fake_embedder,
             segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            deriver=TrimmedTextDeriver(),
             user_property_keys=frozenset({"color"}),
         ),
     )
@@ -528,7 +528,7 @@ def _make_ltm(
             episode_storage=FakeEpisodeStorage({e.uid: e for e in episodes}),
             embedder=embedder,
             segmenter=segmenter if segmenter is not None else PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            deriver=TrimmedTextDeriver(),
         ),
     )
 
@@ -728,7 +728,7 @@ def timeline_long_term_memory(
             episode_storage=timeline_storage,
             embedder=RankedEmbedder(),
             segmenter=PassthroughSegmenter(),
-            deriver=WholeTextDeriver(),
+            deriver=TrimmedTextDeriver(),
         ),
     )
 

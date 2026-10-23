@@ -1,5 +1,6 @@
-"""Tests for WholeTextDeriver and SentenceTextDeriver."""
+"""Tests for TrimmedTextDeriver and SentenceTextDeriver."""
 
+import json
 from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
@@ -17,7 +18,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
 )
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
-    WholeTextDeriver,
+    TrimmedTextDeriver,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -67,13 +68,13 @@ def _block_text(block: Block) -> str:
     pytest.fail(f"Unexpected block type: {type(block).__name__}")
 
 
-class TestWholeTextDeriver:
+class TestTrimmedTextDeriver:
     async def test_none_prepends_full_date_by_default(self):
         seg = _make_segment(block=TextBlock(text="hello world"))
 
         # No format_options -> the deriver picks its nonempty default
         # (full date, no time); the prefix is NOT omitted.
-        result = await WholeTextDeriver().derive(seg, format_options=None)
+        result = await TrimmedTextDeriver().derive(seg, format_options=None)
 
         assert len(result) == 1
         derivative = result[0]
@@ -90,7 +91,7 @@ class TestWholeTextDeriver:
             context=ProducerContext(producer="Alice"),
         )
 
-        result = await WholeTextDeriver().derive(seg)
+        result = await TrimmedTextDeriver().derive(seg)
 
         assert len(result) == 1
         assert result[0].block == TextBlock(
@@ -103,7 +104,7 @@ class TestWholeTextDeriver:
             context=ProducerContext(producer="Alice"),
         )
 
-        result = await WholeTextDeriver().derive(
+        result = await TrimmedTextDeriver().derive(
             seg, format_options=FormatOptions(time_style="short")
         )
 
@@ -117,7 +118,7 @@ class TestWholeTextDeriver:
 
         # The prefix is dropped ONLY when both styles are explicitly None;
         # the message text is still JSON-dumped.
-        result = await WholeTextDeriver().derive(
+        result = await TrimmedTextDeriver().derive(
             seg, format_options=FormatOptions(date_style=None, time_style=None)
         )
 
@@ -129,7 +130,7 @@ class TestWholeTextDeriver:
             properties={"color": "red", "score": 7},
         )
 
-        result = await WholeTextDeriver().derive(seg)
+        result = await TrimmedTextDeriver().derive(seg)
 
         assert result[0].properties == {"color": "red", "score": 7}
 
@@ -137,15 +138,48 @@ class TestWholeTextDeriver:
         seg = _make_segment_with_unsupported_block()
 
         with pytest.raises(NotImplementedError, match="Unsupported block type"):
-            await WholeTextDeriver().derive(seg)
+            await TrimmedTextDeriver().derive(seg)
 
     async def test_each_derive_call_emits_unique_uuid(self):
         seg = _make_segment(block=TextBlock(text="x"))
 
-        result1 = await WholeTextDeriver().derive(seg)
-        result2 = await WholeTextDeriver().derive(seg)
+        result1 = await TrimmedTextDeriver().derive(seg)
+        result2 = await TrimmedTextDeriver().derive(seg)
 
         assert result1[0].uuid != result2[0].uuid
+
+    async def test_embeds_text_without_whitespace_at_its_ends(self):
+        seg = _make_segment(
+            block=TextBlock(text="  hello world.\n\n"),
+            context=ProducerContext(producer="Alice"),
+        )
+
+        result = await TrimmedTextDeriver().derive(seg)
+
+        assert len(result) == 1
+        derivative = result[0]
+        assert derivative.block == TextBlock(
+            text='[Thursday, January 15, 2026] Alice: "hello world."'
+        )
+        assert derivative.segment_uuid == seg.uuid
+        assert derivative.timestamp == seg.timestamp
+        assert derivative.context == seg.context
+
+    async def test_keeps_inner_whitespace(self):
+        seg = _make_segment(block=TextBlock(text="line one\n\n    line two\n"))
+
+        result = await TrimmedTextDeriver().derive(
+            seg, format_options=FormatOptions(date_style=None, time_style=None)
+        )
+
+        assert result[0].block == TextBlock(text=json.dumps("line one\n\n    line two"))
+
+    async def test_whitespace_only_segment_has_no_derivative(self):
+        seg = _make_segment(block=TextBlock(text=" \n\t "))
+
+        result = await TrimmedTextDeriver().derive(seg)
+
+        assert result == []
 
 
 class TestSentenceTextDeriver:

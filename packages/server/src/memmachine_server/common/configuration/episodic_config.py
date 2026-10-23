@@ -154,10 +154,10 @@ SegmenterConf = Annotated[
 ]
 
 
-class WholeTextDeriverConf(BaseModel):
-    """Whole-text deriver: one derivative per segment."""
+class TrimmedTextDeriverConf(BaseModel):
+    """Trimmed-text deriver: one derivative per segment, without edge whitespace."""
 
-    type: Literal["whole_text"] = "whole_text"
+    type: Literal["trimmed_text"] = "trimmed_text"
 
 
 class SentenceTextDeriverConf(BaseModel):
@@ -167,7 +167,7 @@ class SentenceTextDeriverConf(BaseModel):
 
 
 DeriverConf = Annotated[
-    WholeTextDeriverConf | SentenceTextDeriverConf,
+    TrimmedTextDeriverConf | SentenceTextDeriverConf,
     Field(discriminator="type"),
 ]
 
@@ -240,8 +240,8 @@ class EventLongTermMemoryConf(BaseModel):
         description="Segmenter sub-configuration (default: passthrough)",
     )
     deriver: DeriverConf = Field(
-        default_factory=WholeTextDeriverConf,
-        description="Deriver sub-configuration (default: whole_text)",
+        default_factory=TrimmedTextDeriverConf,
+        description="Deriver sub-configuration (default: trimmed_text)",
     )
 
 
