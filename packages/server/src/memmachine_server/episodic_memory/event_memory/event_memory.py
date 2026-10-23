@@ -11,7 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, InstanceOf
 
-from memmachine_server.common.data_types import PropertyValue
+from memmachine_server.common.data_types import PropertyType, PropertyValue
 from memmachine_server.common.embedder import Embedder
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -116,7 +116,7 @@ class EventMemory:
     )
 
     @classmethod
-    def expected_vector_store_indexed_properties(cls) -> dict[str, type[PropertyValue]]:
+    def expected_vector_store_indexed_properties(cls) -> dict[str, PropertyType]:
         """
         Return the properties EventMemory requires its vector store to declare.
 

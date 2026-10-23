@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
+    PropertyType,
     PropertyValue,
 )
 from memmachine_server.common.filter.filter_parser import (
@@ -59,7 +60,7 @@ def validate_partition_key(partition_key: str) -> None:
 
 def validate_declared_types(
     properties: Mapping[str, PropertyValue],
-    indexed_properties: Mapping[str, type[PropertyValue]],
+    indexed_properties: Mapping[str, PropertyType],
 ) -> None:
     """Raise unless every declared property holds a value of its declared type."""
     for key, value in properties.items():
