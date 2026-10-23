@@ -5,7 +5,22 @@ import os
 from pathlib import Path
 
 import psutil
-from prometheus_client import REGISTRY, CollectorRegistry, multiprocess
+from prometheus_client import (
+    REGISTRY,
+    CollectorRegistry,
+    multiprocess,
+    start_http_server,
+)
+
+
+def start_metrics_server(*, host: str, port: int) -> None:
+    """Serve scrapes of `metrics_registry()` from a daemon thread.
+
+    The thread answers while the event loop is busy, unless native code holds
+    the GIL. With PROMETHEUS_MULTIPROC_DIR set, it serves every worker's
+    metrics from any process.
+    """
+    start_http_server(port, addr=host, registry=metrics_registry())
 
 
 def metrics_registry() -> CollectorRegistry:

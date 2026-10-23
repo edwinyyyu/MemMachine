@@ -1,14 +1,21 @@
 """Tests for the metrics the server's worker processes share."""
 
 import os
+import socket
 import subprocess
 import sys
 import textwrap
+import threading
+import time
+import urllib.request
 from pathlib import Path
+
+import pytest
 
 from memmachine_server.server.metrics import (
     metrics_registry,
     remove_exited_process_gauges,
+    start_metrics_server,
 )
 
 ENV_VAR = "PROMETHEUS_MULTIPROC_DIR"
@@ -71,3 +78,30 @@ def test_a_summed_gauge_stops_counting_an_exited_worker(monkeypatch, tmp_path):
 def test_removing_exited_gauges_without_a_directory_is_a_no_op(monkeypatch):
     monkeypatch.delenv(ENV_VAR, raising=False)
     remove_exited_process_gauges()
+
+
+@pytest.mark.asyncio
+async def test_the_metrics_server_answers_while_the_event_loop_is_busy(monkeypatch):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    start_metrics_server(host="127.0.0.1", port=port)
+
+    scrapes: list[bytes] = []
+    scraper = threading.Thread(target=_scrape, args=(port, scrapes))
+    scraper.start()
+    # Hold the event loop, as a saturated worker would.
+    busy_until = time.monotonic() + 1
+    while time.monotonic() < busy_until:
+        pass
+    answered_while_busy = not scraper.is_alive()
+    scraper.join()
+
+    assert answered_while_busy
+    assert b"python_info" in scrapes[0]
+
+
+def _scrape(port: int, scrapes: list[bytes]) -> None:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+        scrapes.append(response.read())

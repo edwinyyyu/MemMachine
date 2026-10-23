@@ -261,6 +261,7 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
     |-----------|-------------|---------|
     | `host`    | API server interface host. | `localhost` |
     | `port`    | API server port. | `8080` |
+    | `metrics_port` | Port for a Prometheus metrics endpoint served from its own thread, so it answers while the server is busy. With `MEMMACHINE_WORKERS` above 1, it reports every worker. | unset |
   </Accordion>
 
   <Accordion title="Prompt">

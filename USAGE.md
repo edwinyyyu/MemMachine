@@ -412,6 +412,11 @@ curl -X GET "http://localhost:8080/metrics"
 
 **Response**: Returns Prometheus-formatted metrics.
 
+Set `server.metrics_port` to also serve them on a port of their own. That
+endpoint answers from its own thread rather than the event loop, so a busy
+server still answers scrapes, and with `MEMMACHINE_WORKERS` above 1 it reports
+every worker.
+
 These metrics show how close the server is to saturation:
 
 | Metric | Type | Meaning |
