@@ -246,8 +246,8 @@ class EventLongTermMemoryConf(BaseModel):
         description="Segmenter sub-configuration (default: passthrough)",
     )
     deriver: DeriverConf = Field(
-        default_factory=WholeTextDeriverConf,
-        description="Deriver sub-configuration (default: whole_text)",
+        default_factory=TextDeriverConf,
+        description="Deriver sub-configuration (default: text)",
     )
 
 

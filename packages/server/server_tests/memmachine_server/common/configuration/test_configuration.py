@@ -17,7 +17,6 @@ from memmachine_server.common.configuration.episodic_config import (
     PassthroughSegmenterConf,
     ShortTermMemoryConfPartial,
     TextDeriverConf,
-    WholeTextDeriverConf,
 )
 from memmachine_server.common.configuration.log_conf import LogLevel
 
@@ -287,7 +286,7 @@ def test_episodic_memory_conf_with_explicit_event_backend_loads_as_event():
     assert conf.long_term_memory.segment_store == "pg_engine"
     # Default sub-configs.
     assert isinstance(conf.long_term_memory.segmenter, PassthroughSegmenterConf)
-    assert isinstance(conf.long_term_memory.deriver, WholeTextDeriverConf)
+    assert isinstance(conf.long_term_memory.deriver, TextDeriverConf)
     # Reranker is optional on the event backend.
     assert conf.long_term_memory.reranker is None
 
