@@ -139,11 +139,11 @@ def _project_config_from_ltm(
     if isinstance(ltm, EventLongTermMemoryConf):
         return ProjectConfig(
             backend="event",
-            embedder=ltm.embedder,
+            embedder="",
             reranker=ltm.reranker or "",
             vector_graph_store="",
-            vector_store=ltm.vector_store,
-            segment_store=ltm.segment_store,
+            vector_store="",
+            segment_store="",
         )
     return ProjectConfig(
         backend="declarative",

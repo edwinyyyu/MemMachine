@@ -103,21 +103,17 @@ def test_partition_key_empty_string_passthrough():
 @pytest.mark.asyncio
 async def test_every_backend_and_embedder_name_the_one_event_store():
     """The event store's name is fixed, whatever the backend and embedder."""
-    embedder = create_autospec(Embedder, instance=True)
-    embedder.dimensions = 3
-    embedder.similarity_metric = SimilarityMetric.COSINE
-    resource_manager = create_autospec(CommonResourceManager, instance=True)
-    resource_manager.get_embedder.return_value = embedder
-
     names = set()
     for vector_store, embedder_id in (("vs_a", "e"), ("vs_b", "e"), ("vs_a", "f")):
-        config = EventLongTermMemoryConf(
-            session_id="s",
-            vector_store=vector_store,
-            segment_store="ss",
-            embedder=embedder_id,
+        resource_manager = _deployment_resource_manager(
+            LongTermMemoryConfPartial(
+                backend="event",
+                vector_store=vector_store,
+                segment_store="ss",
+                embedder=embedder_id,
+            )
         )
-        await event_backend_vector_store(config, resource_manager)
+        await event_backend_vector_store(resource_manager)
         names.add(
             resource_manager.get_vector_store.await_args.kwargs["vector_store_name"]
         )
@@ -171,9 +167,7 @@ async def test_event_params_opens_the_session_partition_in_the_event_store():
     the request.
     """
     resource_manager = _deployment_resource_manager(_DEPLOYMENT)
-    config = EventLongTermMemoryConf(
-        session_id="raced", vector_store="vs", segment_store="ss", embedder="e"
-    )
+    config = EventLongTermMemoryConf(session_id="raced")
 
     params = await _event_params(config, resource_manager)
 
@@ -195,38 +189,46 @@ async def test_event_params_opens_the_session_partition_in_the_event_store():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("vector_store", "segment_store", "embedder"),
-    [("other", "ss", "e"), ("vs", "other", "e"), ("vs", "ss", "other")],
-    ids=["vector_store", "segment_store", "embedder"],
-)
-async def test_event_params_refuses_a_session_naming_other_resources(
-    vector_store: str,
-    segment_store: str,
-    embedder: str,
-):
-    """A session whose data would live in other stores than the deployment's is not served."""
+async def test_event_params_uses_the_deployments_stores_whatever_a_saved_session_names():
+    """A session saved with its own stores and embedder is served from the deployment's."""
     resource_manager = _deployment_resource_manager(_DEPLOYMENT)
-    config = EventLongTermMemoryConf(
-        session_id="s",
-        vector_store=vector_store,
-        segment_store=segment_store,
-        embedder=embedder,
+    config = EventLongTermMemoryConf.model_validate(
+        {
+            "session_id": "s",
+            "vector_store": "other_vs",
+            "segment_store": "other_ss",
+            "embedder": "other_e",
+        }
     )
 
-    with pytest.raises(ConfigurationError):
+    await _event_params(config, resource_manager)
+
+    assert resource_manager.get_vector_store.await_args.args == ("vs",)
+    resource_manager.get_segment_store.assert_awaited_once_with("ss")
+    assert {call.args[0] for call in resource_manager.get_embedder.await_args_list} == {
+        "e"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "deployment",
+    [
+        None,
+        LongTermMemoryConfPartial(
+            backend="declarative", vector_graph_store="g", embedder="e"
+        ),
+    ],
+    ids=["no_long_term_memory", "declarative_memory"],
+)
+async def test_event_params_refuses_a_session_of_a_deployment_without_event_memory(
+    deployment: LongTermMemoryConfPartial | None,
+):
+    resource_manager = _deployment_resource_manager(deployment)
+    config = EventLongTermMemoryConf(session_id="s")
+
+    with pytest.raises(ConfigurationError, match="no event memory"):
         await _event_params(config, resource_manager)
 
     resource_manager.get_vector_store.assert_not_awaited()
     resource_manager.get_segment_store.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_event_params_refuses_a_session_of_a_deployment_without_long_term_memory():
-    resource_manager = _deployment_resource_manager(None)
-    config = EventLongTermMemoryConf(
-        session_id="s", vector_store="vs", segment_store="ss", embedder="e"
-    )
-
-    with pytest.raises(ConfigurationError):
-        await _event_params(config, resource_manager)

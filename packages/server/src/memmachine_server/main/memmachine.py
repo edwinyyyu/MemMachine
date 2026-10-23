@@ -28,7 +28,6 @@ from memmachine_server.common.episode_store import (
 )
 from memmachine_server.common.errors import (
     ConfigurationError,
-    InvalidArgumentError,
     ResourceNotFoundError,
     ResourceNotReadyError,
     SessionNotFoundError,
@@ -53,7 +52,7 @@ from memmachine_server.common.session_manager.session_data_manager import (
 from memmachine_server.common.sql_lease_lock import LockAcquireTimeoutError
 from memmachine_server.episodic_memory import EpisodicMemory
 from memmachine_server.episodic_memory.long_term_memory.service_locator import (
-    is_deployment_event_memory,
+    deployment_event_memory_ids,
 )
 from memmachine_server.retrieval_agent import create_retrieval_agent
 from memmachine_server.retrieval_agent.common.agent_api import (
@@ -542,8 +541,8 @@ class MemMachine:
             The resolved episodic memory configuration.
 
         Raises:
-            ConfigurationError: If the merged configuration is invalid.
-            InvalidArgumentError: If its event memory is not the deployment's.
+            ConfigurationError: If the merged configuration is invalid, or
+                has event memory on a deployment that configures none.
 
         """
         # Get default prompts from config, with fallbacks
@@ -555,20 +554,12 @@ class MemMachine:
             user_conf.session_key = session_key
             episodic_conf = user_conf.merge(self._conf.episodic_memory)
             if episodic_conf.long_term_memory is not None:
-                if episodic_conf.long_term_memory.embedder is not None:
+                if isinstance(episodic_conf.long_term_memory, EventLongTermMemoryConf):
+                    deployment_event_memory_ids(self._conf)
+                elif episodic_conf.long_term_memory.embedder is not None:
                     self._conf.check_embedder(episodic_conf.long_term_memory.embedder)
                 if episodic_conf.long_term_memory.reranker is not None:
                     self._conf.check_reranker(episodic_conf.long_term_memory.reranker)
-                if isinstance(
-                    episodic_conf.long_term_memory, EventLongTermMemoryConf
-                ) and not is_deployment_event_memory(
-                    episodic_conf.long_term_memory,
-                    self._conf.episodic_memory.long_term_memory,
-                ):
-                    raise InvalidArgumentError(
-                        "A project's event memory must use the deployment's "
-                        "vector store, segment store, and embedder"
-                    )
         except ValidationError as e:
             logger.exception(
                 "Failed to merge configuration: %s, %s",

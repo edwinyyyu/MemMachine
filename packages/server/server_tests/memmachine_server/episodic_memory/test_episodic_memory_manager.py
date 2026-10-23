@@ -7,12 +7,7 @@ import pytest_asyncio
 from pydantic import JsonValue
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from memmachine_server.common.configuration.episodic_config import (
-    EpisodicMemoryConf,
-    EpisodicMemoryConfPartial,
-    EventLongTermMemoryConf,
-    LongTermMemoryConfPartial,
-)
+from memmachine_server.common.configuration.episodic_config import EpisodicMemoryConf
 from memmachine_server.common.errors import (
     EpisodicMemoryManagerClosedError,
     SessionDeletedError,
@@ -519,84 +514,6 @@ async def test_delete_episodic_session_not_in_cache(
     mock_episodic_memory_cls.assert_called_once()
     mock_episodic_memory_instance.delete_session_episodes.assert_awaited_once()
     mock_episodic_memory_instance.close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("deployment", "expected_stores"),
-    [
-        (
-            LongTermMemoryConfPartial(
-                backend="event", vector_store="vs", segment_store="ss", embedder="e"
-            ),
-            ("vs", "ss", "e"),
-        ),
-        (
-            LongTermMemoryConfPartial(
-                backend="declarative", vector_graph_store="g", embedder="e"
-            ),
-            None,
-        ),
-        (None, None),
-    ],
-    ids=["event_memory", "declarative_memory", "no_long_term_memory"],
-)
-async def test_delete_episodic_session_deletes_event_memory_from_the_deployment_stores(
-    deployment: LongTermMemoryConfPartial | None,
-    expected_stores: tuple[str, str, str] | None,
-    manager: EpisodicMemoryManager,
-    mock_resource_manager,
-    mock_episodic_memory_instance,
-):
-    """A session recorded with other stores is deleted from the deployment's, or from none."""
-    mock_resource_manager.config = MagicMock()
-    mock_resource_manager.config.episodic_memory = EpisodicMemoryConfPartial(
-        long_term_memory=deployment
-    )
-    session_key = "recorded_other_stores"
-    conf = EpisodicMemoryConf(
-        session_key=session_key,
-        long_term_memory=EventLongTermMemoryConf(
-            session_id=session_key,
-            vector_store="other_vs",
-            segment_store="other_ss",
-            embedder="other_e",
-        ),
-    )
-
-    with (
-        patch(
-            "memmachine_server.episodic_memory.episodic_memory_manager.EpisodicMemory",
-            return_value=mock_episodic_memory_instance,
-        ),
-        patch(
-            "memmachine_server.episodic_memory.episodic_memory_manager.episodic_memory_params_from_config",
-            new_callable=AsyncMock,
-            return_value=MagicMock(spec=EpisodicMemoryParams),
-        ) as params_from_config,
-    ):
-        async with manager.create_episodic_memory(session_key, conf, "", {}):
-            pass
-        await manager.close_session(session_key)
-        params_from_config.reset_mock()
-        mock_episodic_memory_instance.reset_mock()
-
-        await manager.delete_episodic_session(session_key)
-
-    params_from_config.assert_awaited_once()
-    deleted_conf = params_from_config.await_args_list[0].args[0]
-    long_term_memory = deleted_conf.long_term_memory
-    if expected_stores is None:
-        assert long_term_memory is None
-    else:
-        assert isinstance(long_term_memory, EventLongTermMemoryConf)
-        assert (
-            long_term_memory.vector_store,
-            long_term_memory.segment_store,
-            long_term_memory.embedder,
-        ) == expected_stores
-        assert long_term_memory.session_id == session_key
-    mock_episodic_memory_instance.delete_session_episodes.assert_awaited_once()
 
 
 @pytest.mark.asyncio

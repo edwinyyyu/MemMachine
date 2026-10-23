@@ -5,12 +5,12 @@ import logging
 
 from pydantic import InstanceOf
 
+from memmachine_server.common.configuration import Configuration
 from memmachine_server.common.configuration.episodic_config import (
     DeclarativeLongTermMemoryConf,
     DeriverConf,
     EventLongTermMemoryConf,
     LongTermMemoryConf,
-    LongTermMemoryConfPartial,
     PassthroughSegmenterConf,
     SegmenterConf,
     SentenceTextDeriverConf,
@@ -96,19 +96,12 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
-    # A deployment keeps every session's event memory in one vector store,
-    # segment store, and embedder, so a session naming others would have its
-    # data elsewhere.
-    if not is_deployment_event_memory(
-        config, resource_manager.config.episodic_memory.long_term_memory
-    ):
-        raise ConfigurationError(
-            f"Session {config.session_id!r} names a vector store, segment "
-            "store, or embedder other than the deployment's event memory's"
-        )
-    segment_store = await resource_manager.get_segment_store(config.segment_store)
-    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
-    vector_store = await event_backend_vector_store(config, resource_manager)
+    _, segment_store_id, embedder_id = deployment_event_memory_ids(
+        resource_manager.config
+    )
+    segment_store = await resource_manager.get_segment_store(segment_store_id)
+    embedder = await resource_manager.get_embedder(embedder_id, validate=True)
+    vector_store = await event_backend_vector_store(resource_manager)
     reranker = (
         await resource_manager.get_reranker(config.reranker, validate=True)
         if config.reranker is not None
@@ -144,45 +137,37 @@ async def _event_params(
     )
 
 
-def is_deployment_event_memory(
-    config: EventLongTermMemoryConf, deployment: LongTermMemoryConfPartial | None
-) -> bool:
-    """Whether an event memory uses the deployment's vector store, segment store, and embedder."""
-    return deployment is not None and (
-        config.vector_store,
-        config.segment_store,
-        config.embedder,
-    ) == (deployment.vector_store, deployment.segment_store, deployment.embedder)
+def deployment_event_memory_ids(configuration: Configuration) -> tuple[str, str, str]:
+    """
+    The deployment's event memory vector store, segment store, and embedder ids.
 
+    Every session's event memory uses them.
 
-def deployment_event_memory(
-    config: EventLongTermMemoryConf, deployment: LongTermMemoryConfPartial | None
-) -> EventLongTermMemoryConf | None:
-    """An event memory on the deployment's vector store, segment store, and embedder, or None if the deployment configures none."""
+    Raises:
+        ConfigurationError: If the deployment configures no event memory.
+
+    """
+    deployment = configuration.episodic_memory.long_term_memory
     if (
         deployment is None
         or deployment.vector_store is None
         or deployment.segment_store is None
         or deployment.embedder is None
     ):
-        return None
-    return config.model_copy(
-        update={
-            "vector_store": deployment.vector_store,
-            "segment_store": deployment.segment_store,
-            "embedder": deployment.embedder,
-        }
-    )
+        raise ConfigurationError("The deployment configures no event memory")
+    return deployment.vector_store, deployment.segment_store, deployment.embedder
 
 
 async def event_backend_vector_store(
-    config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> VectorStore:
-    """The event backend's vector store on its backend, built for its embedder."""
-    embedder = await resource_manager.get_embedder(config.embedder, validate=True)
+    """The deployment's event memory vector store, built for its embedder."""
+    vector_store_id, _, embedder_id = deployment_event_memory_ids(
+        resource_manager.config
+    )
+    embedder = await resource_manager.get_embedder(embedder_id, validate=True)
     return await resource_manager.get_vector_store(
-        config.vector_store,
+        vector_store_id,
         vector_store_name=_EVENT_MEMORY_VECTOR_STORE_NAME,
         store_schema=VectorStoreSchema(
             vector_dimensions=embedder.dimensions,

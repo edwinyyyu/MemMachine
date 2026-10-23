@@ -8,10 +8,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field, InstanceOf, JsonValue
 
 from memmachine_server.common import rw_locks
-from memmachine_server.common.configuration.episodic_config import (
-    EpisodicMemoryConf,
-    EventLongTermMemoryConf,
-)
+from memmachine_server.common.configuration.episodic_config import EpisodicMemoryConf
 from memmachine_server.common.data_types import PropertyValue
 from memmachine_server.common.errors import (
     EpisodicMemoryManagerClosedError,
@@ -25,9 +22,6 @@ from memmachine_server.common.session_manager.session_data_manager import (
     SessionDataManager,
 )
 from memmachine_server.episodic_memory.episodic_memory import EpisodicMemory
-from memmachine_server.episodic_memory.long_term_memory.service_locator import (
-    deployment_event_memory,
-)
 from memmachine_server.episodic_memory.service_locator import (
     episodic_memory_params_from_config,
 )
@@ -335,21 +329,8 @@ class EpisodicMemoryManager:
                     if session_info is None:
                         raise SessionNotFoundError(session_key)
 
-                    config = session_info.episode_memory_conf
-                    if isinstance(config.long_term_memory, EventLongTermMemoryConf):
-                        # The deployment keeps every session's event memory in
-                        # its own stores, whatever stores the session recorded,
-                        # so the session is deleted from those.
-                        config = config.model_copy(
-                            update={
-                                "long_term_memory": deployment_event_memory(
-                                    config.long_term_memory,
-                                    self._resource_manager.config.episodic_memory.long_term_memory,
-                                )
-                            }
-                        )
                     params = await episodic_memory_params_from_config(
-                        config,
+                        session_info.episode_memory_conf,
                         self._resource_manager,
                     )
                     instance = EpisodicMemory(params)
