@@ -39,6 +39,7 @@ from memmachine_server.server.api_v2.service import (
     _session_key_to_session_data,
 )
 from memmachine_server.server.diagnostics import dump_traceback, install_sigusr1_handler
+from memmachine_server.server.metrics import remove_exited_process_gauges
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +406,9 @@ async def mcp_http_lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     """
     install_sigusr1_handler()
+    # uvicorn replaces an exited worker without an exit hook, so each worker
+    # removes its exited predecessors' gauge values as it starts.
+    remove_exited_process_gauges()
     async with global_memory_lifespan(), mcp_app.lifespan(application):
         application.state.mem_machine = mem_machine
         yield
