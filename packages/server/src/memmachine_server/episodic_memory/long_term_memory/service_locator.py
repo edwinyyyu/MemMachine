@@ -13,8 +13,9 @@ from memmachine_server.common.configuration.episodic_config import (
     PassthroughSegmenterConf,
     SegmenterConf,
     SentenceTextDeriverConf,
+    TextDeriverConf,
     TextSegmenterConf,
-    TrimmedTextDeriverConf,
+    WholeTextDeriverConf,
 )
 from memmachine_server.common.data_types import (
     PROPERTY_TYPE_NAME_TO_PROPERTY_TYPE,
@@ -25,7 +26,8 @@ from memmachine_server.common.vector_store import VectorStoreCollectionConfig
 from memmachine_server.episodic_memory.event_memory.deriver import Deriver
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
-    TrimmedTextDeriver,
+    TextDeriver,
+    WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 from memmachine_server.episodic_memory.event_memory.segment_store import (
@@ -227,8 +229,10 @@ def _build_segmenter(conf: SegmenterConf) -> Segmenter:
 
 def _build_deriver(conf: DeriverConf) -> Deriver:
     match conf:
-        case TrimmedTextDeriverConf():
-            return TrimmedTextDeriver()
+        case WholeTextDeriverConf():
+            return WholeTextDeriver()
+        case TextDeriverConf():
+            return TextDeriver()
         case SentenceTextDeriverConf():
             return SentenceTextDeriver()
         case _:

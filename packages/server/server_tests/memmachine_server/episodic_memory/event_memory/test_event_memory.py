@@ -31,7 +31,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (
     TextBlock,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
-    TrimmedTextDeriver,
+    WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
@@ -227,7 +227,7 @@ class TestEncodeEvents:
                 segment_store_partition=partition,
                 vector_store_collection=collection,
                 segmenter=TextSegmenter(),
-                deriver=TrimmedTextDeriver(),
+                deriver=WholeTextDeriver(),
                 embedder=fake_embedder,
             )
         )
@@ -261,7 +261,7 @@ class TestEncodeEvents:
                     segment_store_partition=partition,
                     segmenter=TextSegmenter(),
                     embedder=fake_embedder,
-                    deriver=TrimmedTextDeriver(),
+                    deriver=WholeTextDeriver(),
                 )
             )
 
@@ -987,7 +987,7 @@ class TestIngestFormatOptions:
                 segment_store_partition=InMemorySegmentStorePartition(),
                 vector_store_collection=InMemoryVectorStoreCollection(config),
                 segmenter=TextSegmenter(),
-                deriver=TrimmedTextDeriver(),
+                deriver=WholeTextDeriver(),
                 embedder=embedder,
             )
         )
@@ -1029,7 +1029,7 @@ class TestIngestFormatOptions:
                 segment_store_partition=partition,
                 vector_store_collection=InMemoryVectorStoreCollection(config),
                 segmenter=TextSegmenter(),
-                deriver=TrimmedTextDeriver(),
+                deriver=WholeTextDeriver(),
                 embedder=embedder,
             )
         )

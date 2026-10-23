@@ -4,11 +4,13 @@ import pytest
 
 from memmachine_server.common.configuration.episodic_config import (
     SentenceTextDeriverConf,
-    TrimmedTextDeriverConf,
+    TextDeriverConf,
+    WholeTextDeriverConf,
 )
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
-    TrimmedTextDeriver,
+    TextDeriver,
+    WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.segment_store.utils import (
     PARTITION_KEY_MAX_BYTES,
@@ -110,7 +112,8 @@ def test_resolve_user_properties_schema_rejects_unknown_type_name():
 @pytest.mark.parametrize(
     ("conf", "deriver_type"),
     [
-        (TrimmedTextDeriverConf(), TrimmedTextDeriver),
+        (WholeTextDeriverConf(), WholeTextDeriver),
+        (TextDeriverConf(), TextDeriver),
         (SentenceTextDeriverConf(), SentenceTextDeriver),
     ],
 )

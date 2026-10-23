@@ -20,7 +20,7 @@ from memmachine_server.common.vector_store.data_types import (
 from memmachine_server.episodic_memory.event_memory.data_types import Segment
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import (
     SentenceTextDeriver,
-    TrimmedTextDeriver,
+    WholeTextDeriver,
 )
 from memmachine_server.episodic_memory.event_memory.event_memory import (
     EventMemory,
@@ -218,7 +218,7 @@ def event_memory(
             segment_store_partition=fake_segment_store_partition,
             vector_store_collection=fake_vector_store_collection,
             segmenter=TextSegmenter(),
-            deriver=TrimmedTextDeriver(),
+            deriver=WholeTextDeriver(),
             embedder=fake_embedder,
         )
     )
@@ -235,7 +235,7 @@ def event_memory_with_reranker(
             segment_store_partition=fake_segment_store_partition,
             vector_store_collection=fake_vector_store_collection,
             segmenter=TextSegmenter(),
-            deriver=TrimmedTextDeriver(),
+            deriver=WholeTextDeriver(),
             embedder=fake_embedder,
             reranker=FakeReranker(),
         )

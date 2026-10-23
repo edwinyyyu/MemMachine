@@ -68,7 +68,29 @@ def _build_text_derivatives(segment: Segment, texts: Iterable[str]) -> list[Deri
     ]
 
 
-class TrimmedTextDeriver(Deriver):
+class WholeTextDeriver(Deriver):
+    """Emits one derivative with the segment's whole text formatted in context."""
+
+    @override
+    async def derive(
+        self,
+        segment: Segment,
+        *,
+        format_options: FormatOptions | None = None,
+    ) -> list[Derivative]:
+        match segment.block:
+            case TextBlock(text=text):
+                return _build_text_derivatives(
+                    segment,
+                    [_format_for_embedding(segment, text, format_options)],
+                )
+            case _:
+                raise NotImplementedError(
+                    f"Unsupported block type: {type(segment.block).__name__}"
+                )
+
+
+class TextDeriver(Deriver):
     """Emits one derivative with the segment's text formatted in context.
 
     The text is embedded without the whitespace at its ends, and a segment
@@ -84,12 +106,12 @@ class TrimmedTextDeriver(Deriver):
     ) -> list[Derivative]:
         match segment.block:
             case TextBlock(text=text):
-                trimmed = text.strip()
-                if not trimmed:
+                stripped = text.strip()
+                if not stripped:
                     return []
                 return _build_text_derivatives(
                     segment,
-                    [_format_for_embedding(segment, trimmed, format_options)],
+                    [_format_for_embedding(segment, stripped, format_options)],
                 )
             case _:
                 raise NotImplementedError(
