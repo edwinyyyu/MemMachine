@@ -367,6 +367,7 @@ class DatabaseManager:
 
             engine = create_async_engine(conf.uri, **_sql_engine_kwargs(conf))
             enable_sqlite_foreign_keys(engine)
+            enable_sqlite_explicit_begin(engine)
             if validate:
                 await self.validate_sql_engine(name, engine)
             self.sql_engines[name] = engine

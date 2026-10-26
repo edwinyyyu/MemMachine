@@ -42,6 +42,7 @@ from memmachine_server.common.filter.sql_filter_util import (
     FieldEncoding,
     compile_sql_filter,
 )
+from memmachine_server.common.sql import write_session
 from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store import Record, VectorStorePartition
 from memmachine_server.semantic_memory.semantic_model import SemanticFeature, SetIdT
@@ -202,7 +203,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
         await self._engine.dispose()
 
     async def delete_all(self) -> None:
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             await session.execute(delete(vector_citation_association_table))
             await session.execute(delete(VectorSemanticSetIngestedHistory))
             # RETURNING names the vector records of exactly the rows deleted.
@@ -215,7 +216,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
                     )
                 ).scalars()
             )
-            await session.commit()
         await self._vector_partition.delete(record_uuids=vector_uuids)
 
     async def reset_set_ids(self, set_ids: Sequence[SetIdT]) -> None:
@@ -247,10 +247,9 @@ class VectorStoreSemanticStorage(SemanticStorage):
             .returning(VectorSemanticFeature.id)
         )
 
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             result = await session.execute(stmt)
-            await session.commit()
-            feature_id = FeatureIdT(str(result.scalar_one()))
+        feature_id = FeatureIdT(str(result.scalar_one()))
 
         await self._vector_partition.upsert(
             records=[Record(uuid=vector_uuid, vector=embedding.tolist())]
@@ -285,15 +284,15 @@ class VectorStoreSemanticStorage(SemanticStorage):
         if metadata is not None:
             values["json_metadata"] = dict(metadata)
 
-        async with self._create_session() as session:
-            if values:
+        if values:
+            async with write_session(self._session_factory) as session:
                 await session.execute(
                     update(VectorSemanticFeature)
                     .where(VectorSemanticFeature.id == feature_id_int)
                     .values(**values)
                 )
-                await session.commit()
 
+        async with self._create_session() as session:
             row = await session.get(VectorSemanticFeature, feature_id_int)
 
         if row is None:
@@ -369,7 +368,7 @@ class VectorStoreSemanticStorage(SemanticStorage):
         except ValidationError as e:
             raise ResourceNotFoundError(f"Invalid feature IDs: {feature_ids}") from e
 
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             vector_uuids = list(
                 (
                     await session.execute(
@@ -379,7 +378,6 @@ class VectorStoreSemanticStorage(SemanticStorage):
                     )
                 ).scalars()
             )
-            await session.commit()
 
         await self._vector_partition.delete(record_uuids=vector_uuids)
 
@@ -395,9 +393,8 @@ class VectorStoreSemanticStorage(SemanticStorage):
             stmt = stmt.where(
                 compile_sql_filter(filter_expr, self._resolve_feature_field_default)
             )
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             vector_uuids = list((await session.execute(stmt)).scalars())
-            await session.commit()
         await self._vector_partition.delete(record_uuids=vector_uuids)
 
     async def add_citations(
@@ -412,11 +409,10 @@ class VectorStoreSemanticStorage(SemanticStorage):
             {"feature_id": feature_id_int, "history_id": str(history_id)}
             for history_id in history_ids
         ]
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             await session.execute(
                 insert(vector_citation_association_table).values(rows)
             )
-            await session.commit()
 
     async def get_history_messages(
         self,
@@ -502,14 +498,13 @@ class VectorStoreSemanticStorage(SemanticStorage):
         if registered_at is not None:
             values["created_at"] = ensure_tz_aware(registered_at).astimezone(UTC)
         stmt = insert(VectorSemanticSetIngestedHistory).values(**values)
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             await session.execute(stmt)
-            await session.commit()
 
     async def delete_history(self, history_ids: Sequence[UUID]) -> None:
         if not history_ids:
             return
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             await session.execute(
                 delete(vector_citation_association_table).where(
                     vector_citation_association_table.c.history_id.in_(
@@ -524,18 +519,16 @@ class VectorStoreSemanticStorage(SemanticStorage):
                     )
                 )
             )
-            await session.commit()
 
     async def delete_history_set(self, set_ids: Sequence[SetIdT]) -> None:
         if not set_ids:
             return
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             await session.execute(
                 delete(VectorSemanticSetIngestedHistory).where(
                     VectorSemanticSetIngestedHistory.set_id.in_(set_ids)
                 )
             )
-            await session.commit()
 
     async def mark_messages_ingested(
         self,
@@ -553,9 +546,8 @@ class VectorStoreSemanticStorage(SemanticStorage):
             )
             .values(ingested=True)
         )
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             await session.execute(stmt)
-            await session.commit()
 
     def get_history_set_ids(
         self,
@@ -618,10 +610,9 @@ class VectorStoreSemanticStorage(SemanticStorage):
             VectorSemanticSetIngestedHistory.ingested.is_(True),
             ~pending_exists,
         )
-        async with self._create_session() as session:
+        async with write_session(self._session_factory) as session:
             result = cast(CursorResult[Any], await session.execute(stmt))
-            await session.commit()
-            return result.rowcount
+        return result.rowcount
 
     async def get_set_ids_starts_with(self, prefix: str) -> AsyncIterator[SetIdT]:
         stmt = union(
