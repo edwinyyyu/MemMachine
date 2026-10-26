@@ -98,8 +98,7 @@ async def _event_params(
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
     # The deployment's EventMemory serves every session, with the
-    # deployment's segmenter, deriver, and reranker whatever the session
-    # names.
+    # deployment's segmenter, deriver, and reranker.
     event_memory = await resource_manager.get_event_memory()
     deployment = resource_manager.config.episodic_memory.long_term_memory
     assert deployment is not None
