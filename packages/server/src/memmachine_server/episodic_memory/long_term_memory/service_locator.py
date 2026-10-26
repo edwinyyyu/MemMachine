@@ -97,31 +97,18 @@ async def _event_params(
     config: EventLongTermMemoryConf,
     resource_manager: InstanceOf[CommonResourceManager],
 ) -> EventBackendParams:
-    _, segment_store_id, embedder_id = deployment_event_memory_ids(
-        resource_manager.config
-    )
-    segment_store = await resource_manager.get_segment_store(segment_store_id)
-    embedder = await resource_manager.get_embedder(embedder_id, validate=True)
-    vector_store = await event_backend_vector_store(resource_manager)
+    # The deployment's EventMemory serves every session, with the
+    # deployment's segmenter, deriver, and reranker whatever the session
+    # names.
+    event_memory = await resource_manager.get_event_memory()
+    deployment = resource_manager.config.episodic_memory.long_term_memory
+    assert deployment is not None
     reranker = (
-        await resource_manager.get_reranker(config.reranker, validate=True)
-        if config.reranker is not None
+        await resource_manager.get_reranker(deployment.reranker, validate=True)
+        if deployment.reranker is not None
         else None
     )
     episode_storage = await resource_manager.get_episode_storage()
-
-    event_memory = EventMemory(
-        EventMemoryParams(
-            segment_store=segment_store,
-            vector_store=vector_store,
-            store_schema=event_backend_store_schema(embedder),
-            segmenter=_build_segmenter(config.segmenter),
-            deriver=_build_deriver(config.deriver),
-            embedder=embedder,
-            reranker=reranker,
-            metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
-        )
-    )
 
     partition_key = partition_key_for_session(config.session_id)
     event_memory_partition = await event_memory.open_or_create_partition(partition_key)
@@ -155,6 +142,49 @@ def deployment_event_memory_ids(configuration: Configuration) -> tuple[str, str,
     ):
         raise ConfigurationError("The deployment configures no event memory")
     return deployment.vector_store, deployment.segment_store, deployment.embedder
+
+
+async def event_memory_from_config(
+    resource_manager: InstanceOf[CommonResourceManager],
+) -> EventMemory:
+    """
+    Build the deployment's EventMemory from its long-term memory configuration.
+
+    Raises:
+        ConfigurationError: If the deployment configures no event memory.
+
+    """
+    _, segment_store_id, embedder_id = deployment_event_memory_ids(
+        resource_manager.config
+    )
+    deployment = resource_manager.config.episodic_memory.long_term_memory
+    assert deployment is not None
+    embedder = await resource_manager.get_embedder(embedder_id, validate=True)
+    reranker = (
+        await resource_manager.get_reranker(deployment.reranker, validate=True)
+        if deployment.reranker is not None
+        else None
+    )
+    return EventMemory(
+        EventMemoryParams(
+            segment_store=await resource_manager.get_segment_store(segment_store_id),
+            vector_store=await event_backend_vector_store(resource_manager),
+            store_schema=event_backend_store_schema(embedder),
+            segmenter=_build_segmenter(
+                deployment.segmenter
+                if deployment.segmenter is not None
+                else PassthroughSegmenterConf()
+            ),
+            deriver=_build_deriver(
+                deployment.deriver
+                if deployment.deriver is not None
+                else WholeTextDeriverConf()
+            ),
+            embedder=embedder,
+            reranker=reranker,
+            metrics_factory=await resource_manager.get_metrics_factory("prometheus"),
+        )
+    )
 
 
 async def event_backend_vector_store(
