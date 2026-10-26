@@ -302,11 +302,6 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
     @property
     @override
-    def store_schema(self) -> VectorStoreSchema:
-        return self._store_schema
-
-    @property
-    @override
     def supported_filter_nodes(self) -> frozenset[type]:
         return SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES
 

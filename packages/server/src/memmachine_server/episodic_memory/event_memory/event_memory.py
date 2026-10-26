@@ -33,6 +33,7 @@ from memmachine_server.common.vector_store import (
     Record,
     VectorStore,
     VectorStorePartition,
+    VectorStoreSchema,
 )
 
 from .data_types import (
@@ -73,6 +74,8 @@ class EventMemoryParams(BaseModel):
             Segment store holding the events' segments.
         vector_store (VectorStore):
             Vector store holding the derivatives' vectors.
+        store_schema (VectorStoreSchema):
+            Schema the vector store was built with.
         segmenter (Segmenter):
             Segmenter that segments events into segments.
         deriver (Deriver):
@@ -95,6 +98,10 @@ class EventMemoryParams(BaseModel):
     vector_store: InstanceOf[VectorStore] = Field(
         ...,
         description="Vector store holding the derivatives' vectors",
+    )
+    store_schema: VectorStoreSchema = Field(
+        ...,
+        description="Schema the vector store was built with",
     )
     segmenter: InstanceOf[Segmenter] = Field(
         ...,
@@ -148,8 +155,22 @@ class EventMemory:
             params (EventMemoryParams):
                 Parameters for the EventMemory.
 
+        Raises:
+            ValueError:
+                If the vector store schema is missing fields required by
+                EventMemory.
         """
         self._params = params
+        self._schema_fields = frozenset(params.store_schema.indexed_properties)
+
+        missing_base_fields = _BASE_EVENT_MEMORY_FIELD_NAMES - self._schema_fields
+        if missing_base_fields:
+            raise ValueError(
+                f"Vector store schema missing fields required by EventMemory: "
+                f"{', '.join(sorted(missing_base_fields))}"
+            )
+
+        self._similarity_metric = params.store_schema.similarity_metric
 
     async def open_or_create_partition(
         self, partition_key: str
@@ -167,11 +188,6 @@ class EventMemory:
         Returns:
             EventMemoryPartition:
                 A handle on the partition.
-
-        Raises:
-            ValueError:
-                If the vector store schema is missing fields required by
-                EventMemory.
         """
         vector_store_partition = (
             await self._params.vector_store.open_or_create_partition(partition_key)
@@ -186,6 +202,8 @@ class EventMemory:
             self._params,
             segment_store_partition=segment_store_partition,
             vector_store_partition=vector_store_partition,
+            schema_fields=self._schema_fields,
+            similarity_metric=self._similarity_metric,
         )
 
     async def delete_partition(self, partition_key: str) -> None:
@@ -433,6 +451,8 @@ class EventMemoryPartition:
         *,
         segment_store_partition: SegmentStorePartition,
         vector_store_partition: VectorStorePartition,
+        schema_fields: frozenset[str],
+        similarity_metric: SimilarityMetric,
     ) -> None:
         """
         Initialize a handle on one partition of an EventMemory.
@@ -444,11 +464,10 @@ class EventMemoryPartition:
                 The partition's segment store partition.
             vector_store_partition (VectorStorePartition):
                 The partition's vector store partition.
-
-        Raises:
-            ValueError:
-                If the vector store schema is missing fields required by
-                EventMemory.
+            schema_fields (frozenset[str]):
+                The properties the vector store declares.
+            similarity_metric (SimilarityMetric):
+                The metric the vector store scores matches by.
         """
         self._segment_store_partition = segment_store_partition
         self._vector_store_partition = vector_store_partition
@@ -462,16 +481,8 @@ class EventMemoryPartition:
             prefix="event_memory",
         )
 
-        self._schema_fields = frozenset(
-            vector_store_partition.store_schema.indexed_properties
-        )
-
-        missing_base_fields = _BASE_EVENT_MEMORY_FIELD_NAMES - self._schema_fields
-        if missing_base_fields:
-            raise ValueError(
-                f"Vector store schema missing fields required by EventMemory: "
-                f"{', '.join(sorted(missing_base_fields))}"
-            )
+        self._schema_fields = schema_fields
+        self._similarity_metric = similarity_metric
 
         self._encode_events_phase_seconds: MetricsFactory.Histogram | None = None
         self._query_phase_seconds: MetricsFactory.Histogram | None = None
@@ -490,7 +501,7 @@ class EventMemoryPartition:
     @property
     def similarity_metric(self) -> SimilarityMetric:
         """Similarity metric by which the vector search scores matches."""
-        return self._vector_store_partition.store_schema.similarity_metric
+        return self._similarity_metric
 
     def _validate_events(self, events: Iterable[Event]) -> None:
         """
@@ -817,8 +828,7 @@ class EventMemoryPartition:
         # Reranker scores are always higher-is-better.
         # Embedding scores depend on the similarity metric.
         higher_is_better = (
-            self._reranker is not None
-            or self._vector_store_partition.store_schema.similarity_metric.higher_is_better
+            self._reranker is not None or self._similarity_metric.higher_is_better
         )
 
         # Return scored contexts ordered by score.

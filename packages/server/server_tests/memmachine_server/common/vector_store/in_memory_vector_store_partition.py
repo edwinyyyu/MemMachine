@@ -142,10 +142,6 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         self.records: dict[UUID, Record] = {}
 
     @property
-    def store_schema(self) -> VectorStoreSchema:
-        return self._store_schema
-
-    @property
     def supported_filter_nodes(self) -> frozenset[type]:
         return self._supported_filter_nodes
 
