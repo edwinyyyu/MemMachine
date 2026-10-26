@@ -48,7 +48,6 @@ from memmachine_server.server.metrics import (
     remove_exited_process_gauges,
     remove_own_process_gauges,
 )
-from memmachine_server.server.workers import worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -426,8 +425,7 @@ async def mcp_http_lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             # and shutdown work does not read as saturation.
             event_loop_lag_reporting = asyncio.create_task(
                 report_event_loop_lag(
-                    await ResourceManagerImpl.get_metrics_factory("prometheus"),
-                    worker_count=worker_count(),
+                    await ResourceManagerImpl.get_metrics_factory("prometheus")
                 )
             )
             try:

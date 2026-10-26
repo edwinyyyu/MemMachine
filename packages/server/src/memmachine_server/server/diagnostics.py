@@ -1,7 +1,7 @@
 """
 Diagnostics for the server's asyncio event loop.
 
-The loop's lag is reported as metrics. For debugging deadlocks and
+The loop's lag is reported as a metric. For debugging deadlocks and
 long-running tasks, on Unix, send SIGUSR1 to the server process to dump all
 asyncio task stacks and thread stacks to the log output:
 
@@ -15,7 +15,6 @@ import logging
 import signal
 import sys
 import traceback
-from collections import deque
 from types import CoroutineType, FrameType
 
 from memmachine_server.common.metrics_factory import MetricsFactory
@@ -23,7 +22,6 @@ from memmachine_server.common.metrics_factory import MetricsFactory
 logger = logging.getLogger(__name__)
 
 _EVENT_LOOP_LAG_SAMPLE_INTERVAL_SECONDS = 0.1
-_EVENT_LOOP_LAG_RATIO_WINDOW_SECONDS = 30
 
 
 def _format_task(task: asyncio.Task[object]) -> str:
@@ -97,45 +95,20 @@ def install_sigusr1_handler() -> None:
     asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, dump_traceback)
 
 
-async def report_event_loop_lag(
-    metrics_factory: MetricsFactory, *, worker_count: int
-) -> None:
+async def report_event_loop_lag(metrics_factory: MetricsFactory) -> None:
     """Report, until cancelled, how late the running loop runs a timed callback.
 
     Each sample schedules a wakeup _EVENT_LOOP_LAG_SAMPLE_INTERVAL_SECONDS out
-    and observes how long past that time the loop took to run it. The lag
-    ratio is the fraction of the trailing window that the loop spent past a
-    due time, divided by `worker_count`, so the shares of the server's
-    processes add up to their mean.
+    and observes how long past that time the loop took to run it.
     """
     lag = metrics_factory.get_histogram(
         "event_loop_lag_seconds",
         "Time the event loop took to run a timed callback past its due time",
     )
-    lag_ratio = metrics_factory.get_gauge(
-        "event_loop_lag_ratio",
-        f"Fraction of the last {_EVENT_LOOP_LAG_RATIO_WINDOW_SECONDS} seconds the "
-        "event loop ran behind schedule, averaged over the worker processes",
-        additive=True,
-    )
-    # Spans of time the loop ran past a due time, oldest first. Samples run
-    # one after another, so the spans never overlap.
-    late_spans: deque[tuple[float, float]] = deque()
     loop = asyncio.get_running_loop()
     while True:
         due = loop.time() + _EVENT_LOOP_LAG_SAMPLE_INTERVAL_SECONDS
         await asyncio.sleep(_EVENT_LOOP_LAG_SAMPLE_INTERVAL_SECONDS)
-        now = loop.time()
         # The loop may run a timer up to its clock resolution early, and a
         # negative observation would shrink the histogram's sum.
-        lag.observe(max(0.0, now - due))
-        if now > due:
-            late_spans.append((due, now))
-
-        window_start = now - _EVENT_LOOP_LAG_RATIO_WINDOW_SECONDS
-        while late_spans and late_spans[0][1] <= window_start:
-            late_spans.popleft()
-        late_seconds = sum(end - max(start, window_start) for start, end in late_spans)
-        lag_ratio.set(
-            late_seconds / _EVENT_LOOP_LAG_RATIO_WINDOW_SECONDS / worker_count
-        )
+        lag.observe(max(0.0, loop.time() - due))

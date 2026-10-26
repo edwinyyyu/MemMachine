@@ -422,7 +422,6 @@ These metrics show how close the server is to saturation:
 | Metric | Type | Meaning |
 |--------|------|---------|
 | `event_loop_lag_seconds` | Histogram | How late each worker's event loop ran a callback it scheduled 100 ms ahead, sampled continuously. `rate(event_loop_lag_seconds_sum[1m])` divided by the number of workers is the fraction of time the loops ran behind. |
-| `event_loop_lag_ratio` | Gauge | Fraction of the last 30 seconds the event loops ran behind schedule, averaged over the `MEMMACHINE_WORKERS` worker processes. The same quantity as the histogram's busy fraction, for readers that take one value per scrape. After a SIGTTIN or SIGTTOU to the server changes the number of workers, it still divides by `MEMMACHINE_WORKERS` until the server restarts. |
 | `db_client_connection_count{pool_name, state="used"}` | Gauge | Connections checked out of a relational database's pool, summed over the worker processes. `pool_name` is the database's name under `resources.databases`. |
 | `db_client_connection_wait_time_seconds{pool_name}` | Histogram | Time each checkout took to get a connection from the pool, including checkouts that failed. |
 
