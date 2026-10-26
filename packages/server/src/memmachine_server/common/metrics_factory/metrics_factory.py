@@ -72,13 +72,14 @@ class MetricsFactory(ABC):
         description: str,
         label_names: Iterable[str] = (),
         *,
-        sum_across_processes: bool = False,
+        additive: bool = False,
     ) -> Gauge:
         """Return a gauge metric by name, creating it if absent.
 
-        With `sum_across_processes`, the gauge reports, for each label set, the
-        sum of the values that the server's running processes set; otherwise
-        each process's value is reported on its own.
+        `additive` states whether the values that different processes set for
+        one label set add up to a meaningful total. An implementation that
+        merges processes sums an additive gauge's values and keeps a
+        non-additive gauge's values per process.
         """
         raise NotImplementedError
 

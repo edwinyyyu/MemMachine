@@ -105,8 +105,8 @@ async def report_event_loop_lag(
     Each sample schedules a wakeup _EVENT_LOOP_LAG_SAMPLE_INTERVAL_SECONDS out
     and observes how long past that time the loop took to run it. The lag
     ratio is the fraction of the trailing window that the loop spent past a
-    due time, divided by `worker_count`: the gauge sums across the server's
-    processes, so its value is their mean.
+    due time, divided by `worker_count`, so the shares of the server's
+    processes add up to their mean.
     """
     lag = metrics_factory.get_histogram(
         "event_loop_lag_seconds",
@@ -116,7 +116,7 @@ async def report_event_loop_lag(
         "event_loop_lag_ratio",
         f"Fraction of the last {_EVENT_LOOP_LAG_RATIO_WINDOW_SECONDS} seconds the "
         "event loop ran behind schedule, averaged over the worker processes",
-        sum_across_processes=True,
+        additive=True,
     )
     # Spans of time the loop ran past a due time, oldest first. Samples run
     # one after another, so the spans never overlap.

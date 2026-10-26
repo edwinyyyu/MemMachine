@@ -20,7 +20,7 @@ from memmachine_server.server.metrics import (
 
 ENV_VAR = "PROMETHEUS_MULTIPROC_DIR"
 
-# A worker process: sets its value of a summed gauge, reports that it has, and
+# A worker process: sets its value of an additive gauge, reports that it has, and
 # keeps running until its stdin closes.
 SET_SUMMED_GAUGE = textwrap.dedent(
     """
@@ -30,9 +30,9 @@ SET_SUMMED_GAUGE = textwrap.dedent(
 
     gauge = PrometheusMetricsFactory().get_gauge(
         "test_summed_gauge",
-        "A gauge summed across processes",
+        "An additive gauge",
         label_names=("pool_name",),
-        sum_across_processes=True,
+        additive=True,
     )
     gauge.set(float(sys.argv[1]), labels={"pool_name": "pool"})
     print("set", flush=True)
@@ -60,7 +60,7 @@ def _summed_gauge_value() -> float | None:
     )
 
 
-def test_a_summed_gauge_stops_counting_an_exited_worker(monkeypatch, tmp_path):
+def test_an_additive_gauge_stops_counting_an_exited_worker(monkeypatch, tmp_path):
     monkeypatch.setenv(ENV_VAR, str(tmp_path))
     running = _start_worker(tmp_path, 2)
     try:

@@ -112,7 +112,7 @@ class PrometheusMetricsFactory(MetricsFactory):
         description: str,
         label_names: Iterable[str] = (),
         *,
-        sum_across_processes: bool = False,
+        additive: bool = False,
     ) -> Gauge:
         """Return a Prometheus-backed gauge, creating it if absent."""
         if name not in self._metrics:
@@ -123,7 +123,7 @@ class PrometheusMetricsFactory(MetricsFactory):
                     name,
                     description,
                     labelnames=label_names,
-                    multiprocess_mode="livesum" if sum_across_processes else "all",
+                    multiprocess_mode="livesum" if additive else "all",
                 ),
             )
         gauge = self._metrics[name]

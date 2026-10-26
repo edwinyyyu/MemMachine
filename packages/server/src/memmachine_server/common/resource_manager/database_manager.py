@@ -103,7 +103,7 @@ def _report_sql_pool_metrics(
         "db_client_connection_count",
         "Number of connections in the given state",
         label_names=("pool_name", "state"),
-        sum_across_processes=True,
+        additive=True,
     )
     used_labels = {"pool_name": pool_name, "state": "used"}
     connection_count.set(0, labels=used_labels)
