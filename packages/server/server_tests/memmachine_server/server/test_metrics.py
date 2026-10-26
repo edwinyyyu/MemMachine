@@ -15,13 +15,15 @@ import pytest
 from memmachine_server.server.metrics import (
     metrics_registry,
     remove_exited_process_gauges,
+    remove_own_process_gauges,
     start_metrics_server,
 )
 
 ENV_VAR = "PROMETHEUS_MULTIPROC_DIR"
 
-# A worker process: sets its value of an additive gauge, reports that it has, and
-# keeps running until its stdin closes.
+# A worker process: sets its value of an additive gauge, reports that it has,
+# and keeps running until its stdin closes. With a second argument, it then
+# exits cleanly, removing its own gauge values.
 SET_SUMMED_GAUGE = textwrap.dedent(
     """
     import sys
@@ -37,13 +39,20 @@ SET_SUMMED_GAUGE = textwrap.dedent(
     gauge.set(float(sys.argv[1]), labels={"pool_name": "pool"})
     print("set", flush=True)
     sys.stdin.read()
+    if len(sys.argv) > 2:
+        from memmachine_server.server.metrics import remove_own_process_gauges
+
+        remove_own_process_gauges()
     """
 )
 
 
-def _start_worker(directory: Path, value: float) -> subprocess.Popen[str]:
+def _start_worker(
+    directory: Path, value: float, *, exits_cleanly: bool = False
+) -> subprocess.Popen[str]:
+    arguments = [str(value), "exits-cleanly"] if exits_cleanly else [str(value)]
     worker = subprocess.Popen(
-        [sys.executable, "-c", SET_SUMMED_GAUGE, str(value)],
+        [sys.executable, "-c", SET_SUMMED_GAUGE, *arguments],
         env={**os.environ, ENV_VAR: str(directory)},
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -75,9 +84,24 @@ def test_an_additive_gauge_stops_counting_an_exited_worker(monkeypatch, tmp_path
         running.communicate()
 
 
-def test_removing_exited_gauges_without_a_directory_is_a_no_op(monkeypatch):
+def test_a_worker_that_exits_cleanly_removes_its_own_gauge_values(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv(ENV_VAR, str(tmp_path))
+    running = _start_worker(tmp_path, 2)
+    try:
+        exited = _start_worker(tmp_path, 3, exits_cleanly=True)
+        exited.communicate()
+
+        assert _summed_gauge_value() == 2
+    finally:
+        running.communicate()
+
+
+def test_removing_gauges_without_a_directory_is_a_no_op(monkeypatch):
     monkeypatch.delenv(ENV_VAR, raising=False)
     remove_exited_process_gauges()
+    remove_own_process_gauges()
 
 
 @pytest.mark.asyncio
