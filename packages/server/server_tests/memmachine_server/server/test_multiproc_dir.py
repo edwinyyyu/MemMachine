@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from memmachine_server.server.app import _prepare_multiproc_dir, _worker_count
+from memmachine_server.server.app import _prepare_multiproc_dir
+from memmachine_server.server.workers import worker_count
 
 ENV_VAR = "PROMETHEUS_MULTIPROC_DIR"
 
@@ -30,7 +31,7 @@ def clean_env(monkeypatch):
 def test_worker_count(monkeypatch, value, expected):
     if value is not None:
         monkeypatch.setenv("MEMMACHINE_WORKERS", value)
-    assert _worker_count() == expected
+    assert worker_count() == expected
 
 
 def test_single_worker_leaves_the_variable_unset(monkeypatch):

@@ -43,6 +43,7 @@ from memmachine_server.server.middleware import (
     AccessLogMiddleware,
     RequestMetricsMiddleware,
 )
+from memmachine_server.server.workers import worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ def start_http() -> None:
 
     config = load_configuration()
 
-    workers = _worker_count()
+    workers = worker_count()
 
     if workers == 1:
         logger.info("Starting server with 1 worker")
@@ -141,26 +142,6 @@ def start_http() -> None:
         log_level=str(config.logging.level).lower(),
         ws="websockets-sansio",
     )
-
-
-def _worker_count() -> int:
-    """Resolve MEMMACHINE_WORKERS, defaulting to 1.
-
-    Note: We do not use (os.cpu_count() - 1) as this is often inaccurate in
-    container environments (reporting host CPUs vs container limits). We leave
-    it to the user to configure MEMMACHINE_WORKERS based on their allocated
-    vCPUs to avoid creating excessive worker processes at startup.
-    """
-    workers_env = os.getenv("MEMMACHINE_WORKERS")
-    if not workers_env:
-        return 1
-    try:
-        return int(workers_env)
-    except ValueError:
-        logger.warning(
-            "Invalid MEMMACHINE_WORKERS value '%s'. Defaulting to 1.", workers_env
-        )
-        return 1
 
 
 def _prepare_multiproc_dir() -> None:
@@ -195,7 +176,7 @@ def _prepare_multiproc_dir() -> None:
         # and to be clear of a previous run's files, or the first metric raises
         # FileNotFoundError. test_an_explicit_directory_is_honoured_for_one_worker
         # pins that.
-        if _worker_count() <= 1:
+        if worker_count() <= 1:
             return
         path = str(Path(tempfile.gettempdir()) / "memmachine-prometheus-multiproc")
         os.environ["PROMETHEUS_MULTIPROC_DIR"] = path
