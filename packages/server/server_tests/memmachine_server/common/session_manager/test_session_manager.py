@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -166,8 +167,14 @@ async def test_concurrent_creation_validates_the_committed_session(
     monkeypatch: pytest.MonkeyPatch,
     changed_field: str | None,
 ) -> None:
-    """Workers racing for one key get the normal validation result."""
-    select_barrier = asyncio.Barrier(2)
+    """Workers racing for one key get the normal validation result.
+
+    Each worker's first read waits for the other's, or for a second, so the
+    workers both read before either writes wherever the database lets them.
+    On SQLite, where creation's transaction holds the write lock from BEGIN,
+    the second worker reads only once the first commits.
+    """
+    both_read = asyncio.Event()
     original_execute = AsyncSession.execute
     select_count = 0
 
@@ -176,8 +183,10 @@ async def test_concurrent_creation_validates_the_committed_session(
         result = await original_execute(db_session, statement, *args, **kwargs)
         if statement.is_select and select_count < 2:
             select_count += 1
-            async with asyncio.timeout(5):
-                await select_barrier.wait()
+            if select_count == 2:
+                both_read.set()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(both_read.wait(), 1)
         return result
 
     monkeypatch.setattr(AsyncSession, "execute", synchronized_select)

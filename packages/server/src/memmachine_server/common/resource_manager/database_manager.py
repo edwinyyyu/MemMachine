@@ -450,6 +450,7 @@ class DatabaseManager:
 
             engine = create_async_engine(conf.uri, **_sql_engine_kwargs(conf))
             enable_sqlite_foreign_keys(engine)
+            enable_sqlite_explicit_begin(engine)
             _report_sql_pool_metrics(
                 engine, pool_name=name, metrics_factory=conf.get_metrics_factory()
             )
