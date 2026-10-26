@@ -179,6 +179,22 @@ async def test_search_target_memories_other_fields_still_passed():
     assert call_kwargs["query"] == "my query"
     assert call_kwargs["limit"] == 5
     assert call_kwargs["set_metadata"] == {"user_id": "u1"}
+    assert call_kwargs["rerank"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_target_memories_passes_rerank():
+    """A request that turns reranking off has it off in query_search."""
+    spec = SearchMemoriesSpec.model_validate({"query": "q", "rerank": False})
+    memmachine = _make_empty_memmachine()
+
+    await _search_target_memories(
+        target_memories=[MemoryType.Episodic],
+        spec=spec,
+        memmachine=memmachine,
+    )
+
+    assert memmachine.query_search.call_args[1]["rerank"] is False
 
 
 # ---------------------------------------------------------------------------

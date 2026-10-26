@@ -93,6 +93,7 @@ class FakeEpisodicMemory(EpisodicMemory):
         expand_context: int = 0,
         score_threshold: float = -float("inf"),
         property_filter: Any | None = None,
+        rerank: bool = True,
         mode: EpisodicMemory.QueryMode = EpisodicMemory.QueryMode.BOTH,
     ) -> EpisodicMemory.QueryResponse | None:
         self.queries.append(query)
@@ -103,6 +104,7 @@ class FakeEpisodicMemory(EpisodicMemory):
                 "expand_context": expand_context,
                 "score_threshold": score_threshold,
                 "property_filter": property_filter,
+                "rerank": rerank,
                 "mode": mode,
             }
         )
@@ -190,6 +192,7 @@ async def test_memmachine_agent_queries_long_term_memory_only(
             limit=3,
             expand_context=2,
             score_threshold=0.55,
+            rerank=False,
             memory=memory,
         ),
     )
@@ -203,6 +206,7 @@ async def test_memmachine_agent_queries_long_term_memory_only(
             "expand_context": 2,
             "score_threshold": 0.55,
             "property_filter": None,
+            "rerank": False,
             "mode": EpisodicMemory.QueryMode.LONG_TERM_ONLY,
         }
     ]

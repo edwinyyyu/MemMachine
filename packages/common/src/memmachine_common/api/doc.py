@@ -244,6 +244,14 @@ class SpecDoc:
     When false, episodic search uses direct memory retrieval.
     """
 
+    RERANK = """
+    Whether to rerank event-backed episodic search results with the reranker
+    the server configures for event memory. When false, or when the server
+    configures none, results are scored by embedding similarity, and
+    `score_threshold` applies to that score. The declarative backend always
+    reranks.
+    """
+
     PAGE_SIZE = """
     The maximum number of memories to return per page. Use this for pagination.
     """
@@ -630,6 +638,7 @@ class Examples:
     ]
     MEMORY_TYPES: ClassVar[list[list[str]]] = [["episodic", "semantic"]]
     AGENT_MODE: ClassVar[list[bool]] = [False, True]
+    RERANK: ClassVar[list[bool]] = [True, False]
     MEMORY_TYPE_SINGLE: ClassVar[list[str]] = ["episodic", "semantic"]
     PAGE_SIZE: ClassVar[list[int]] = [50, 100]
     PAGE_NUM: ClassVar[list[int]] = [0, 1, 5, 10]

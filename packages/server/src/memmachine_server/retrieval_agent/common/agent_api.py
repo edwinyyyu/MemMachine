@@ -41,6 +41,7 @@ class QueryParam(BaseModel):
     expand_context: int = 0
     score_threshold: float = -float("inf")
     property_filter: FilterExpr | None = None
+    rerank: bool = True
     memory: InstanceOf[EpisodicMemory]
 
 

@@ -905,6 +905,7 @@ class MemMachine:
         score_threshold: float = -float("inf"),
         search_filter: FilterExpr | None = None,
         retrieval_agent: AgentToolBase | None = None,
+        rerank: bool = True,
     ) -> EpisodicMemory.QueryResponse | None:
         """
         Query episodic memory for relevant episodes.
@@ -917,6 +918,7 @@ class MemMachine:
             search_filter: Optional property filter for narrowing results.
             score_threshold: Optional minimum score threshold for results.
             retrieval_agent: Optional top-level retrieval agent for long-term search.
+            rerank: Whether long-term search reranks its results.
 
         Returns:
             Episodic memory query response, if episodic memory is enabled.
@@ -939,6 +941,7 @@ class MemMachine:
                     expand_context=expand_context,
                     score_threshold=score_threshold,
                     property_filter=search_filter,
+                    rerank=rerank,
                 )
             else:
                 response = await self._query_episodic_with_retrieval_agent(
@@ -949,6 +952,7 @@ class MemMachine:
                     expand_context=expand_context,
                     score_threshold=score_threshold,
                     search_filter=search_filter,
+                    rerank=rerank,
                 )
 
         return response
@@ -963,6 +967,7 @@ class MemMachine:
         expand_context: int,
         score_threshold: float,
         search_filter: FilterExpr | None,
+        rerank: bool,
     ) -> EpisodicMemory.QueryResponse | None:
         """Build episodic query response using retrieval-agent long-term search."""
         if episodic_session.long_term_memory is None:
@@ -984,6 +989,7 @@ class MemMachine:
             expand_context=expand_context,
             score_threshold=score_threshold,
             search_filter=search_filter,
+            rerank=rerank,
         )
 
         short_response = await self._query_short_term_response_for_agent(
@@ -1023,6 +1029,7 @@ class MemMachine:
         expand_context: int,
         score_threshold: float,
         search_filter: FilterExpr | None,
+        rerank: bool,
     ) -> list[Episode]:
         if episodic_session.long_term_memory is None:
             return []
@@ -1042,6 +1049,7 @@ class MemMachine:
                 expand_context=expand_context,
                 score_threshold=score_threshold,
                 property_filter=search_filter,
+                rerank=rerank,
                 memory=episodic_session,
             ),
         )
@@ -1113,6 +1121,7 @@ class MemMachine:
         score_threshold: float = -float("inf"),
         search_filter: str | None = None,
         agent_mode: bool = False,
+        rerank: bool = True,
     ) -> SearchResponse:
         """
         Search across enabled memory types using a query string.
@@ -1127,6 +1136,7 @@ class MemMachine:
             search_filter: Optional filter string applied to each memory query.
             score_threshold: Optional minimum score threshold for results.
             agent_mode: Whether to enable top-level retrieval-agent orchestration.
+            rerank: Whether long-term episodic search reranks its results.
 
         Returns:
             Aggregated search results across memory types.
@@ -1147,6 +1157,7 @@ class MemMachine:
                     score_threshold=score_threshold,
                     search_filter=property_filter,
                     retrieval_agent=retrieval_agent,
+                    rerank=rerank,
                 )
             )
 

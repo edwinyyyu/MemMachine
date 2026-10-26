@@ -370,6 +370,7 @@ class Memory:
         filter: str | None = None,  # noqa: A002 — matches API field name in `SearchMemoriesSpec.filter`
         set_metadata: dict[str, JsonValue] | None = None,
         agent_mode: bool = False,
+        rerank: bool = True,
     ) -> SearchResult:
         """
         Search for memories.
@@ -401,6 +402,10 @@ class Memory:
                     `filter_dict` filters, all filters are combined with AND.
             set_metadata: Optional metadata key-value pairs used to select semantic sets.
             agent_mode: Whether to enable top-level retrieval-agent orchestration.
+            rerank: Whether to rerank event-backed episodic results with the
+                    server's event memory reranker. When false, results are
+                    scored by embedding similarity. The declarative backend
+                    always reranks.
 
         Returns:
             SearchResult object containing search results from both episodic and semantic memory
@@ -441,6 +446,7 @@ class Memory:
             expand_context=expand_context,
             score_threshold=score_threshold,
             agent_mode=agent_mode,
+            rerank=rerank,
             filter=filter_str,
             set_metadata=set_metadata,
             types=[MemoryType.Episodic, MemoryType.Semantic],  # Search both types

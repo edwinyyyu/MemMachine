@@ -375,6 +375,7 @@ class TestMemory:
         assert json_data["query"] == "test query"
         assert json_data["top_k"] == 10
         assert json_data["agent_mode"] is False
+        assert json_data["rerank"] is True
         assert "episodic" in json_data["types"]
         assert "semantic" in json_data["types"]
 
@@ -440,6 +441,27 @@ class TestMemory:
         call_args = mock_client.request.call_args
         json_data = call_args[1]["json"]
         assert json_data["agent_mode"] is True
+
+    def test_search_without_reranking(self, mock_client):
+        """Test search forwards a request to skip reranking."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"status": 0, "content": {}}
+        mock_response.raise_for_status = Mock()
+        mock_client.request.return_value = mock_response
+
+        memory = Memory(
+            client=mock_client,
+            org_id="test_org",
+            project_id="test_project",
+            metadata={"agent_id": "agent1", "user_id": "user1"},
+        )
+
+        memory.search("query", rerank=False)
+
+        call_args = mock_client.request.call_args
+        json_data = call_args[1]["json"]
+        assert json_data["rerank"] is False
 
     def test_search_positional_args_backward_compatible(self, mock_client):
         """Test legacy positional argument order remains compatible."""

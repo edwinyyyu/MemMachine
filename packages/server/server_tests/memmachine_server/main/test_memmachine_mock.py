@@ -592,6 +592,7 @@ async def test_query_episodic_with_retrieval_agent_searches_long_then_short(
         expand_context=0,
         score_threshold=-float("inf"),
         search_filter=None,
+        rerank=True,
     )
 
     assert response is not None
@@ -670,6 +671,7 @@ async def test_query_episodic_with_retrieval_agent_skips_short_term_when_disable
         expand_context=0,
         score_threshold=-float("inf"),
         search_filter=None,
+        rerank=True,
     )
 
     assert response is not None

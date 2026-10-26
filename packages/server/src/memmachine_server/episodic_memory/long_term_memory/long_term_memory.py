@@ -163,13 +163,6 @@ class LongTermMemory:
         self._event_memory_partition: EventMemoryPartition | None = None
         self._partition_key: str | None = None
         self._episode_storage: EpisodeStorage | None = None
-        # Event backend only: whether the scores a query thresholds are
-        # higher-is-better. With a reranker they are its scores, which are;
-        # without one they are the vector search's, by the partition's
-        # similarity metric (cosine and dot are higher-is-better, euclidean
-        # and manhattan lower-is-better). Used to apply `score_threshold` in
-        # the correct direction so it doesn't invert under a distance metric.
-        self._score_higher_is_better: bool = True
         self._session_id: str = params.session_id
         # Event backend only: reranking is a stage LongTermMemory runs on
         # top of EventMemory's vector search.
@@ -192,10 +185,6 @@ class LongTermMemory:
                 self._reranker = params.reranker
                 self._partition_key = params.partition_key
                 self._episode_storage = params.episode_storage
-                self._score_higher_is_better = (
-                    params.reranker is not None
-                    or params.event_memory_partition.similarity_metric.higher_is_better
-                )
 
     async def add_episodes(self, episodes: Iterable[Episode]) -> None:
         episodes = list(episodes)
@@ -218,6 +207,7 @@ class LongTermMemory:
         expand_context: int = 0,
         score_threshold: float | None = None,
         property_filter: FilterExpr | None = None,
+        rerank: bool = True,
     ) -> list[tuple[float, Episode]]:
         """Score-thresholded query.
 
@@ -227,6 +217,9 @@ class LongTermMemory:
         the threshold; lower-is-better metrics (raw euclidean / manhattan with
         no reranker) drop scores ABOVE it. Avoids the prior `-inf` sentinel,
         which silently inverted to "drop everything" under euclidean.
+
+        With `rerank=False`, the event backend skips its reranker and scores
+        by the vector search; the declarative backend always reranks.
 
         A `num_episodes_limit` that is not positive asks for nothing, and is
         refused with ValueError before the query is embedded.
@@ -249,6 +242,7 @@ class LongTermMemory:
             expand_context=expand_context,
             score_threshold=score_threshold,
             property_filter=property_filter,
+            rerank=rerank,
         )
 
     async def _search_scored_declarative(
@@ -286,6 +280,7 @@ class LongTermMemory:
         expand_context: int,
         score_threshold: float | None,
         property_filter: FilterExpr | None,
+        rerank: bool,
     ) -> list[tuple[float, Episode]]:
         event_memory = self._require_event_backend_live()
         assert self._episode_storage is not None
@@ -322,13 +317,22 @@ class LongTermMemory:
             source_ids=lifted.source_ids,
             property_filter=lifted.rest,
         )
-        if self._reranker is not None:
+        reranker = self._reranker if rerank else None
+        if reranker is not None:
             hits = await EventMemory.rerank(
                 query,
                 hits,
-                reranker=self._reranker,
+                reranker=reranker,
                 datetime_format=DateTimeFormat(time_style="short"),
             )
+        # Whether the scores a threshold applies to are higher-is-better. A
+        # reranker's are; the vector search's follow the partition's
+        # similarity metric (cosine and dot are higher-is-better, euclidean
+        # and manhattan lower-is-better), so the threshold doesn't invert
+        # under a distance metric.
+        score_higher_is_better = (
+            reranker is not None or event_memory.similarity_metric.higher_is_better
+        )
 
         if expand_context > 0:
             # The expanded windows carry timeline-neighbor segments; fold
@@ -339,6 +343,7 @@ class LongTermMemory:
                 hits,
                 num_episodes_limit=num_episodes_limit,
                 score_threshold=score_threshold,
+                score_higher_is_better=score_higher_is_better,
             )
 
         # Map seed segment -> _episode_uid (system field already lives on
@@ -351,7 +356,9 @@ class LongTermMemory:
         ordered_uids: list[UUID] = []
         scores_by_uid: dict[UUID, float] = {}
         for hit in hits:
-            if not self._score_passes_threshold(hit.score, score_threshold):
+            if not LongTermMemory._score_passes_threshold(
+                hit.score, score_threshold, score_higher_is_better
+            ):
                 continue
             episode_uid = LongTermMemory._hit_episode_uid(hit)
             if episode_uid is None or episode_uid in scores_by_uid:
@@ -427,8 +434,9 @@ class LongTermMemory:
         # ResourceManager handles SegmentStore/VectorStore lifecycle.
         return
 
+    @staticmethod
     def _score_passes_threshold(
-        self, score: float, score_threshold: float | None
+        score: float, score_threshold: float | None, score_higher_is_better: bool
     ) -> bool:
         """Apply `score_threshold` in the correct direction for the metric.
 
@@ -438,7 +446,7 @@ class LongTermMemory:
         """
         if score_threshold is None:
             return True
-        if self._score_higher_is_better:
+        if score_higher_is_better:
             return score >= score_threshold
         return score <= score_threshold
 
@@ -668,6 +676,7 @@ class LongTermMemory:
         *,
         num_episodes_limit: int,
         score_threshold: float | None,
+        score_higher_is_better: bool,
     ) -> list[tuple[float, Episode]]:
         """Fold expanded segment windows into a unified episode context.
 
@@ -681,7 +690,9 @@ class LongTermMemory:
         assert self._episode_storage is not None
         scored_uid_contexts: list[tuple[float, UUID, list[UUID]]] = []
         for hit in hits:
-            if not self._score_passes_threshold(hit.score, score_threshold):
+            if not LongTermMemory._score_passes_threshold(
+                hit.score, score_threshold, score_higher_is_better
+            ):
                 continue
             nuclear_uid, context_uids = LongTermMemory._episode_uid_context(hit)
             if nuclear_uid is None:

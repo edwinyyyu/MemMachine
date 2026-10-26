@@ -581,6 +581,14 @@ class SearchMemoriesSpec(_WithOrgAndProj):
             examples=Examples.AGENT_MODE,
         ),
     ]
+    rerank: Annotated[
+        bool,
+        Field(
+            default=True,
+            description=SpecDoc.RERANK,
+            examples=Examples.RERANK,
+        ),
+    ]
 
 
 class DeleteMemoriesSpec(_WithOrgAndProj):

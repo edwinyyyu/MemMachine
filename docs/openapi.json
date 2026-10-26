@@ -4772,6 +4772,16 @@
               false,
               true
             ]
+          },
+          "rerank": {
+            "type": "boolean",
+            "title": "Rerank",
+            "description": "\n    Whether to rerank event-backed episodic search results with the reranker\n    the server configures for event memory. When false, or when the server\n    configures none, results are scored by embedding similarity, and\n    `score_threshold` applies to that score. The declarative backend always\n    reranks.\n    ",
+            "default": true,
+            "examples": [
+              true,
+              false
+            ]
           }
         },
         "type": "object",

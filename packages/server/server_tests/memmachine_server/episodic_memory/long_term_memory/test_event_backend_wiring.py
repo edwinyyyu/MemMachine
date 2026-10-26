@@ -42,6 +42,7 @@ from memmachine_server.common.filter.filter_parser import (
 from memmachine_server.common.filter.filter_parser import (
     Or as FilterOr,
 )
+from memmachine_server.common.reranker import Reranker
 from memmachine_server.common.vector_store import VectorStore, VectorStoreSchema
 from memmachine_server.episodic_memory.event_memory.data_types import (
     Neighborhood,
@@ -79,6 +80,7 @@ from server_tests.memmachine_server.common.vector_store.in_memory_vector_store_p
     InMemoryVectorStorePartition,
 )
 from server_tests.memmachine_server.episodic_memory.event_memory.conftest import (
+    FakeReranker,
     InMemorySegmentStorePartition,
 )
 
@@ -213,6 +215,7 @@ async def _event_backend_params(
     episode_storage: EpisodeStorage,
     embedder: Embedder,
     segmenter: Segmenter,
+    reranker: Reranker | None = None,
 ) -> EventBackendParams:
     """Event backend params for session `sess1`, whose stores hand out the given partitions."""
     vector_store.open_or_create_partition.return_value = vector_store_partition
@@ -233,6 +236,7 @@ async def _event_backend_params(
         event_memory_partition=await event_memory.open_or_create_partition("sess1"),
         partition_key="sess1",
         episode_storage=episode_storage,
+        reranker=reranker,
     )
 
 
@@ -599,13 +603,14 @@ async def _make_ltm(
     episodes: list[Episode],
     *,
     segmenter: Segmenter | None = None,
+    reranker: Reranker | None = None,
 ) -> LongTermMemory:
     """Build a self-contained LongTermMemory around `embedder` and `segmenter`.
 
     Avoids the shared fixtures so each test can pick its own similarity metric
     (the vector store takes the embedder's) or segmenter (passthrough unless
-    given). No reranker is configured — that's the failure mode under
-    euclidean.
+    given). No reranker is configured unless given — that's the failure mode
+    under euclidean.
     """
     vector_store_partition = InMemoryVectorStorePartition(
         store_schema=VectorStoreSchema(
@@ -626,6 +631,7 @@ async def _make_ltm(
             episode_storage=FakeEpisodeStorage({e.uid: e for e in episodes}),
             embedder=embedder,
             segmenter=segmenter if segmenter is not None else PassthroughSegmenter(),
+            reranker=reranker,
         ),
     )
 
@@ -697,6 +703,38 @@ async def test_score_threshold_not_inverted_under_euclidean_no_reranker():
     assert _uid("far") not in uids, (
         "Far match was kept — threshold filter is inverted for euclidean."
     )
+
+
+async def test_a_search_not_reranked_scores_and_thresholds_by_the_embedding_metric():
+    """With a reranker configured, `rerank=False` scores by euclidean distance,
+    and the threshold drops scores ABOVE it, as with no reranker."""
+    episodes = [
+        _episode("near", "abc"),
+        _episode("far", "abcdefghij"),
+    ]
+    ltm = await _make_ltm(
+        FakeEmbedder(similarity_metric=SimilarityMetric.EUCLIDEAN),
+        episodes,
+        reranker=FakeReranker(),
+    )
+    await ltm.add_episodes(episodes)
+
+    scores_by_uid = {
+        ep.uid: score
+        for score, ep in await ltm.search_scored(
+            "abc", num_episodes_limit=10, rerank=False
+        )
+    }
+    assert scores_by_uid[_uid("near")] < scores_by_uid[_uid("far")]
+    midpoint_threshold = (scores_by_uid[_uid("near")] + scores_by_uid[_uid("far")]) / 2
+
+    kept = await ltm.search_scored(
+        "abc",
+        num_episodes_limit=10,
+        score_threshold=midpoint_threshold,
+        rerank=False,
+    )
+    assert [ep.uid for _, ep in kept] == [_uid("near")]
 
 
 async def test_score_threshold_none_keeps_all_results_under_euclidean():
