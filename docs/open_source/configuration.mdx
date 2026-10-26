@@ -143,7 +143,8 @@ To see a complete example of a potential `cfg.yml` file, check out [GPU-based Sa
     store, and embedder configured here, and a project cannot choose others.
     Changing them does not move existing data: point them only at stores
     that hold it, and rebuild the event memory's vectors before changing the
-    embedder.
+    embedder. A deployment that configures no event memory can neither open
+    nor delete event sessions.
   </Accordion>
 
   <Accordion title="Retrieval Agent">
