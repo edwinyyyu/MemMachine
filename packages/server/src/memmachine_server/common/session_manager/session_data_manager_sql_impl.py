@@ -471,11 +471,13 @@ class SessionDataManagerSQL(SessionDataManager):
     ) -> None:
         """Update episodic memory configuration flags for a session."""
         async with write_session(self._async_session) as dbsession:
-            # Query for the existing session
+            # Read under the row lock (on SQLite, under the write lock the
+            # transaction holds), so a concurrent update of other flags waits
+            # instead of being overwritten with the flags read here.
             sessions = await dbsession.execute(
-                select(self.SessionConfig).where(
-                    self.SessionConfig.session_key == session_key,
-                ),
+                select(self.SessionConfig)
+                .where(self.SessionConfig.session_key == session_key)
+                .with_for_update(),
             )
             session = sessions.scalars().first()
             if session is None:

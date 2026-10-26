@@ -584,6 +584,57 @@ async def test_delete_session_cascades_to_short_term_memory(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_episodic_config_updates_both_land(
+    session_manager: SessionDataManagerSQL,
+    episodic_memory_conf: EpisodicMemoryConf,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Two updates of different flags on one session both land.
+
+    The first update to read the session is held there until the second
+    reads it too, or for a second. An update that read the session without
+    locking it would overwrite the other's flag with the value it read.
+    """
+    await session_manager.create_or_validate_session(
+        "flags", {}, episodic_memory_conf, "", {}
+    )
+    held = asyncio.Event()
+    second_read = asyncio.Event()
+    original_execute = AsyncSession.execute
+
+    async def interleaved_execute(db_session: AsyncSession, statement, *args, **kwargs):
+        result = await original_execute(db_session, statement, *args, **kwargs)
+        if statement.is_select:
+            if not held.is_set():
+                held.set()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(second_read.wait(), 1)
+            else:
+                second_read.set()
+        return result
+
+    monkeypatch.setattr(AsyncSession, "execute", interleaved_execute)
+    await asyncio.wait_for(
+        asyncio.gather(
+            session_manager.update_session_episodic_config(
+                "flags", long_term_memory_enabled=False
+            ),
+            session_manager.update_session_episodic_config(
+                "flags", short_term_memory_enabled=False
+            ),
+        ),
+        30,
+    )
+    monkeypatch.setattr(AsyncSession, "execute", original_execute)
+
+    session_info = await session_manager.get_session_info("flags")
+    assert session_info is not None
+    assert not session_info.episode_memory_conf.long_term_memory_enabled
+    assert not session_info.episode_memory_conf.short_term_memory_enabled
+
+
+@pytest.mark.asyncio
 async def test_update_and_get_session_status(
     session_manager: SessionDataManager,
     episodic_memory_conf: EpisodicMemoryConf,
