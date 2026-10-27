@@ -66,11 +66,11 @@ class VectorStorePartition(ABC):
                 Iterable of records to upsert.
 
         Raises:
-            UndeclaredPropertyKeyError:
-                If a record carries a key the store has not declared;
-                raised before anything is sent.
             PropertyTypeMismatchError:
                 If a record's value is not of its key's declared type;
+                raised before anything is sent.
+            UndeclaredPropertyKeyError:
+                If a record carries a key the store has not declared;
                 raised before anything is sent.
             ValueError:
                 If a record's vector does not have the store's dimensions.
@@ -114,12 +114,12 @@ class VectorStorePartition(ABC):
                 ordered as in the input iterable.
 
         Raises:
+            UndeclaredPropertyKeyError:
+                If the filter names a key the store has not declared.
             ValueError:
                 If the limit is not positive, a query vector does not have
                 the store's dimensions or has a coordinate that is not
                 finite, or the score threshold is not finite.
-            UndeclaredPropertyKeyError:
-                If the filter names a key the store has not declared.
         """
         raise NotImplementedError
 
@@ -183,12 +183,12 @@ class VectorStore(ABC):
                 The key of the partition.
 
         Raises:
+            VectorStoreAttemptsExhaustedError: If the store gave up creating the
+                partition after repeated attempts that made no progress.
             VectorStorePartitionAlreadyExistsError: If the partition already exists,
                 or is being created.
             VectorStorePartitionDeletedError: If the partition was deleted
                 before its creation completed.
-            VectorStoreAttemptsExhaustedError: If the store gave up creating the
-                partition after repeated attempts that made no progress.
         """
         raise NotImplementedError
 
@@ -208,12 +208,12 @@ class VectorStore(ABC):
                 A handle bound to the partition's current life.
 
         Raises:
-            VectorStorePartitionPendingError: If the partition's creation, by
-                another caller, did not complete within the store's attempts
-                to open it.
             VectorStoreAttemptsExhaustedError: If the store gave up opening or
                 creating the partition after repeated attempts that made no
                 progress.
+            VectorStorePartitionPendingError: If the partition's creation, by
+                another caller, did not complete within the store's attempts
+                to open it.
         """
         raise NotImplementedError
 
