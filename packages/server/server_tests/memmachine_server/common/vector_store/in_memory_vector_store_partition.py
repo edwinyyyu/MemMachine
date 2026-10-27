@@ -27,7 +27,7 @@ from memmachine_server.common.vector_store.data_types import (
     QueryResult,
     Record,
 )
-from memmachine_server.common.vector_store.declared_properties import (
+from memmachine_server.common.vector_store.utils import (
     validate_declared_properties,
     validate_supported_filter,
 )

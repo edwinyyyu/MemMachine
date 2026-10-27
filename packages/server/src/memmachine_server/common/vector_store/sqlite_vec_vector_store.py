@@ -57,7 +57,6 @@ from .data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
 )
-from .declared_properties import validate_declared_properties, validate_supported_filter
 from .sql_columns import (
     compile_property_filter,
     property_column_names,
@@ -68,11 +67,13 @@ from .sql_columns import (
 from .utils import (
     _IDENTIFIER_MAX_BYTES,
     _PARTITION_KEY_MAX_BYTES,
+    validate_declared_properties,
     validate_dimensions,
     validate_limit,
     validate_partition_key,
     validate_query_vector,
     validate_score_threshold,
+    validate_supported_filter,
 )
 from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 

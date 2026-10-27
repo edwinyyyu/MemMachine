@@ -33,18 +33,19 @@ from .data_types import (
     VectorStorePartitionPendingError,
     VectorStoreSchema,
 )
-from .declared_properties import validate_declared_properties, validate_supported_filter
 from .partition_registry import (
     Registration,
     Reservation,
     VectorStorePartitionRegistry,
 )
 from .utils import (
+    validate_declared_properties,
     validate_dimensions,
     validate_limit,
     validate_partition_key,
     validate_query_vector,
     validate_score_threshold,
+    validate_supported_filter,
 )
 from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 

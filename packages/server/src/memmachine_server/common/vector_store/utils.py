@@ -2,7 +2,17 @@
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+
+from memmachine_server.common.data_types import PropertyType, PropertyValue
+from memmachine_server.common.filter.filter_parser import (
+    FilterExpr,
+    filter_fields,
+)
+
+# A module, not its names: data_types imports this module, so its errors are
+# not defined yet while this module loads.
+from . import data_types
 
 # Matched with fullmatch: `$` also matches before a trailing newline.
 _IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
@@ -29,6 +39,30 @@ def validate_partition_key(partition_key: str) -> None:
             f"Partition key {partition_key!r} must be non-empty, at most "
             f"{_PARTITION_KEY_MAX_BYTES} bytes, and free of NUL characters"
         )
+
+
+def validate_declared_properties(
+    properties: Mapping[str, PropertyValue],
+    indexed_properties: Mapping[str, PropertyType],
+) -> None:
+    """
+    Raise unless every property is declared and holds a value of its type.
+
+    Called before anything is sent, so an undeclared key never reaches a
+    backend, and a declared key never holds a value its column or index
+    would have to coerce.
+    """
+    undeclared = properties.keys() - indexed_properties.keys()
+    if undeclared:
+        raise data_types.UndeclaredPropertyKeyError(
+            undeclared, indexed_properties.keys()
+        )
+    for key, value in properties.items():
+        # `bool` is an `int` at runtime and is its own property type here.
+        if type(value) is not indexed_properties[key]:
+            raise data_types.PropertyTypeMismatchError(
+                key, indexed_properties[key], value
+            )
 
 
 def validate_query_vector(query_vector: Sequence[float], dimensions: int) -> None:
@@ -63,4 +97,21 @@ def validate_dimensions(vector: Sequence[float], dimensions: int) -> None:
     if len(vector) != dimensions:
         raise ValueError(
             f"Vector has {len(vector)} dimensions; the store has {dimensions}"
+        )
+
+
+def validate_supported_filter(
+    property_filter: FilterExpr,
+    indexed_properties: Mapping[str, PropertyType],
+) -> None:
+    """
+    Raise unless a filter names declared keys only.
+
+    An undeclared key never exists in the store, so a filter naming one has
+    nothing to scan for.
+    """
+    undeclared = filter_fields(property_filter) - indexed_properties.keys()
+    if undeclared:
+        raise data_types.UndeclaredPropertyKeyError(
+            undeclared, indexed_properties.keys()
         )
