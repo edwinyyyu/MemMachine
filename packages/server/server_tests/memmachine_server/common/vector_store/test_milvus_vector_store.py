@@ -742,13 +742,16 @@ class TestUpsertAndQuery:
         """Milvus refuses a request over proxy.grpc.serverMaxRecvSize (64 MiB
         unless configured), so the batch is halved until it fits."""
         # A store of its own, whose declared string holds 60,000 bytes; the
-        # batch is over 64 MiB.
+        # batch is over 64 MiB. pymilvus checks a string value a character at
+        # a time while it builds a request, within the request's timeout, so
+        # this store gives its requests longer than the module's timeout.
         oversized = await _started_store(
             store._client,
             store._partition_registry._engine,
             vector_store_name="oversized",
             store_schema=_schema(indexed_properties={"text": str}),
             max_varchar_length=65535,
+            request_timeout_seconds=120,
         )
         await oversized.create_partition(NAME)
         partition = await oversized.open_partition(NAME)
