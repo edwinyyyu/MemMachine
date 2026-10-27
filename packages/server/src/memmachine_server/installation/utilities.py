@@ -3,9 +3,9 @@
 from enum import Enum
 
 LINUX_JDK_TAR_NAME = "jdk-21_linux-x64_bin.tar.gz"
-LINUX_JDK_URL = f"https://download.oracle.com/java/21/latest/{LINUX_JDK_TAR_NAME}"
+LINUX_JDK_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
 WINDOWS_JDK_ZIP_NAME = "jdk-21_windows-x64_bin.zip"
-WINDOWS_JDK_URL = f"https://download.oracle.com/java/21/latest/{WINDOWS_JDK_ZIP_NAME}"
+WINDOWS_JDK_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse"
 NEO4J_DIR_NAME = "neo4j-community-2025.09.0"
 WINDOWS_NEO4J_ZIP_NAME = f"{NEO4J_DIR_NAME}-windows.zip"
 WINDOWS_NEO4J_URL = f"https://dist.neo4j.org/{WINDOWS_NEO4J_ZIP_NAME}"
@@ -14,12 +14,10 @@ LINUX_NEO4J_URL = f"https://dist.neo4j.org/{LINUX_NEO4J_TAR_NAME}"
 
 MACOS_JDK_TAR_NAME_X64 = "jdk-21_macos-x64_bin.tar.gz"
 MACOS_JDK_URL_X64 = (
-    f"https://download.oracle.com/java/21/latest/{MACOS_JDK_TAR_NAME_X64}"
+    "https://api.adoptium.net/v3/binary/latest/21/ga/mac/x64/jdk/hotspot/normal/eclipse"
 )
 MACOS_JDK_TAR_NAME_ARM64 = "jdk-21_macos-aarch64_bin.tar.gz"
-MACOS_JDK_URL_ARM64 = (
-    f"https://download.oracle.com/java/21/latest/{MACOS_JDK_TAR_NAME_ARM64}"
-)
+MACOS_JDK_URL_ARM64 = "https://api.adoptium.net/v3/binary/latest/21/ga/mac/aarch64/jdk/hotspot/normal/eclipse"
 
 NEO4J_WINDOWS_SERVICE_NAME = "neo4j"
 
