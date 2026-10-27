@@ -442,9 +442,10 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
         SimilarityMetric.MANHATTAN: models.Distance.MANHATTAN,
     }
 
-    # Every key a filter may name is indexed (the declared keys and the
-    # incarnation), so the server may refuse a filter on an unindexed one
-    # instead of scanning the collection for it.
+    # The store filters only on indexed keys (the declared keys and the
+    # incarnation). Strict mode makes the server refuse a filter on any other
+    # key instead of scanning for it, so a missing index fails a search
+    # rather than slowing it.
     _STRICT_MODE: ClassVar[models.StrictModeConfig] = models.StrictModeConfig(
         enabled=True,
         unindexed_filtering_retrieve=False,

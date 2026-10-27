@@ -25,7 +25,8 @@ registry](vector_store_partition_registry.md),
 - **Strict mode:** the collection is created with filtering on unindexed
   fields off, for reads and updates alike, so the server refuses a filter on
   a field it has not indexed instead of scanning for it. Every key a filter
-  may name is indexed: the declared keys and the incarnation. A condition
+  may name is indexed: the declared keys and the incarnation, so a missing
+  index fails a search rather than slowing it. A condition
   whose value is of another type than its key declares matches nothing; the
   store answers it with a filter no point satisfies, since the server would
   refuse it for the field's index.
