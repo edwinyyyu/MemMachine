@@ -192,19 +192,6 @@ class PropertyTypeMismatchError(ValueError):
         )
 
 
-class UnsupportedFilterError(ValueError):
-    """Raised when a filter uses a node the store cannot evaluate during a search."""
-
-    def __init__(self, nodes: Iterable[type], supported: Collection[type]) -> None:
-        """Initialize with the offending node classes and the supported ones."""
-        self.nodes = sorted({node.__name__ for node in nodes})
-        self.supported = sorted(node.__name__ for node in supported)
-        super().__init__(
-            f"Filter nodes {self.nodes} are not evaluated by this vector store; "
-            f"supported nodes: {self.supported}."
-        )
-
-
 class Record(BaseModel):
     """
     A record to write to a vector store partition.

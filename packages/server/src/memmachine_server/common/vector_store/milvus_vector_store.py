@@ -211,10 +211,6 @@ def _incarnation_filter(incarnation: UUID) -> str:
 class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
     """A partition backed by Milvus."""
 
-    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
-    )
-
     @staticmethod
     def _passes_threshold(
         score: float,
@@ -248,11 +244,6 @@ class MilvusVectorStorePartition(RegistryBackedVectorStorePartition):
         self._client = client
         self._collection_name = collection_name
         self._request_timeout_seconds = request_timeout_seconds
-
-    @property
-    @override
-    def supported_filter_nodes(self) -> frozenset[type]:
-        return MilvusVectorStorePartition._SUPPORTED_FILTER_NODES
 
     def _primary_id(self, record_uuid: UUID) -> str:
         """The primary key of a record: the incarnation and the record UUID.

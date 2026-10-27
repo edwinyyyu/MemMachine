@@ -39,25 +39,14 @@ class VectorStorePartition(ABC):
     (`store_schema.indexed_properties`), typed and indexed for filtering
     during a search, and no others: a record or a filter naming an
     undeclared key is rejected, so an undeclared key never exists in the
-    store, neither stored write-only nor scanned for.
+    store, neither stored write-only nor scanned for. Every store evaluates
+    the whole filter language during a search.
     """
 
     @property
     @abstractmethod
     def store_schema(self) -> VectorStoreSchema:
         """The schema every record and query of this partition follows."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def supported_filter_nodes(self) -> frozenset[type]:
-        """
-        The filter node classes the backend evaluates during a search.
-
-        A `query` whose filter uses any other node raises
-        `UnsupportedFilterError`; a caller routes such a predicate to a store
-        that evaluates it afterward.
-        """
         raise NotImplementedError
 
     @abstractmethod
@@ -131,8 +120,6 @@ class VectorStorePartition(ABC):
                 finite, or the score threshold is not finite.
             UndeclaredPropertyKeyError:
                 If the filter names a key the store has not declared.
-            UnsupportedFilterError:
-                If the filter uses a node outside `supported_filter_nodes`.
         """
         raise NotImplementedError
 

@@ -45,27 +45,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from memmachine_server.common.data_types import (
     SimilarityMetric,
 )
-from memmachine_server.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine_server.common.filter.filter_parser import (
-    FilterExpr,
-)
-from memmachine_server.common.filter.filter_parser import (
-    In as FilterIn,
-)
-from memmachine_server.common.filter.filter_parser import (
-    IsNull as FilterIsNull,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Not as FilterNot,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Or as FilterOr,
-)
+from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.sql import write_session
 
 from .data_types import (
@@ -135,10 +115,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         SimilarityMetric.EUCLIDEAN: "vec_distance_L2",
     }
 
-    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
-    )
-
     def __init__(
         self,
         *,
@@ -163,11 +139,6 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
     @override
     def store_schema(self) -> VectorStoreSchema:
         return self._store_schema
-
-    @property
-    @override
-    def supported_filter_nodes(self) -> frozenset[type]:
-        return SQLiteVecVectorStorePartition._SUPPORTED_FILTER_NODES
 
     @staticmethod
     def _serialize_vector(vector: Sequence[float]) -> bytes:
@@ -280,9 +251,7 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         filter_expression: ColumnElement[bool] | None = None
         if property_filter is not None:
             validate_supported_filter(
-                property_filter,
-                self._store_schema.indexed_properties,
-                SQLiteVecVectorStorePartition._SUPPORTED_FILTER_NODES,
+                property_filter, self._store_schema.indexed_properties
             )
             filter_expression = compile_property_filter(
                 property_filter,

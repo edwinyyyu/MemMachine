@@ -70,9 +70,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
 
     For subclasses: `_vector_store_name` is the store's name and
     `_incarnation` the incarnation the handle is bound to, and a subclass
-    implements `supported_filter_nodes`, the filter nodes its backend
-    evaluates during a search, and the backend calls `_upsert`, `_query`,
-    and `_delete`.
+    implements the backend calls `_upsert`, `_query`, and `_delete`.
     """
 
     def __init__(
@@ -129,9 +127,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
             validate_limit(limit)
             if property_filter is not None:
                 validate_supported_filter(
-                    property_filter,
-                    self._store_schema.indexed_properties,
-                    self.supported_filter_nodes,
+                    property_filter, self._store_schema.indexed_properties
                 )
             await self._registration.require_current()
             if not query_vectors:
@@ -187,8 +183,7 @@ class RegistryBackedVectorStorePartition(VectorStorePartition):
 
         Called after a liveness check, with at least one query vector and a
         positive limit, the vectors, threshold, and filter already checked: the
-        filter names declared keys only and is built from
-        `supported_filter_nodes` only.
+        filter names declared keys only.
 
         Args:
             query_vectors (list[list[float]]): The vectors to search for.

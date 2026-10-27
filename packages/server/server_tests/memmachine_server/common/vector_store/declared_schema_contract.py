@@ -129,7 +129,7 @@ class DeclaredSchemaContract:
             )
 
     @pytest.mark.asyncio
-    async def test_every_supported_node_evaluates_during_a_search(self, partition):
+    async def test_every_node_evaluates_during_a_search(self, partition):
         held = _record([1.0, 0.0, 0.0], name="alice", age=30, score=1.5, active=True)
         other = _record([0.0, 1.0, 0.0], name="bob", age=40, active=False)
         lacking = _record([0.0, 0.0, 1.0], active=False)
@@ -160,9 +160,7 @@ class DeclaredSchemaContract:
                 {other.uuid, lacking.uuid},
             ),
         }
-        assert set(expected) >= partition.supported_filter_nodes
         for node, (property_filter, admitted) in expected.items():
-            assert node in partition.supported_filter_nodes
             assert await _admitted(partition, property_filter) == admitted, node
 
     @pytest.mark.asyncio

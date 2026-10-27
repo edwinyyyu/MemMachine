@@ -89,10 +89,6 @@ def _incarnation_filter(incarnation: UUID) -> models.Filter:
 class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
     """A partition backed by Qdrant."""
 
-    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
-    )
-
     _RANGE_OPERATORS: ClassVar[dict[str, str]] = {
         ">": "gt",
         ">=": "gte",
@@ -281,11 +277,6 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
             tracker=tracker,
         )
         self._client = client
-
-    @property
-    @override
-    def supported_filter_nodes(self) -> frozenset[type]:
-        return QdrantVectorStorePartition._SUPPORTED_FILTER_NODES
 
     def _point_id(self, record_uuid: UUID) -> UUID:
         """The point id of a record: a UUIDv5 of the record UUID under the incarnation.

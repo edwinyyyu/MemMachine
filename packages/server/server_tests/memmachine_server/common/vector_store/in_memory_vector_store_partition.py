@@ -125,29 +125,17 @@ class InMemoryVectorStorePartition(VectorStorePartition):
     schema the way a real store does.
     """
 
-    _SUPPORTED_FILTER_NODES = frozenset({Comparison, In, IsNull, And, Or, Not})
-
     def __init__(
         self,
         *,
         store_schema: VectorStoreSchema,
-        supported_filter_nodes: Iterable[type] | None = None,
     ) -> None:
         self._store_schema = store_schema
-        self._supported_filter_nodes = (
-            frozenset(supported_filter_nodes)
-            if supported_filter_nodes is not None
-            else InMemoryVectorStorePartition._SUPPORTED_FILTER_NODES
-        )
         self.records: dict[UUID, Record] = {}
 
     @property
     def store_schema(self) -> VectorStoreSchema:
         return self._store_schema
-
-    @property
-    def supported_filter_nodes(self) -> frozenset[type]:
-        return self._supported_filter_nodes
 
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records = list(records)
@@ -172,9 +160,7 @@ class InMemoryVectorStorePartition(VectorStorePartition):
     ) -> list[QueryResult]:
         if property_filter is not None:
             validate_supported_filter(
-                property_filter,
-                self._store_schema.indexed_properties,
-                self._supported_filter_nodes,
+                property_filter, self._store_schema.indexed_properties
             )
 
         metric = self._store_schema.similarity_metric

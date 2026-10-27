@@ -12,7 +12,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar, override
+from typing import override
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -46,27 +46,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from memmachine_server.common.data_types import (
     SimilarityMetric,
 )
-from memmachine_server.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
-from memmachine_server.common.filter.filter_parser import (
-    FilterExpr,
-)
-from memmachine_server.common.filter.filter_parser import (
-    In as FilterIn,
-)
-from memmachine_server.common.filter.filter_parser import (
-    IsNull as FilterIsNull,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Not as FilterNot,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Or as FilterOr,
-)
+from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.sql import write_session
 
 from .data_types import (
@@ -220,10 +200,6 @@ async def _save_partition_index(
 class SQLiteVectorStorePartition(VectorStorePartition):
     """A partition backed by SQLite + a pluggable vector search engine."""
 
-    _SUPPORTED_FILTER_NODES: ClassVar[frozenset[type]] = frozenset(
-        {FilterComparison, FilterIn, FilterIsNull, FilterAnd, FilterOr, FilterNot}
-    )
-
     class _KeyFilter:
         """Per-candidate SQL filter using a sync SQLAlchemy session."""
 
@@ -304,11 +280,6 @@ class SQLiteVectorStorePartition(VectorStorePartition):
     @override
     def store_schema(self) -> VectorStoreSchema:
         return self._store_schema
-
-    @property
-    @override
-    def supported_filter_nodes(self) -> frozenset[type]:
-        return SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES
 
     async def _maybe_save_index(self) -> None:
         """Save the index to disk if applied pending operations exceed the threshold."""
@@ -449,9 +420,7 @@ class SQLiteVectorStorePartition(VectorStorePartition):
 
         if property_filter is not None:
             validate_supported_filter(
-                property_filter,
-                self._store_schema.indexed_properties,
-                SQLiteVectorStorePartition._SUPPORTED_FILTER_NODES,
+                property_filter, self._store_schema.indexed_properties
             )
 
         async with self._create_session() as session:
