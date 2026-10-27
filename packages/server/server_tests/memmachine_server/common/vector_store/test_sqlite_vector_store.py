@@ -32,7 +32,7 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
 )
-from memmachine_server.common.vector_store.sql_columns import (
+from memmachine_server.common.vector_store.sqlite_properties import (
     property_column_name,
 )
 from memmachine_server.common.vector_store.sqlite_vector_store import (

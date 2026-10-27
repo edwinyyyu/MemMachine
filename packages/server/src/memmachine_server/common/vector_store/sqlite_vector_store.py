@@ -58,7 +58,7 @@ from .data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
 )
-from .sql_columns import (
+from .sqlite_properties import (
     compile_property_filter,
     property_column_values,
     property_columns,
