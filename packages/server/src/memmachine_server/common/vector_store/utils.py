@@ -1,7 +1,6 @@
 """Shared utilities for vector store implementations."""
 
 import math
-import re
 from collections.abc import Mapping, Sequence
 
 from memmachine_server.common.data_types import PropertyType, PropertyValue
@@ -10,22 +9,9 @@ from memmachine_server.common.filter.filter_parser import (
     filter_fields,
 )
 
-# A module, not its names: data_types imports this module, so its errors are
-# not defined yet while this module loads.
-from . import data_types
+from .data_types import PropertyTypeMismatchError, UndeclaredPropertyKeyError
 
-# Matched with fullmatch: `$` also matches before a trailing newline.
-_IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
-_IDENTIFIER_MAX_BYTES = 32
 _PARTITION_KEY_MAX_BYTES = 255
-
-
-def is_valid_identifier(value: str) -> bool:
-    """Return True if value is a valid identifier (a-z0-9_, max 32 bytes)."""
-    return (
-        bool(_IDENTIFIER_RE.fullmatch(value))
-        and len(value.encode()) <= _IDENTIFIER_MAX_BYTES
-    )
 
 
 def validate_partition_key(partition_key: str) -> None:
@@ -54,15 +40,11 @@ def validate_declared_properties(
     """
     undeclared = properties.keys() - indexed_properties.keys()
     if undeclared:
-        raise data_types.UndeclaredPropertyKeyError(
-            undeclared, indexed_properties.keys()
-        )
+        raise UndeclaredPropertyKeyError(undeclared, indexed_properties.keys())
     for key, value in properties.items():
         # `bool` is an `int` at runtime and is its own property type here.
         if type(value) is not indexed_properties[key]:
-            raise data_types.PropertyTypeMismatchError(
-                key, indexed_properties[key], value
-            )
+            raise PropertyTypeMismatchError(key, indexed_properties[key], value)
 
 
 def validate_query_vector(query_vector: Sequence[float], dimensions: int) -> None:
@@ -112,6 +94,4 @@ def validate_supported_filter(
     """
     undeclared = filter_fields(property_filter) - indexed_properties.keys()
     if undeclared:
-        raise data_types.UndeclaredPropertyKeyError(
-            undeclared, indexed_properties.keys()
-        )
+        raise UndeclaredPropertyKeyError(undeclared, indexed_properties.keys())

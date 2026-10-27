@@ -1,5 +1,10 @@
-"""Data types for vector store."""
+"""
+Data types for vector store.
 
+Imports nothing from this package; the rest of it builds on these types.
+"""
+
+import re
 from collections.abc import Collection, Iterable, Mapping
 from datetime import datetime
 from typing import Annotated
@@ -22,8 +27,6 @@ from memmachine_server.common.data_types import (
     PropertyValue,
     SimilarityMetric,
 )
-
-from .utils import is_valid_identifier
 
 
 def _coerce_property_types(value: object) -> object:
@@ -71,6 +74,19 @@ def validate_vector_store_name(name: str) -> None:
         raise ValueError(
             f"Vector store name {name!r} must match [a-z0-9_]+ and be at most 32 bytes."
         )
+
+
+# Matched with fullmatch: `$` also matches before a trailing newline.
+_IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
+_IDENTIFIER_MAX_BYTES = 32
+
+
+def is_valid_identifier(value: str) -> bool:
+    """Return True if value is a valid identifier (a-z0-9_, max 32 bytes)."""
+    return (
+        bool(_IDENTIFIER_RE.fullmatch(value))
+        and len(value.encode()) <= _IDENTIFIER_MAX_BYTES
+    )
 
 
 class VectorStoreSchema(BaseModel):

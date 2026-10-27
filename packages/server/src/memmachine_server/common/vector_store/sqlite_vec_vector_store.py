@@ -49,6 +49,7 @@ from memmachine_server.common.filter.filter_parser import FilterExpr
 from memmachine_server.common.sql import write_session
 
 from .data_types import (
+    _IDENTIFIER_MAX_BYTES,
     QueryMatch,
     QueryResult,
     Record,
@@ -65,7 +66,6 @@ from .sqlite_properties import (
     property_indexes,
 )
 from .utils import (
-    _IDENTIFIER_MAX_BYTES,
     _PARTITION_KEY_MAX_BYTES,
     validate_declared_properties,
     validate_dimensions,
