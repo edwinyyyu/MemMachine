@@ -161,7 +161,7 @@ class WholeTextDeriverConf(BaseModel):
 
 
 class TextDeriverConf(BaseModel):
-    """Text deriver: one derivative per segment, without edge whitespace."""
+    """Text deriver: one derivative per segment, without trailing whitespace."""
 
     type: Literal["text"] = "text"
 

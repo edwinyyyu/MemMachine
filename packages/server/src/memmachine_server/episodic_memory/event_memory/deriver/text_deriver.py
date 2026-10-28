@@ -93,7 +93,7 @@ class WholeTextDeriver(Deriver):
 class TextDeriver(Deriver):
     """Emits one derivative with the segment's text formatted in context.
 
-    The text is embedded without the whitespace at its ends, and a segment
+    The text is embedded without the whitespace at its end, and a segment
     of whitespace alone has no derivative.
     """
 
@@ -106,7 +106,7 @@ class TextDeriver(Deriver):
     ) -> list[Derivative]:
         match segment.block:
             case TextBlock(text=text):
-                stripped = text.strip()
+                stripped = text.rstrip()
                 if not stripped:
                     return []
                 return _build_text_derivatives(

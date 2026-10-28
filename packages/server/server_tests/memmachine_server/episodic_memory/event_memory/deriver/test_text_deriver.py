@@ -160,9 +160,9 @@ class TestWholeTextDeriver:
 
 
 class TestTextDeriver:
-    async def test_embeds_text_without_whitespace_at_its_ends(self):
+    async def test_embeds_text_without_whitespace_at_its_end(self):
         seg = _make_segment(
-            block=TextBlock(text="  hello world.\n\n"),
+            block=TextBlock(text="hello world.\n\n"),
             context=ProducerContext(producer="Alice"),
         )
 
@@ -177,14 +177,16 @@ class TestTextDeriver:
         assert derivative.timestamp == seg.timestamp
         assert derivative.context == seg.context
 
-    async def test_keeps_inner_whitespace(self):
-        seg = _make_segment(block=TextBlock(text="line one\n\n    line two\n"))
+    async def test_keeps_leading_and_inner_whitespace(self):
+        seg = _make_segment(block=TextBlock(text="    line one\n\n    line two\n"))
 
         result = await TextDeriver().derive(
             seg, format_options=FormatOptions(date_style=None, time_style=None)
         )
 
-        assert result[0].block == TextBlock(text=json.dumps("line one\n\n    line two"))
+        assert result[0].block == TextBlock(
+            text=json.dumps("    line one\n\n    line two")
+        )
 
     async def test_whitespace_only_segment_has_no_derivative(self):
         seg = _make_segment(block=TextBlock(text=" \n\t "))
