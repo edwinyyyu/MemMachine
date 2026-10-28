@@ -771,7 +771,6 @@ class TestUpsertAndQuery:
                 partition._incarnation,
             )
         ) == sorted(record.uuid for record in records)
-        await oversized.delete_partition(NAME)
 
     @pytest.mark.asyncio
     async def test_a_query_may_ask_for_hundreds_of_results(self, partition):
