@@ -983,7 +983,6 @@ class SQLiteVectorStore(VectorStore):
             Column("row_id", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
             *property_columns(self._store_schema.indexed_properties),
-            extend_existing=True,
         )
         property_indexes(records_table, self._store_schema.indexed_properties)
         return records_table
