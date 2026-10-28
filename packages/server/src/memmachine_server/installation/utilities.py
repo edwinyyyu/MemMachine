@@ -3,9 +3,9 @@
 from enum import Enum
 
 LINUX_JDK_TAR_NAME = "jdk-21_linux-x64_bin.tar.gz"
-LINUX_JDK_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+LINUX_JDK_URL = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz"
 WINDOWS_JDK_ZIP_NAME = "jdk-21_windows-x64_bin.zip"
-WINDOWS_JDK_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse"
+WINDOWS_JDK_URL = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip"
 NEO4J_DIR_NAME = "neo4j-community-2025.09.0"
 WINDOWS_NEO4J_ZIP_NAME = f"{NEO4J_DIR_NAME}-windows.zip"
 WINDOWS_NEO4J_URL = f"https://dist.neo4j.org/{WINDOWS_NEO4J_ZIP_NAME}"
@@ -13,11 +13,9 @@ LINUX_NEO4J_TAR_NAME = f"{NEO4J_DIR_NAME}-unix.tar.gz"
 LINUX_NEO4J_URL = f"https://dist.neo4j.org/{LINUX_NEO4J_TAR_NAME}"
 
 MACOS_JDK_TAR_NAME_X64 = "jdk-21_macos-x64_bin.tar.gz"
-MACOS_JDK_URL_X64 = (
-    "https://api.adoptium.net/v3/binary/latest/21/ga/mac/x64/jdk/hotspot/normal/eclipse"
-)
+MACOS_JDK_URL_X64 = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13_9.tar.gz"
 MACOS_JDK_TAR_NAME_ARM64 = "jdk-21_macos-aarch64_bin.tar.gz"
-MACOS_JDK_URL_ARM64 = "https://api.adoptium.net/v3/binary/latest/21/ga/mac/aarch64/jdk/hotspot/normal/eclipse"
+MACOS_JDK_URL_ARM64 = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13_9.tar.gz"
 
 NEO4J_WINDOWS_SERVICE_NAME = "neo4j"
 
