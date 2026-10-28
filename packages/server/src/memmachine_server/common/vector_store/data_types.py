@@ -82,7 +82,12 @@ _IDENTIFIER_MAX_BYTES = 32
 
 
 def is_valid_identifier(value: str) -> bool:
-    """Return True if value is a valid identifier (a-z0-9_, max 32 bytes)."""
+    """
+    Whether `value` is portable as a name wherever a backend restricts names.
+
+    Such a name holds only lowercase letters, digits, and underscores, and is
+    at most 32 bytes, so every backend accepts it.
+    """
     return (
         bool(_IDENTIFIER_RE.fullmatch(value))
         and len(value.encode()) <= _IDENTIFIER_MAX_BYTES
