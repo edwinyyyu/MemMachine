@@ -56,15 +56,3 @@ def remove_exited_process_gauges() -> None:
             # Two processes starting together can remove the same file.
             with contextlib.suppress(FileNotFoundError):
                 multiprocess.mark_process_dead(pid, directory)
-
-
-def remove_own_process_gauges() -> None:
-    """Stop summing this process's gauge values, as the last step of its exit.
-
-    Values the process sets afterwards are not reported. No-op when
-    PROMETHEUS_MULTIPROC_DIR is unset.
-    """
-    directory = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
-    if not directory:
-        return
-    multiprocess.mark_process_dead(os.getpid(), directory)

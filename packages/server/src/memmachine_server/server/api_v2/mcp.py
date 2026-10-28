@@ -44,10 +44,7 @@ from memmachine_server.server.diagnostics import (
     install_sigusr1_handler,
     report_event_loop_lag,
 )
-from memmachine_server.server.metrics import (
-    remove_exited_process_gauges,
-    remove_own_process_gauges,
-)
+from memmachine_server.server.metrics import remove_exited_process_gauges
 
 logger = logging.getLogger(__name__)
 
@@ -414,29 +411,25 @@ async def mcp_http_lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     """
     install_sigusr1_handler()
-    # uvicorn has no hook for a worker's exit, so a worker removes its own
-    # gauge values when it exits cleanly, and each worker removes those of
-    # crashed predecessors as it starts.
+    # uvicorn replaces an exited worker without an exit hook, so each worker
+    # removes its exited predecessors' gauge values as it starts.
     remove_exited_process_gauges()
-    try:
-        async with global_memory_lifespan(), mcp_app.lifespan(application):
-            application.state.mem_machine = mem_machine
-            # Lag is reported only while the worker serves, so blocking startup
-            # and shutdown work does not read as saturation.
-            event_loop_lag_reporting = asyncio.create_task(
-                report_event_loop_lag(
-                    await ResourceManagerImpl.get_metrics_factory("prometheus")
-                )
+    async with global_memory_lifespan(), mcp_app.lifespan(application):
+        application.state.mem_machine = mem_machine
+        # Lag is reported only while the worker serves, so blocking startup and
+        # shutdown work does not read as saturation.
+        event_loop_lag_reporting = asyncio.create_task(
+            report_event_loop_lag(
+                await ResourceManagerImpl.get_metrics_factory("prometheus")
             )
-            try:
-                yield
-            finally:
-                event_loop_lag_reporting.cancel()
-                with suppress(asyncio.CancelledError):
-                    await event_loop_lag_reporting
-            dump_traceback()
-    finally:
-        remove_own_process_gauges()
+        )
+        try:
+            yield
+        finally:
+            event_loop_lag_reporting.cancel()
+            with suppress(asyncio.CancelledError):
+                await event_loop_lag_reporting
+        dump_traceback()
 
 
 @mcp.tool(

@@ -2,8 +2,8 @@
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,16 +20,20 @@ def _keep_the_loop_busy(seconds: float) -> None:
 
 
 @asynccontextmanager
+async def _blocking_startup() -> AsyncGenerator[None, None]:
+    # Startup awaits I/O, letting other tasks run, before it blocks the loop.
+    await asyncio.sleep(0.05)
+    _keep_the_loop_busy(0.3)
+    yield
+
+
+@asynccontextmanager
 async def _no_op_lifespan(_application: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
 
-def _stub_lifespan_dependencies(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    resources: Callable[[], AbstractAsyncContextManager[None]],
-) -> MagicMock:
-    """Replace what the lifespan starts with `resources`; return the lag histogram."""
+@pytest.mark.asyncio
+async def test_blocking_startup_work_is_not_reported_as_lag(monkeypatch):
     lag = MagicMock()
     metrics_factory = MagicMock(spec=MetricsFactory)
     metrics_factory.get_histogram.return_value = lag
@@ -40,23 +44,10 @@ def _stub_lifespan_dependencies(
     monkeypatch.setattr(
         mcp.ResourceManagerImpl, "get_metrics_factory", get_metrics_factory
     )
-    monkeypatch.setattr(mcp, "global_memory_lifespan", resources)
+    monkeypatch.setattr(mcp, "global_memory_lifespan", _blocking_startup)
     monkeypatch.setattr(mcp, "mcp_app", MagicMock(lifespan=_no_op_lifespan))
     monkeypatch.setattr(mcp, "install_sigusr1_handler", lambda: None)
     monkeypatch.setattr(mcp, "dump_traceback", lambda: None)
-    return lag
-
-
-@pytest.mark.asyncio
-async def test_blocking_startup_work_is_not_reported_as_lag(monkeypatch):
-    @asynccontextmanager
-    async def blocking_startup() -> AsyncGenerator[None, None]:
-        # Startup awaits I/O, letting other tasks run, before it blocks the loop.
-        await asyncio.sleep(0.05)
-        _keep_the_loop_busy(0.3)
-        yield
-
-    lag = _stub_lifespan_dependencies(monkeypatch, resources=blocking_startup)
 
     async with mcp.mcp_http_lifespan(FastAPI()):
         await asyncio.sleep(0.25)
@@ -64,27 +55,3 @@ async def test_blocking_startup_work_is_not_reported_as_lag(monkeypatch):
     observed = [observation.args[0] for observation in lag.observe.call_args_list]
     assert observed
     assert max(observed) < 0.1
-
-
-@pytest.mark.asyncio
-async def test_a_worker_removes_its_own_gauge_values_after_its_resources_close(
-    monkeypatch,
-):
-    events: list[str] = []
-
-    @asynccontextmanager
-    async def resources() -> AsyncGenerator[None, None]:
-        yield
-        events.append("resources closed")
-
-    _stub_lifespan_dependencies(monkeypatch, resources=resources)
-    monkeypatch.setattr(
-        mcp,
-        "remove_own_process_gauges",
-        lambda: events.append("own gauge values removed"),
-    )
-
-    async with mcp.mcp_http_lifespan(FastAPI()):
-        pass
-
-    assert events == ["resources closed", "own gauge values removed"]
