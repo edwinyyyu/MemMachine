@@ -12,11 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from memmachine_server.server.metrics import (
-    metrics_registry,
-    remove_exited_process_gauges,
-    start_metrics_server,
-)
+from memmachine_server.server.metrics import metrics_registry, start_metrics_server
 
 ENV_VAR = "PROMETHEUS_MULTIPROC_DIR"
 
@@ -60,24 +56,17 @@ def _summed_gauge_value() -> float | None:
     )
 
 
-def test_an_additive_gauge_stops_counting_an_exited_worker(monkeypatch, tmp_path):
+def test_an_additive_gauge_reports_the_sum_over_workers(monkeypatch, tmp_path):
     monkeypatch.setenv(ENV_VAR, str(tmp_path))
-    running = _start_worker(tmp_path, 2)
+    first = _start_worker(tmp_path, 2)
     try:
-        exited = _start_worker(tmp_path, 3)
-        exited.communicate()
-        assert _summed_gauge_value() == 5
-
-        remove_exited_process_gauges()
-
-        assert _summed_gauge_value() == 2
+        second = _start_worker(tmp_path, 3)
+        try:
+            assert _summed_gauge_value() == 5
+        finally:
+            second.communicate()
     finally:
-        running.communicate()
-
-
-def test_removing_exited_gauges_without_a_directory_is_a_no_op(monkeypatch):
-    monkeypatch.delenv(ENV_VAR, raising=False)
-    remove_exited_process_gauges()
+        first.communicate()
 
 
 @pytest.mark.asyncio

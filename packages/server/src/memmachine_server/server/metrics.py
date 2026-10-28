@@ -1,10 +1,7 @@
 """Prometheus metrics output shared by the server's worker processes."""
 
-import contextlib
 import os
-from pathlib import Path
 
-import psutil
 from prometheus_client import (
     REGISTRY,
     CollectorRegistry,
@@ -36,23 +33,3 @@ def metrics_registry() -> CollectorRegistry:
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
     return registry
-
-
-def remove_exited_process_gauges() -> None:
-    """Stop summing the gauge values of processes that have exited.
-
-    A gauge summed across processes keeps counting a process's last values
-    until they are removed from PROMETHEUS_MULTIPROC_DIR. Counters and
-    histograms keep an exited process's totals, which their sums need.
-    No-op when the variable is unset.
-    """
-    directory = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
-    if not directory:
-        return
-    # Every metric file is named for the process that writes it: <kind>_<pid>.db.
-    pids = {int(path.stem.rpartition("_")[2]) for path in Path(directory).glob("*.db")}
-    for pid in pids:
-        if not psutil.pid_exists(pid):
-            # Two processes starting together can remove the same file.
-            with contextlib.suppress(FileNotFoundError):
-                multiprocess.mark_process_dead(pid, directory)
