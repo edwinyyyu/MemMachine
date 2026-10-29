@@ -74,7 +74,7 @@ def property_columns(indexed_properties: Mapping[str, PropertyType]) -> list[Col
 
 def property_column_names(indexed_properties: Mapping[str, PropertyType]) -> list[str]:
     """The names of the columns `property_columns` builds, in its order."""
-    return [column.name for column in property_columns(indexed_properties)]
+    return [property_column_name(key) for key in indexed_properties]
 
 
 def property_indexes(
