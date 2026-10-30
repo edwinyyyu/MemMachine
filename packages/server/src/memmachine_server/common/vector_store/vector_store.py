@@ -58,8 +58,9 @@ class VectorStorePartition(ABC):
         """
         Upsert records in the partition.
 
-        Insert records with new UUIDs,
-        and update records with existing UUIDs.
+        Insert records with new UUIDs, and replace records with existing UUIDs:
+        a replaced record holds only the vector and properties it is upserted
+        with.
 
         Args:
             records (Iterable[Record]):

@@ -173,6 +173,21 @@ class DeclaredSchemaContract:
         assert await _admitted(partition, Not(IsNull(field="name"))) == {holding.uuid}
 
     @pytest.mark.asyncio
+    async def test_a_reupsert_clears_the_keys_it_drops(self, partition):
+        record = _record([1.0, 0.0, 0.0], **_DECLARED)
+        await self._store(partition, [record])
+        await partition.upsert(
+            records=[
+                Record(
+                    uuid=record.uuid, vector=record.vector, properties={"name": "alice"}
+                )
+            ]
+        )
+        await self.settle(partition)
+        for key in ("age", "score", "active", "created_at"):
+            assert await _admitted(partition, IsNull(field=key)) == {record.uuid}, key
+
+    @pytest.mark.asyncio
     async def test_datetime_bounds_hold_at_microsecond_precision(self, partition):
         base = datetime(2024, 3, 1, 12, 0, 0, tzinfo=UTC)
         instants = [base + timedelta(microseconds=offset) for offset in range(3)]
