@@ -1,6 +1,7 @@
 """Qdrant-based vector store implementation."""
 
 import math
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, ClassVar, override
 from uuid import UUID, uuid5
@@ -14,6 +15,7 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 from memmachine_server.common.data_types import (
     OrderedValue,
+    PropertyType,
     PropertyValue,
     SimilarityMetric,
 )
@@ -94,27 +96,49 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
         "<=": "lte",
     }
 
+    # A filter no point satisfies. A leaf whose value is of another type
+    # than its key declares matches nothing, as on every backend; sent as
+    # is, the server would refuse it for the field's index (strict mode)
+    # rather than scan for it.
+    _NO_MATCH: ClassVar[models.Filter] = models.Filter(
+        must=[models.HasIdCondition(has_id=[])]
+    )
+
     @staticmethod
-    def _build_qdrant_filter(expr: FilterExpr) -> models.Filter:
-        """Convert a FilterExpr tree into a Qdrant Filter."""
+    def _build_qdrant_filter(
+        expr: FilterExpr, indexed_properties: Mapping[str, PropertyType]
+    ) -> models.Filter:
+        """Convert a FilterExpr tree into a Qdrant Filter over the declared keys."""
+        build = QdrantVectorStorePartition._build_qdrant_filter
         if isinstance(expr, FilterComparison):
+            if type(expr.value) is not indexed_properties[expr.field]:
+                return QdrantVectorStorePartition._NO_MATCH
             return QdrantVectorStorePartition._build_qdrant_comparison(expr)
         if isinstance(expr, FilterIn):
+            if (
+                expr.values
+                and type(expr.values[0]) is not indexed_properties[expr.field]
+            ):
+                return QdrantVectorStorePartition._NO_MATCH
             return QdrantVectorStorePartition._in_filter(expr.field, expr.values)
         if isinstance(expr, FilterIsNull):
             return QdrantVectorStorePartition._null_filter(expr.field, negate=False)
         if isinstance(expr, FilterNot):
-            return models.Filter(
-                must_not=[QdrantVectorStorePartition._build_qdrant_filter(expr.expr)]
-            )
+            return models.Filter(must_not=[build(expr.expr, indexed_properties)])
         if isinstance(expr, FilterAnd):
-            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
-            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
-            return models.Filter(must=[left, right])
+            return models.Filter(
+                must=[
+                    build(expr.left, indexed_properties),
+                    build(expr.right, indexed_properties),
+                ]
+            )
         if isinstance(expr, FilterOr):
-            left = QdrantVectorStorePartition._build_qdrant_filter(expr.left)
-            right = QdrantVectorStorePartition._build_qdrant_filter(expr.right)
-            return models.Filter(should=[left, right])
+            return models.Filter(
+                should=[
+                    build(expr.left, indexed_properties),
+                    build(expr.right, indexed_properties),
+                ]
+            )
         message = f"Unsupported filter expression type: {type(expr)}"
         raise TypeError(message)
 
@@ -320,7 +344,9 @@ class QdrantVectorStorePartition(RegistryBackedVectorStorePartition):
             qdrant_filter = models.Filter(
                 must=[
                     qdrant_filter,
-                    QdrantVectorStorePartition._build_qdrant_filter(property_filter),
+                    QdrantVectorStorePartition._build_qdrant_filter(
+                        property_filter, self._store_schema.indexed_properties
+                    ),
                 ]
             )
 
@@ -416,6 +442,16 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
         SimilarityMetric.MANHATTAN: models.Distance.MANHATTAN,
     }
 
+    # The store filters only on indexed keys (the declared keys and the
+    # incarnation). Strict mode makes the server refuse a filter on any other
+    # key instead of scanning for it, so a missing index fails a search
+    # rather than slowing it.
+    _STRICT_MODE: ClassVar[models.StrictModeConfig] = models.StrictModeConfig(
+        enabled=True,
+        unindexed_filtering_retrieve=False,
+        unindexed_filtering_update=False,
+    )
+
     _PROPERTY_TYPE_TO_INDEX_TYPE: ClassVar[
         dict[type[PropertyValue], models.PayloadSchemaType]
     ] = {
@@ -469,11 +505,7 @@ class QdrantVectorStore(RegistryBackedVectorStore[QdrantVectorStorePartition]):
                     m=0,
                     payload_m=self._hnsw_m,
                 ),
-                # A filter may name a property without a payload index, which
-                # the server scans for. Strict mode refuses such a filter
-                # instead, and a server may turn it on for new collections by
-                # default, so it is turned off here.
-                strict_mode_config=models.StrictModeConfig(enabled=False),
+                strict_mode_config=QdrantVectorStore._STRICT_MODE,
             )
         except (UnexpectedResponse, grpc.aio.AioRpcError) as e:
             if not QdrantVectorStore._is_already_exists_error(e):
