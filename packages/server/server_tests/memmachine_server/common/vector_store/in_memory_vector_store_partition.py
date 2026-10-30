@@ -27,6 +27,10 @@ from memmachine_server.common.vector_store.data_types import (
     QueryResult,
     Record,
 )
+from memmachine_server.common.vector_store.utils import (
+    validate_declared_properties,
+    validate_supported_filter,
+)
 
 # ---------------------------------------------------------------------------
 # Filter evaluation
@@ -116,11 +120,16 @@ def _passes_threshold(score: float, threshold: float, higher_is_better: bool) ->
 class InMemoryVectorStorePartition(VectorStorePartition):
     """In-memory VectorStorePartition for testing.
 
-    Supports all similarity metrics (cosine, dot, euclidean, manhattan)
-    and full FilterExpr evaluation on record properties.
+    Supports all similarity metrics (cosine, dot, euclidean, manhattan),
+    evaluates FilterExpr on record properties, and enforces the declared
+    schema the way a real store does.
     """
 
-    def __init__(self, *, store_schema: VectorStoreSchema) -> None:
+    def __init__(
+        self,
+        *,
+        store_schema: VectorStoreSchema,
+    ) -> None:
         self._store_schema = store_schema
         self.records: dict[UUID, Record] = {}
 
@@ -129,6 +138,11 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         return self._store_schema
 
     async def upsert(self, *, records: Iterable[Record]) -> None:
+        records = list(records)
+        for record in records:
+            validate_declared_properties(
+                record.properties, self._store_schema.indexed_properties
+            )
         for record in records:
             self.records[record.uuid] = Record(
                 uuid=record.uuid,
@@ -144,6 +158,11 @@ class InMemoryVectorStorePartition(VectorStorePartition):
         limit: int | None = None,
         property_filter: FilterExpr | None = None,
     ) -> list[QueryResult]:
+        if property_filter is not None:
+            validate_supported_filter(
+                property_filter, self._store_schema.indexed_properties
+            )
+
         metric = self._store_schema.similarity_metric
         higher_is_better = metric.higher_is_better
 

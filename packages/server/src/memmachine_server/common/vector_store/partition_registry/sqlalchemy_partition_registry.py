@@ -50,6 +50,7 @@ from sqlalchemy.pool import StaticPool
 
 from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store.data_types import (
+    _IDENTIFIER_MAX_BYTES,
     VectorStoreAttemptsExhaustedError,
     VectorStorePartitionAlreadyExistsError,
     VectorStorePartitionDeletedError,
@@ -58,7 +59,6 @@ from memmachine_server.common.vector_store.data_types import (
     validate_vector_store_name,
 )
 from memmachine_server.common.vector_store.utils import (
-    _IDENTIFIER_MAX_BYTES,
     _PARTITION_KEY_MAX_BYTES,
 )
 

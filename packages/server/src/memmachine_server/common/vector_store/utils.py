@@ -1,48 +1,17 @@
 """Shared utilities for vector store implementations."""
 
 import math
-import re
 from collections.abc import Mapping, Sequence
 
-from memmachine_server.common.data_types import (
-    PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME,
-    PropertyType,
-    PropertyValue,
-)
-from memmachine_server.common.filter.filter_parser import (
-    And as FilterAnd,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Comparison as FilterComparison,
-)
+from memmachine_server.common.data_types import PropertyType, PropertyValue
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
-)
-from memmachine_server.common.filter.filter_parser import (
-    In as FilterIn,
-)
-from memmachine_server.common.filter.filter_parser import (
-    IsNull as FilterIsNull,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Not as FilterNot,
-)
-from memmachine_server.common.filter.filter_parser import (
-    Or as FilterOr,
+    filter_fields,
 )
 
-# Matched with fullmatch: `$` also matches before a trailing newline.
-_IDENTIFIER_RE = re.compile(r"[a-z0-9_]+")
-_IDENTIFIER_MAX_BYTES = 32
+from .data_types import PropertyTypeMismatchError, UndeclaredPropertyKeyError
+
 _PARTITION_KEY_MAX_BYTES = 255
-
-
-def is_valid_identifier(value: str) -> bool:
-    """Return True if value is a valid identifier (a-z0-9_, max 32 bytes)."""
-    return (
-        bool(_IDENTIFIER_RE.fullmatch(value))
-        and len(value.encode()) <= _IDENTIFIER_MAX_BYTES
-    )
 
 
 def validate_partition_key(partition_key: str) -> None:
@@ -58,20 +27,24 @@ def validate_partition_key(partition_key: str) -> None:
         )
 
 
-def validate_declared_types(
+def validate_declared_properties(
     properties: Mapping[str, PropertyValue],
     indexed_properties: Mapping[str, PropertyType],
 ) -> None:
-    """Raise unless every declared property holds a value of its declared type."""
+    """
+    Raise unless every property is declared and holds a value of its type.
+
+    Called before anything is sent, so an undeclared key never reaches a
+    backend, and a declared key never holds a value its column or index
+    would have to coerce.
+    """
+    undeclared = properties.keys() - indexed_properties.keys()
+    if undeclared:
+        raise UndeclaredPropertyKeyError(undeclared, indexed_properties.keys())
     for key, value in properties.items():
-        declared_type = indexed_properties.get(key)
         # `bool` is an `int` at runtime and is its own property type here.
-        if declared_type is not None and type(value) is not declared_type:
-            raise ValueError(
-                f"Property {key!r} is declared as "
-                f"{PROPERTY_TYPE_TO_PROPERTY_TYPE_NAME[declared_type]}, "
-                f"got {type(value).__name__} {value!r}."
-            )
+        if type(value) is not indexed_properties[key]:
+            raise PropertyTypeMismatchError(key, indexed_properties[key], value)
 
 
 def validate_query_vector(query_vector: Sequence[float], dimensions: int) -> None:
@@ -109,12 +82,16 @@ def validate_dimensions(vector: Sequence[float], dimensions: int) -> None:
         )
 
 
-def is_valid_filter(expr: FilterExpr) -> bool:
-    """Return whether all field names in the filter tree are valid identifiers."""
-    if isinstance(expr, (FilterComparison, FilterIn, FilterIsNull)):
-        return is_valid_identifier(expr.field)
-    if isinstance(expr, FilterNot):
-        return is_valid_filter(expr.expr)
-    if isinstance(expr, (FilterAnd, FilterOr)):
-        return is_valid_filter(expr.left) and is_valid_filter(expr.right)
-    raise TypeError(f"Unsupported filter expression type: {type(expr)}")
+def validate_supported_filter(
+    property_filter: FilterExpr,
+    indexed_properties: Mapping[str, PropertyType],
+) -> None:
+    """
+    Raise unless a filter names declared keys only.
+
+    An undeclared key never exists in the store, so a filter naming one has
+    nothing to scan for.
+    """
+    undeclared = filter_fields(property_filter) - indexed_properties.keys()
+    if undeclared:
+        raise UndeclaredPropertyKeyError(undeclared, indexed_properties.keys())

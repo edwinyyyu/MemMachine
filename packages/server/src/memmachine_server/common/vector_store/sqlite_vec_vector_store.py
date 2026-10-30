@@ -3,6 +3,12 @@ Vector store backed by SQLite + sqlite-vec.
 
 Each life of a partition gets its own records table and vec0 virtual table,
 since sqlite-vec's ANN indexes may not support partition keys.
+
+A partition's records table carries one typed, indexed column per declared
+property, and a filtered query hands the KNN an allowlist of the rows the
+filter admits, so the filter is evaluated during the search: vec0 ranks only
+the allowed rows, and a filtered search returns fewer only when the filter
+admits fewer.
 """
 
 import logging
@@ -14,36 +20,36 @@ import aiosqlite
 import sqlite_vec
 from pydantic import Field, InstanceOf, field_validator
 from sqlalchemy import (
-    JSON,
     Column,
     Integer,
     MetaData,
+    Select,
     String,
     Table,
     Uuid,
+    column,
     delete,
     event,
     select,
     text,
 )
+from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, MappedColumn, mapped_column
 from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
+from sqlalchemy.sql.elements import ColumnElement
 
 from memmachine_server.common.data_types import (
     SimilarityMetric,
 )
 from memmachine_server.common.filter.filter_parser import FilterExpr
-from memmachine_server.common.filter.sql_filter_util import compile_sql_filter
-from memmachine_server.common.properties_json import (
-    encode_properties,
-)
 from memmachine_server.common.sql import write_session
 
 from .data_types import (
+    _IDENTIFIER_MAX_BYTES,
     QueryMatch,
     QueryResult,
     Record,
@@ -52,16 +58,22 @@ from .data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
 )
+from .sqlite_properties import (
+    compile_property_filter,
+    property_column_names,
+    property_column_values,
+    property_columns,
+    property_indexes,
+)
 from .utils import (
-    _IDENTIFIER_MAX_BYTES,
     _PARTITION_KEY_MAX_BYTES,
-    is_valid_filter,
-    validate_declared_types,
+    validate_declared_properties,
     validate_dimensions,
     validate_limit,
     validate_partition_key,
     validate_query_vector,
     validate_score_threshold,
+    validate_supported_filter,
 )
 from .vector_store import VectorStore, VectorStoreParams, VectorStorePartition
 
@@ -161,34 +173,36 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
     async def upsert(self, *, records: Iterable[Record]) -> None:
         records = list(records)
         for record in records:
-            validate_declared_types(
+            validate_declared_properties(
                 record.properties, self._store_schema.indexed_properties
             )
             validate_dimensions(record.vector, self._store_schema.vector_dimensions)
+
+        column_names = property_column_names(self._store_schema.indexed_properties)
+        insert_records = sqlite_insert(self._records_table)
+        upsert_records = insert_records.on_conflict_do_update(
+            index_elements=[self._records_table.c.uuid],
+            # With no declared column the update is a no-op that still
+            # returns the existing row, which `RETURNING` needs.
+            set_={
+                name: insert_records.excluded[name]
+                for name in (column_names or ["uuid"])
+            },
+        ).returning(self._records_table.c.uuid, self._records_table.c.rowid)
 
         async with write_session(self._create_session) as session:
             await self._require_current(session)
             if not records:
                 return
-            upsert_records = (
-                sqlite_insert(self._records_table)
-                .on_conflict_do_update(
-                    index_elements=[self._records_table.c.uuid],
-                    set_={
-                        "properties": sqlite_insert(
-                            self._records_table
-                        ).excluded.properties,
-                    },
-                )
-                .returning(self._records_table.c.uuid, self._records_table.c.rowid)
-            )
             rows = (
                 await session.execute(
                     upsert_records,
                     [
                         {
                             "uuid": record.uuid,
-                            "properties": encode_properties(record.properties),
+                            **property_column_values(
+                                record.properties, self._store_schema.indexed_properties
+                            ),
                         }
                         for record in records
                     ],
@@ -235,8 +249,16 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
             validate_query_vector(query_vector, self._store_schema.vector_dimensions)
         validate_score_threshold(score_threshold)
 
-        if property_filter is not None and not is_valid_filter(property_filter):
-            raise ValueError("Filter contains invalid field names")
+        filter_expression: ColumnElement[bool] | None = None
+        if property_filter is not None:
+            validate_supported_filter(
+                property_filter, self._store_schema.indexed_properties
+            )
+            filter_expression = compile_property_filter(
+                property_filter,
+                self._records_table,
+                self._store_schema.indexed_properties,
+            )
 
         k = min(limit, self._MAX_K)
 
@@ -244,16 +266,11 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
         async with self._create_session() as session:
             await self._require_current(session)
             for query_vector in query_vectors:
-                query_blob = self._serialize_vector(query_vector)
-
                 knn_rows = (
                     await session.execute(
-                        text(
-                            f"SELECT rowid, distance FROM [{self._vector_table_name}] "
-                            f"WHERE vector MATCH :query AND k = :k "
-                            f"ORDER BY distance"
-                        ),
-                        {"query": query_blob, "k": k},
+                        self._knn_statement(
+                            self._serialize_vector(query_vector), k, filter_expression
+                        )
                     )
                 ).all()
 
@@ -264,45 +281,57 @@ class SQLiteVecVectorStorePartition(VectorStorePartition):
                     session=session,
                     rowid_to_distance=rowid_to_distance,
                     score_threshold=score_threshold,
-                    property_filter=property_filter,
                 )
                 results.append(QueryResult(matches=matches))
 
         return results
+
+    def _knn_statement(
+        self,
+        query_blob: bytes,
+        k: int,
+        filter_expression: ColumnElement[bool] | None,
+    ) -> Select:
+        """The KNN over the partition's vectors, restricted to the rows a filter admits.
+
+        vec0 takes a `rowid IN (...)` constraint into the search itself, so
+        the `k` nearest are the nearest among the admitted rows.
+        """
+        statement = (
+            select(column("rowid"), column("distance"))
+            .select_from(sql_table(self._vector_table_name))
+            .where(
+                text("vector MATCH :query AND k = :k").bindparams(query=query_blob, k=k)
+            )
+        )
+        if filter_expression is not None:
+            statement = statement.where(
+                column("rowid").in_(
+                    select(self._records_table.c.rowid).where(filter_expression)
+                )
+            )
+        return statement.order_by(column("distance"))
 
     async def _build_matches(
         self,
         session: AsyncSession,
         rowid_to_distance: Mapping[int, float],
         score_threshold: float | None,
-        property_filter: FilterExpr | None,
     ) -> list[QueryMatch]:
-        fetch_records = select(
-            self._records_table.c.uuid, self._records_table.c.rowid
-        ).where(
-            self._records_table.c.rowid.in_(list(rowid_to_distance)),
-        )
-        if property_filter is not None:
-            fetch_records = fetch_records.where(
-                compile_sql_filter(
-                    property_filter,
-                    lambda field: (
-                        self._records_table.c.properties[field],
-                        "properties_json",
-                    ),
+        matched_rowids = list(rowid_to_distance.keys())
+
+        matched_rows = (
+            await session.execute(
+                select(self._records_table.c.uuid, self._records_table.c.rowid).where(
+                    self._records_table.c.rowid.in_(matched_rowids),
                 )
             )
-
-        matched_rows = (await session.execute(fetch_records)).all()
+        ).all()
 
         matches: list[QueryMatch] = []
         for row in matched_rows:
-            distance = rowid_to_distance.get(row.rowid)
-            if distance is None:
-                continue
-
             score = self._distance_to_score(
-                distance, self._store_schema.similarity_metric
+                rowid_to_distance[row.rowid], self._store_schema.similarity_metric
             )
             if score_threshold is not None and (
                 score < score_threshold
@@ -616,14 +645,20 @@ class SQLiteVecVectorStore(VectorStore):
         ).scalar_one_or_none()
 
     def _records_table(self, incarnation: UUID) -> Table:
-        return Table(
-            self._records_table_name(incarnation),
+        """The partition life's records table, built once per incarnation."""
+        name = self._records_table_name(incarnation)
+        records_table = self._sa_metadata.tables.get(name)
+        if records_table is not None:
+            return records_table
+        records_table = Table(
+            name,
             self._sa_metadata,
             Column("rowid", Integer, primary_key=True, autoincrement=True),
             Column("uuid", Uuid, nullable=False, unique=True),
-            Column("properties", JSON, nullable=False, default=dict),
-            extend_existing=True,
+            *property_columns(self._store_schema.indexed_properties),
         )
+        property_indexes(records_table, self._store_schema.indexed_properties)
+        return records_table
 
     async def _insert_partition(self, partition_key: str, incarnation: UUID) -> None:
         """
@@ -670,22 +705,6 @@ class SQLiteVecVectorStore(VectorStore):
                         f")"
                     )
                 )
-
-                properties_column = Column("properties", JSON)
-                for field_name in self._store_schema.indexed_properties:
-                    value_expr = properties_column[field_name]["v"].as_string()
-                    compiled_expr = value_expr.compile(
-                        dialect=session.bind.dialect,
-                        compile_kwargs={"literal_binds": True},
-                    )
-                    index_name = f"{records_table.name}__{field_name}_v"
-                    await session.execute(
-                        text(
-                            f"CREATE INDEX [{index_name}] "
-                            f"ON [{records_table.name}]"
-                            f"({compiled_expr})"
-                        )
-                    )
         except IntegrityError as err:
             async with self._create_session() as session:
                 taken = await self._partition_incarnation(session, partition_key)

@@ -53,6 +53,7 @@ from memmachine_server.semantic_memory.semantic_memory import SemanticService
 from memmachine_server.semantic_memory.semantic_session_manager import (
     SemanticSessionManager,
 )
+from memmachine_server.semantic_memory.storage.storage_base import SemanticStorage
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +373,11 @@ class ResourceManagerImpl:
         """Return the semantic session manager."""
         semantic_manager = await self.get_semantic_manager()
         return await semantic_manager.get_semantic_session_manager()
+
+    async def get_semantic_storage(self) -> SemanticStorage:
+        """Return the semantic storage the semantic service uses."""
+        semantic_manager = await self.get_semantic_manager()
+        return await semantic_manager.get_semantic_storage()
 
     @staticmethod
     async def get_metrics_factory(name: str) -> MetricsFactory:

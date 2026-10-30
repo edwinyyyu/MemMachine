@@ -35,11 +35,12 @@ class VectorStorePartition(ABC):
     An `upsert` or `delete` is durable once it returns; queries may not
     reflect it right away. A store that guarantees more states it.
 
-    A partition stores every property of a record and filters on any key;
-    the keys its store declares (`store_schema.indexed_properties`)
-    are indexed for
-    filtering during a search, and their values are typed. Record
-    properties not declared may have mixed-type values.
+    A partition stores the properties its store declares
+    (`store_schema.indexed_properties`), typed and indexed for filtering
+    during a search, and no others: a record or a filter naming an
+    undeclared key is rejected, so an undeclared key never exists in the
+    store, neither stored write-only nor scanned for. Every store evaluates
+    the whole filter language during a search.
     """
 
     @property
@@ -57,20 +58,23 @@ class VectorStorePartition(ABC):
         """
         Upsert records in the partition.
 
-        Insert records with new UUIDs,
-        and update records with existing UUIDs.
+        Insert records with new UUIDs, and replace records with existing UUIDs:
+        a replaced record holds only the vector and properties it is upserted
+        with.
 
         Args:
             records (Iterable[Record]):
                 Iterable of records to upsert.
-                Records containing properties
-                not among the declared properties
-                are allowed.
 
         Raises:
+            PropertyTypeMismatchError:
+                If a record's value is not of its key's declared type;
+                raised before anything is sent.
+            UndeclaredPropertyKeyError:
+                If a record carries a key the store has not declared;
+                raised before anything is sent.
             ValueError:
-                If a record's declared property holds a value of another
-                type, or its vector does not have the store's dimensions.
+                If a record's vector does not have the store's dimensions.
         """
         raise NotImplementedError
 
@@ -93,14 +97,16 @@ class VectorStorePartition(ABC):
                 The vectors to compare against.
             limit (int):
                 Maximum number of matching records to return per query vector;
-                positive.
+                positive. A filtered search returns fewer when the filter
+                admits fewer.
             score_threshold (float | None):
                 The worst score a match may have, by the store's
                 similarity metric; a match scoring exactly the threshold is
                 returned (default: None).
             property_filter (FilterExpr | None):
-                Filter expression tree.
-                If None or empty, no property filtering is applied
+                Filter expression tree over declared keys, evaluated during
+                the search.
+                If None, no property filtering is applied
                 (default: None).
 
         Returns:
@@ -109,11 +115,12 @@ class VectorStorePartition(ABC):
                 ordered as in the input iterable.
 
         Raises:
+            UndeclaredPropertyKeyError:
+                If the filter names a key the store has not declared.
             ValueError:
                 If the limit is not positive, a query vector does not have
                 the store's dimensions or has a coordinate that is not
-                finite, the score threshold is not finite, or the property
-                filter names an invalid property key.
+                finite, or the score threshold is not finite.
         """
         raise NotImplementedError
 
@@ -177,12 +184,12 @@ class VectorStore(ABC):
                 The key of the partition.
 
         Raises:
+            VectorStoreAttemptsExhaustedError: If the store gave up creating the
+                partition after repeated attempts that made no progress.
             VectorStorePartitionAlreadyExistsError: If the partition already exists,
                 or is being created.
             VectorStorePartitionDeletedError: If the partition was deleted
                 before its creation completed.
-            VectorStoreAttemptsExhaustedError: If the store gave up creating the
-                partition after repeated attempts that made no progress.
         """
         raise NotImplementedError
 
@@ -202,12 +209,12 @@ class VectorStore(ABC):
                 A handle bound to the partition's current life.
 
         Raises:
-            VectorStorePartitionPendingError: If the partition's creation, by
-                another caller, did not complete within the store's attempts
-                to open it.
             VectorStoreAttemptsExhaustedError: If the store gave up opening or
                 creating the partition after repeated attempts that made no
                 progress.
+            VectorStorePartitionPendingError: If the partition's creation, by
+                another caller, did not complete within the store's attempts
+                to open it.
         """
         raise NotImplementedError
 

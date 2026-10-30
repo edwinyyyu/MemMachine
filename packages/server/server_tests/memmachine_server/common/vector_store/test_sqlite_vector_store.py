@@ -20,7 +20,6 @@ from memmachine_server.common.filter.filter_parser import (
     Not,
     Or,
 )
-from memmachine_server.common.properties_json import decode_properties
 from memmachine_server.common.sql import (
     enable_sqlite_explicit_begin,
     enable_sqlite_foreign_keys,
@@ -33,6 +32,9 @@ from memmachine_server.common.vector_store.data_types import (
     VectorStorePartitionHandleStaleError,
     VectorStoreSchema,
 )
+from memmachine_server.common.vector_store.sqlite_properties import (
+    property_column_name,
+)
 from memmachine_server.common.vector_store.sqlite_vector_store import (
     IndexLoadError,
     SQLiteVectorStore,
@@ -44,12 +46,17 @@ from memmachine_server.common.vector_store.sqlite_vector_store import (
 from memmachine_server.common.vector_store.vector_search_engine.usearch_engine import (
     USearchVectorSearchEngine,
 )
+from server_tests.memmachine_server.common.vector_store.declared_schema_contract import (
+    DeclaredSchemaContract,
+)
 
 VECTOR_STORE_NAME = "test_vector_store"
 NAME = "test_name"
 VECTOR_DIM = 3
 # A partition key of the longest length, with characters no identifier allows.
 ANY_CHARACTERS_KEY = "Session/ID-1 ü".ljust(254, "x")
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
 INDEXED_PROPERTIES: dict[str, PropertyType] = {
     "name": str,
     "age": int,
@@ -85,8 +92,26 @@ async def _stored(partition) -> dict[UUID, dict]:
     """
     table = partition._records_table
     async with partition._create_session() as session:
-        rows = (await session.execute(select(table.c.uuid, table.c.properties))).all()
-    return {row.uuid: decode_properties(row.properties) for row in rows}
+        rows = (await session.execute(select(table))).all()
+    return {
+        row.uuid: _declared_values(
+            row._mapping, partition.store_schema.indexed_properties
+        )
+        for row in rows
+    }
+
+
+def _declared_values(row, indexed_properties) -> dict:
+    """A row's declared properties that hold a value, a datetime as its instant in UTC."""
+    values = {}
+    for key, property_type in indexed_properties.items():
+        value = row[property_column_name(key)]
+        if value is None:
+            continue
+        if property_type is datetime:
+            value = _EPOCH + timedelta(microseconds=value)
+        values[key] = value
+    return values
 
 
 @pytest_asyncio.fixture
@@ -457,6 +482,15 @@ class TestUpsertAndQuery:
 # ── Filters ──
 
 
+class TestDeclaredSchema(DeclaredSchemaContract):
+    """The declared-schema contract, against this store."""
+
+    @staticmethod
+    async def settle(partition) -> None:
+        # A write commits before it returns, so reads reflect it already.
+        pass
+
+
 class TestFilters:
     async def _setup(self, partition):
         v1 = _normalize([1.0, 0.0, 0.0])
@@ -662,8 +696,8 @@ class TestFilters:
         assert len(uuids) == 1
 
     @pytest.mark.asyncio
-    async def test_datetime_timezone_roundtrip(self, partition):
-        """Original timezone is preserved through storage."""
+    async def test_a_datetime_is_stored_as_its_instant_in_utc(self, partition):
+        """A datetime is stored as its instant, read back in UTC."""
         v1 = _normalize([1.0, 0.0, 0.0])
         est = timezone(timedelta(hours=-5))
         dt = datetime(2024, 6, 15, 7, 0, 0, tzinfo=est)
@@ -672,7 +706,7 @@ class TestFilters:
 
         got = (await _stored(partition))[r1.uuid]["created_at"]
         assert got == dt
-        assert got.utcoffset() == timedelta(hours=-5)
+        assert got.utcoffset() == timedelta(0)
 
     # ── In / And / Or / Not ──
 
