@@ -72,6 +72,8 @@ class SemanticResourceManager:
         self._prompt_conf = prompt_conf
         self._episode_storage = episode_storage
 
+        self._semantic_storage: SemanticStorage | None = None
+        self._semantic_storage_lock = asyncio.Lock()
         self._semantic_service: SemanticService | None = None
         self._semantic_session_manager: SemanticSessionManager | None = None
 
@@ -85,6 +87,18 @@ class SemanticResourceManager:
         await asyncio.gather(*tasks)
 
     async def get_semantic_storage(self) -> SemanticStorage:
+        """Return the semantic storage, building and starting it on first use.
+
+        Resolves no language model, so deletion can use it while semantic
+        memory is disabled. The vector-store backend resolves the embedder
+        only when `vector_dimensions` is unset.
+        """
+        async with self._semantic_storage_lock:
+            if self._semantic_storage is None:
+                self._semantic_storage = await self._build_semantic_storage()
+            return self._semantic_storage
+
+    async def _build_semantic_storage(self) -> SemanticStorage:
         if self._conf.storage_backend == SemanticMemoryStorageBackend.VECTOR_STORE:
             return await self._get_vector_store_semantic_storage()
 
