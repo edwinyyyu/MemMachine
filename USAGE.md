@@ -422,7 +422,7 @@ These metrics show how close the server is to saturation:
 | Metric | Type | Meaning |
 |--------|------|---------|
 | `event_loop_lag_seconds` | Histogram | How late each worker's event loop ran a callback it scheduled 100 ms ahead, sampled continuously. `rate(event_loop_lag_seconds_sum[1m])` divided by the number of workers is the fraction of time the loops ran behind. |
-| `db_client_connection_count{pool_name, state="used"}` | Gauge | Connections checked out of a relational database's pool, summed over the worker processes. `pool_name` is the database's name under `resources.databases`. |
+| `db_client_connection_count{pool_name, state="used"}` | Gauge | Connections checked out of a relational database's pool, summed over the worker processes. With `MEMMACHINE_WORKERS` above 1, a worker that crashes keeps its last count in the sum until the server restarts. `pool_name` is the database's name under `resources.databases`. |
 | `db_client_connection_wait_time_seconds{pool_name}` | Histogram | Time each checkout took to get a connection from the pool, including checkouts that failed. |
 
 ## Common Integration Patterns

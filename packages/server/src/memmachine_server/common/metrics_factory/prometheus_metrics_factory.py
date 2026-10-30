@@ -116,8 +116,8 @@ class PrometheusMetricsFactory(MetricsFactory):
     ) -> Gauge:
         """Return a Prometheus-backed gauge, creating it if absent."""
         if name not in self._metrics:
-            # In multiprocess mode, a livesum gauge counts a process until
-            # multiprocess.mark_process_dead removes its file.
+            # In multiprocess mode, a livesum gauge sums the values in every
+            # process's file in the directory, an exited process's included.
             self._metrics[name] = PrometheusMetricsFactory.Gauge(
                 PrometheusGauge(
                     name,
