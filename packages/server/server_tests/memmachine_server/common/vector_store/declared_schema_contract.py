@@ -18,7 +18,7 @@ recall, by name, and not on the filter.
 """
 
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -57,16 +57,6 @@ def _unit(vector: list[float]) -> list[float]:
 
 def _record(vector: list[float], **properties) -> Record:
     return Record(uuid=uuid4(), vector=_unit(vector), properties=properties)
-
-
-def _presence_records() -> list[Record]:
-    """One record holding every declared key, one lacking each key, and one bare."""
-    records = [_record([1.0, 0.0, 0.0], **_DECLARED)]
-    for index, absent in enumerate(_DECLARED, start=1):
-        held = {key: value for key, value in _DECLARED.items() if key != absent}
-        records.append(_record([1.0, 0.1 * index, 0.0], **held))
-    records.append(_record([0.0, 1.0, 0.0]))
-    return records
 
 
 async def _admitted(partition, property_filter, *, limit=_LIMIT) -> set:
@@ -129,7 +119,7 @@ class DeclaredSchemaContract:
             )
 
     @pytest.mark.asyncio
-    async def test_every_node_evaluates_during_a_search(self, partition):
+    async def test_every_node_admits_the_matching_records(self, partition):
         held = _record([1.0, 0.0, 0.0], name="alice", age=30, score=1.5, active=True)
         other = _record([0.0, 1.0, 0.0], name="bob", age=40, active=False)
         lacking = _record([0.0, 0.0, 1.0], active=False)
@@ -213,8 +203,6 @@ class DeclaredSchemaContract:
         instant = datetime(2024, 3, 1, 12, 0, 0, tzinfo=UTC)
         record = _record([1.0, 0.0, 0.0], created_at=instant)
         await self._store(partition, [record])
-
-        from datetime import timezone
 
         same_instant = instant.astimezone(timezone(timedelta(hours=-8)))
         assert await _admitted(
