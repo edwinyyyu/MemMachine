@@ -134,7 +134,7 @@ async def test_build_sqlite(mock_conf):
 
 
 @pytest.mark.asyncio
-async def test_build_and_validate_sqlite():
+async def test_build_and_validate_sqlite(tmp_path):
     conf = MagicMock(spec=DatabasesConf)
     conf.neo4j_confs = {}
     conf.nebula_graph_confs = {}
@@ -143,7 +143,7 @@ async def test_build_and_validate_sqlite():
         "sqlite1": SqlAlchemyConf(
             dialect="sqlite",
             driver="aiosqlite",
-            path=":memory:",
+            path=str(tmp_path / "sqlite1.db"),
         )
     }
     builder = DatabaseManager(conf)
@@ -211,13 +211,13 @@ async def test_neo4j_pool_lifecycle_kwargs():
 
 
 @pytest.mark.asyncio
-async def test_sqlalchemy_pool_lifecycle_kwargs():
+async def test_sqlalchemy_pool_lifecycle_kwargs(tmp_path):
     """pool_timeout, pool_recycle, and pool_pre_ping are forwarded to create_async_engine."""
     conf = MagicMock(spec=DatabasesConf)
     sql_conf = SqlAlchemyConf(
         dialect="sqlite",
         driver="aiosqlite",
-        path=":memory:",
+        path=str(tmp_path / "db1.db"),
         pool_timeout=30,
         pool_recycle=3000,
         pool_pre_ping=True,
@@ -280,13 +280,13 @@ async def test_neo4j_pool_lifecycle_kwargs_none_omitted():
 
 
 @pytest.mark.asyncio
-async def test_sqlalchemy_pool_lifecycle_kwargs_none_omitted():
+async def test_sqlalchemy_pool_lifecycle_kwargs_none_omitted(tmp_path):
     """When pool lifecycle fields are None, they are not forwarded to create_async_engine."""
     conf = MagicMock(spec=DatabasesConf)
     sql_conf = SqlAlchemyConf(
         dialect="sqlite",
         driver="aiosqlite",
-        path=":memory:",
+        path=str(tmp_path / "db1.db"),
     )
     conf.neo4j_confs = {}
     conf.nebula_graph_confs = {}
