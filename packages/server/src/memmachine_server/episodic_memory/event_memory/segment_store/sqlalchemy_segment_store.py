@@ -50,7 +50,6 @@ from sqlalchemy.orm import (
     aliased,
     mapped_column,
 )
-from sqlalchemy.pool import StaticPool
 
 from memmachine_server.common.filter.filter_parser import (
     FilterExpr,
@@ -78,7 +77,11 @@ from memmachine_server.common.properties_json import (
     decode_properties,
     encode_properties,
 )
-from memmachine_server.common.sql import write_connection, write_session
+from memmachine_server.common.sql import (
+    require_separate_connections_to_one_database,
+    write_connection,
+    write_session,
+)
 from memmachine_server.common.utils import ensure_tz_aware, utc_offset_seconds
 from memmachine_server.episodic_memory.event_memory.data_types import (
     NullContext,
@@ -954,18 +957,7 @@ class SQLAlchemySegmentStoreParams(BaseModel):
                 f"Engine uses the {engine.dialect.name} dialect, which the store "
                 "does not support. Use PostgreSQL or SQLite."
             )
-        engine_shares_one_connection = isinstance(engine.pool, StaticPool)
-        if engine_shares_one_connection:
-            raise ValueError(
-                "Engine uses StaticPool, which shares one connection across "
-                "sessions. Use a multi-connection pool instead."
-            )
-        db = engine.url.database
-        if engine.dialect.name == "sqlite" and (db is None or db == ":memory:"):
-            raise ValueError(
-                "Engine uses ephemeral SQLite, where each connection gets a separate database. "
-                "Use a file path instead."
-            )
+        require_separate_connections_to_one_database(engine)
         return engine
 
 

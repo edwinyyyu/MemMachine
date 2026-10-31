@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
 )
-from sqlalchemy.pool import ConnectionPoolEntry
+from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
 _BEGIN_IMMEDIATE_OPTION = "memmachine_sqlite_begin_immediate"
 """Execution option asking the begin hook for `BEGIN IMMEDIATE`."""
@@ -60,6 +60,28 @@ def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
         return
     event.listen(engine.sync_engine, "connect", _disable_implicit_begin)
     event.listen(engine.sync_engine, "begin", _begin)
+
+
+def require_separate_connections_to_one_database(engine: AsyncEngine) -> None:
+    """
+    Raise ValueError unless every session of the engine gets its own connection to one database.
+
+    A pool that hands every session one connection (`StaticPool`) cannot
+    keep their transactions apart, and separate connections to in-memory
+    SQLite each open their own empty database.
+    """
+    shares_one_connection = isinstance(engine.pool, StaticPool)
+    if shares_one_connection:
+        raise ValueError(
+            "Engine uses StaticPool, which shares one connection across "
+            "sessions. Use a multi-connection pool instead."
+        )
+    database = engine.url.database
+    if engine.dialect.name == "sqlite" and database in (None, "", ":memory:"):
+        raise ValueError(
+            "Engine uses in-memory SQLite, where each connection gets a "
+            "separate database. Use a file path instead."
+        )
 
 
 @contextlib.asynccontextmanager

@@ -7,9 +7,11 @@ import pytest_asyncio
 from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
 
 from memmachine_server.common.sql import (
     enable_sqlite_explicit_begin,
+    require_separate_connections_to_one_database,
     write_connection,
     write_session,
 )
@@ -223,3 +225,33 @@ async def test_a_write_connection_that_raises_rolls_back_its_ddl_too(database):
         ).scalars()
         assert list(tables) == ["t"]
     assert await _keys(engine) == []
+
+
+@pytest.mark.asyncio
+async def test_an_engine_on_a_database_file_is_accepted(database):
+    _, engine = database
+    require_separate_connections_to_one_database(engine)
+
+
+@pytest.mark.asyncio
+async def test_an_engine_sharing_one_connection_is_refused(tmp_path):
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'test.db'}", poolclass=StaticPool
+    )
+    try:
+        with pytest.raises(ValueError, match="StaticPool"):
+            require_separate_connections_to_one_database(engine)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["sqlite+aiosqlite://", "sqlite+aiosqlite:///:memory:"])
+async def test_an_engine_on_in_memory_sqlite_is_refused(url):
+    # A queue pool, so the shared-connection check doesn't refuse it first.
+    engine = create_async_engine(url, poolclass=AsyncAdaptedQueuePool)
+    try:
+        with pytest.raises(ValueError, match="in-memory SQLite"):
+            require_separate_connections_to_one_database(engine)
+    finally:
+        await engine.dispose()
