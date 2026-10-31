@@ -227,14 +227,13 @@ async def test_sqlalchemy_pool_lifecycle_kwargs():
     _empty_vector_store_confs(conf)
     conf.relational_db_confs = {"db1": sql_conf}
 
-    mock_engine = MagicMock(spec=AsyncEngine)
-
     with patch(
         "memmachine_server.common.resource_manager.database_manager.create_async_engine",
-        return_value=mock_engine,
+        wraps=create_async_engine,
     ) as mock_create:
         builder = DatabaseManager(conf)
         await builder.async_get_sql_engine("db1")
+        await builder.close()
 
     call_kwargs = mock_create.call_args.kwargs
     assert call_kwargs["pool_timeout"] == 30
@@ -294,14 +293,13 @@ async def test_sqlalchemy_pool_lifecycle_kwargs_none_omitted():
     _empty_vector_store_confs(conf)
     conf.relational_db_confs = {"db1": sql_conf}
 
-    mock_engine = MagicMock(spec=AsyncEngine)
-
     with patch(
         "memmachine_server.common.resource_manager.database_manager.create_async_engine",
-        return_value=mock_engine,
+        wraps=create_async_engine,
     ) as mock_create:
         builder = DatabaseManager(conf)
         await builder.async_get_sql_engine("db1")
+        await builder.close()
 
     call_kwargs = mock_create.call_args.kwargs
     assert "pool_timeout" not in call_kwargs
