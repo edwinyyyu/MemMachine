@@ -11,7 +11,7 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
 
 from memmachine_server.common.sql import (
     enable_sqlite_explicit_begin,
-    require_separate_connections_to_one_database,
+    validate_engine_connections,
     write_connection,
     write_session,
 )
@@ -230,7 +230,7 @@ async def test_a_write_connection_that_raises_rolls_back_its_ddl_too(database):
 @pytest.mark.asyncio
 async def test_an_engine_on_a_database_file_is_accepted(database):
     _, engine = database
-    require_separate_connections_to_one_database(engine)
+    validate_engine_connections(engine)
 
 
 @pytest.mark.asyncio
@@ -240,7 +240,7 @@ async def test_an_engine_sharing_one_connection_is_refused(tmp_path):
     )
     try:
         with pytest.raises(ValueError, match="StaticPool"):
-            require_separate_connections_to_one_database(engine)
+            validate_engine_connections(engine)
     finally:
         await engine.dispose()
 
@@ -252,6 +252,6 @@ async def test_an_engine_on_in_memory_sqlite_is_refused(url):
     engine = create_async_engine(url, poolclass=AsyncAdaptedQueuePool)
     try:
         with pytest.raises(ValueError, match="in-memory SQLite"):
-            require_separate_connections_to_one_database(engine)
+            validate_engine_connections(engine)
     finally:
         await engine.dispose()

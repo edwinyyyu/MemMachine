@@ -47,10 +47,7 @@ from sqlalchemy.orm import (
     mapped_column,
 )
 
-from memmachine_server.common.sql import (
-    require_separate_connections_to_one_database,
-    write_connection,
-)
+from memmachine_server.common.sql import validate_engine_connections, write_connection
 from memmachine_server.common.utils import ensure_tz_aware
 from memmachine_server.common.vector_store.data_types import (
     _IDENTIFIER_MAX_BYTES,
@@ -240,7 +237,7 @@ class SQLAlchemyVectorStorePartitionRegistryParams(BaseModel):
                 "registry does not support. Use PostgreSQL or SQLite."
             )
         # The registry's arbitration rests on transactions of their own.
-        require_separate_connections_to_one_database(engine)
+        validate_engine_connections(engine)
         if (
             engine.dialect.name == "sqlite"
             and sqlite3.sqlite_version_info < _MIN_SQLITE_VERSION

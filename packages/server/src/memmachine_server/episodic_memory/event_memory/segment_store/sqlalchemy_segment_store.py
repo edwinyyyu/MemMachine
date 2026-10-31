@@ -78,7 +78,7 @@ from memmachine_server.common.properties_json import (
     encode_properties,
 )
 from memmachine_server.common.sql import (
-    require_separate_connections_to_one_database,
+    validate_engine_connections,
     write_connection,
     write_session,
 )
@@ -957,7 +957,7 @@ class SQLAlchemySegmentStoreParams(BaseModel):
                 f"Engine uses the {engine.dialect.name} dialect, which the store "
                 "does not support. Use PostgreSQL or SQLite."
             )
-        require_separate_connections_to_one_database(engine)
+        validate_engine_connections(engine)
         return engine
 
 

@@ -62,7 +62,7 @@ def enable_sqlite_explicit_begin(engine: AsyncEngine) -> None:
     event.listen(engine.sync_engine, "begin", _begin)
 
 
-def require_separate_connections_to_one_database(engine: AsyncEngine) -> None:
+def validate_engine_connections(engine: AsyncEngine) -> None:
     """
     Raise ValueError unless every session of the engine gets its own connection to one database.
 
