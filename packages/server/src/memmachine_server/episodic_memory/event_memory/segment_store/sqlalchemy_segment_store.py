@@ -2,7 +2,6 @@
 
 import json
 import logging
-import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta, timezone
@@ -116,9 +115,6 @@ _JSON_AUTO = JSON().with_variant(JSONB, "postgresql")
 # window, so consecutive failures at this depth mean the IntegrityError
 # has some other, permanent cause.
 _MAX_MINT_ATTEMPTS = 10
-
-# Partition deletion depends on RETURNING, which SQLite added in 3.35.
-_MIN_SQLITE_VERSION = (3, 35)
 
 # A context read takes its context from at most this many segments on each
 # side of a seed, matching or not.
@@ -969,16 +965,6 @@ class SQLAlchemySegmentStoreParams(BaseModel):
             raise ValueError(
                 "Engine uses ephemeral SQLite, where each connection gets a separate database. "
                 "Use a file path instead."
-            )
-        if (
-            engine.dialect.name == "sqlite"
-            and sqlite3.sqlite_version_info < _MIN_SQLITE_VERSION
-        ):
-            minimum = ".".join(str(part) for part in _MIN_SQLITE_VERSION)
-            raise ValueError(
-                f"SQLite runtime {sqlite3.sqlite_version} lacks the RETURNING "
-                f"support partition deletion depends on. Use SQLite {minimum} "
-                "or newer."
             )
         return engine
 
