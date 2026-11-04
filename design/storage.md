@@ -12,7 +12,7 @@ the resource manager builds the backends that the configuration names.
 
 | Store | Holds | Backends |
 |---|---|---|
-| Episode store | Raw episodes, the source of every memory's index | PostgreSQL, SQLite |
+| Episode store | Raw episodes: what event-backend searches return, and what semantic extraction reads | PostgreSQL, SQLite |
 | Session data | Projects (sessions), their configuration, status, and short-term summary | PostgreSQL, SQLite |
 | Segment store | The event backend's segments: content, order, and properties | PostgreSQL, SQLite |
 | Vector store | The event backend's embeddings, and the vectors of one semantic storage backend | Qdrant, Milvus, SQLite with an in-process index, sqlite-vec |

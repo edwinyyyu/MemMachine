@@ -105,9 +105,11 @@ sequenceDiagram
     Note over Semantic: Later, a background loop sends pending<br/>episodes to a language model and<br/>updates the features it extracts
 ```
 
-The episode store holds the raw episodes; every memory type keeps a derived
-index of them. The three writes are independent of one another: if one
-fails, the others are not undone ([#1738](https://github.com/MemMachine/MemMachine/issues/1738)).
+Episodic memory receives each episode from the core, not from the episode
+store, and keeps its own copy in its own stores. The episode store matters
+later: event-backend searches read the episodes they return from it, and
+semantic extraction reads pending episodes from it. The three writes are
+independent of one another: if one fails, the others are not undone ([#1738](https://github.com/MemMachine/MemMachine/issues/1738)).
 
 Adding a message embeds text right away, at the embedder's cost. Semantic
 extraction runs later, so its language-model cost is not on the request's
