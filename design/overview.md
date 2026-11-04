@@ -54,7 +54,7 @@ flowchart TB
     subgraph stores[Databases]
         sql[(Relational<br/>PostgreSQL or SQLite)]
         vector[(Vector<br/>Qdrant, Milvus, or SQLite)]
-        graph[(Graph<br/>Neo4j or NebulaGraph)]
+        graphdb[(Graph<br/>Neo4j or NebulaGraph)]
     end
 
     sdk --> rest

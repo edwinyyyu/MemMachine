@@ -35,18 +35,18 @@ flowchart TB
 sequenceDiagram
     participant Core as MemMachine core
     participant Storage as Semantic storage
-    participant Loop as Background ingestion
+    participant Ingest as Background ingestion
     participant LLM as Language model
     Core->>Storage: record episode ids as pending in each matching set
     loop on an interval, in each server process
-        Loop->>Storage: find sets with enough pending episodes, or old ones
-        Loop->>Storage: take a few pending episodes of each set
+        Ingest->>Storage: find sets with enough pending episodes, or old ones
+        Ingest->>Storage: take a few pending episodes of each set
         loop each episode, each category of the set
-            Loop->>LLM: the episode and the category's existing features
-            LLM-->>Loop: commands to add or delete features
+            Ingest->>LLM: the episode and the category's existing features
+            LLM-->>Ingest: commands to add or delete features
         end
-        Loop->>Storage: apply the commands, mark the episodes ingested
-        Loop->>LLM: consolidate a tag that has grown past a threshold
+        Ingest->>Storage: apply the commands, mark the episodes ingested
+        Ingest->>LLM: consolidate a tag that has grown past a threshold
     end
 ```
 
