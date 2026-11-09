@@ -109,26 +109,29 @@ def _chooser(r: Results) -> str:
 
 
 def equal_reader_tokens(r: Results, event: str) -> list[str]:
-    out = ["## 3. Equal reader tokens\n",
-           "Models at the deepest pool all of them were scored to. Δ: minus the first stage without expansion [95%]. "
-           "`+xE`: read with EventMemory windows of expand_context E; `rerank` scores the seeds "
-           "(rerank, then expand), `xrerank` the windows (expand, then rerank). A reranked row reads only its pool.\n",
+    out = ["## 3. Equal reader tokens, at equal vector search limits\n",
+           "At each vector search limit L, every row reads only the top L seeds of the same vector search: in vector "
+           "order (`first_stage@nL`), reranked (`rerank`: the seeds; `xrerank`: their windows, expand then rerank), or "
+           "evidence first (`oracle`: a perfect reranker, the most any reranker can get from those seeds). `+xE`: read "
+           "with EventMemory windows of expand_context E. Δ: minus the first stage at the same L and expansion [95%].\n",
            "| chunking | ranker | pairs | " + " | ".join(map(str, BUDGETS)) + " | "
            + " | ".join(f"Δ@{b}" for b in DELTA_BUDGETS) + " |", "|---|---|---|" + "---|" * (len(BUDGETS) + 3)]
     for c in r.chunkings:
-        base = r.rows(c, "first_stage")
-        depth = r.common_depth(c)
-        names = ["first_stage"] + ([f"rerank:{m}@{depth}" for m in r.models_at(c)] if depth else [])
-        names += _expanded(r, depth, r.models_at(c))
-        for name in names:
-            rows = r.rows(c, name)
-            if rows.empty:
-                continue
-            ds = [] if name == "first_stage" else [
-                delta((rows[event].to_numpy() <= b).astype(float) - (base[event].to_numpy() <= b), base.cluster.to_numpy())
-                for b in DELTA_BUDGETS]
-            out.append(f"| {c} | {name} | {rows.pairs.mean():.0f} | " + " | ".join(_cov(rows, event, BUDGETS)) + " | "
-                       + " | ".join(ds or [""] * len(DELTA_BUDGETS)) + " |")
+        for limit in r.limits(c):
+            for e in (0, *r.expansions):
+                tail = f"+x{e}" if e else ""
+                base = r.rows(c, f"first_stage@{limit}{tail}")
+                names = ([f"first_stage@{limit}{tail}"] + [f"rerank:{m}@{limit}{tail}" for m in r.models_at(c)]
+                         + ([f"xrerank:{m}@{limit}{tail}" for m in r.models_at(c)] if e else []) + [f"oracle@{limit}{tail}"])
+                for name in names:
+                    rows = r.rows(c, name)
+                    if rows.empty or base.empty:
+                        continue
+                    ds = [] if name.startswith("first_stage") else [
+                        delta((rows[event].to_numpy() <= b).astype(float) - (base[event].to_numpy() <= b),
+                              base.cluster.to_numpy()) for b in DELTA_BUDGETS]
+                    out.append(f"| {c} | {name} | {rows.pairs.mean():.0f} | " + " | ".join(_cov(rows, event, BUDGETS))
+                               + " | " + " | ".join(ds or [""] * len(DELTA_BUDGETS)) + " |")
     return out + [""]
 
 

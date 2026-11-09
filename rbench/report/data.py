@@ -102,6 +102,21 @@ class Results:
         kind = "t" if any(x.startswith("t") for x in shared) else "n"
         return max((x for x in shared if x.startswith(kind)), key=lambda x: int(x[1:]))
 
+    def limits(self, chunking: str, wanted: tuple[int, ...] = (10, 20, 50)) -> list[str]:
+        """Vector search limits to show for a chunking, as depth labels ("n20"): the wanted ones
+        every model there was scored to (all of them when no model was), plus the deepest every
+        model was scored to. EventMemory's default limit is 20."""
+        models = self.models_at(chunking)
+        if models:
+            shared = set.intersection(*(set(self.depths_at(chunking, m)) for m in models))
+        else:
+            shared = {f"n{v}" for v in wanted}
+        out = {f"n{v}" for v in wanted if f"n{v}" in shared}
+        deepest = self.common_depth(chunking)
+        if deepest and deepest.startswith("n"):
+            out.add(deepest)
+        return sorted(out, key=lambda d: int(d[1:]))
+
     def depths_at(self, chunking: str, model: str) -> list[str]:
         """Count depths (vector search limits) a model's reranked rows exist at, shallowest first."""
         d = self.select(split=None, kind="rerank", model=model)
