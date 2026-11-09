@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from rbench import chunking, retrieval, simulate, simulate_histories, units
+from rbench import chunking, config, retrieval, simulate, simulate_histories, units
 from rbench import histories as hs
 from rbench.datasets import info
 from rbench.embedding import DEFAULT as EMBEDDER
@@ -81,7 +81,7 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     touch, with all rerankers, then write each (dataset, scope, variant, sample) report."""
     groups: dict[tuple, set] = defaultdict(set)
     reported = set()
-    history_jobs: dict[tuple, set[int]] = defaultdict(lambda: set(simulate_histories.EXPANSIONS))
+    history_jobs: dict[tuple, set[int]] = defaultdict(lambda: set(config.EVAL.expansions))
     for run in runs:
         if info(run.dataset).partitioned:  # both scoring positions replay in one simulation
             for c in run.chunkings:  # the replayed expansions, plus any whose windows this run scores

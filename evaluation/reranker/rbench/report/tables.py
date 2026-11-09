@@ -33,7 +33,6 @@ from rbench.report import frontier
 from rbench.report.data import Results, coverage, mean_unit_tokens, query_labels
 from rbench.report.stats import delta
 
-BUDGETS = (250, 500, 1000, 2000, 4000, 8000)
 EVENTS = ("first", "every", "first_touch", "every_touch")  # complete and touched readings (metrics.py)
 RERANK_BUDGETS = (1000, 2000, 4000, 8000, 16000, 32000, 64000)
 SHOW_TARGETS = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
@@ -53,19 +52,19 @@ def first_stage(r: Results, event: str) -> list[str]:
            f"{event}-gold coverage by reader budget, no reranker"
            + (". Δ rows: recursive minus fixed at matched size.\n" if _pairs(r) else
               "; `+xE` reads each seed's EventMemory window (expand_context E).\n"),
-           "| chunking | mean tokens | " + " | ".join(map(str, BUDGETS)) + " |", "|---|---|" + "---|" * len(BUDGETS)]
+           "| chunking | mean tokens | " + " | ".join(map(str, config.EVAL.columns)) + " |", "|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
         for name in ["first_stage", *(f"first_stage+x{e}" for e in r.expansions)]:
             rows = r.rows(c, name)
             if not rows.empty:
                 out.append(f"| {c}{name.removeprefix('first_stage')} | {mean_unit_tokens(r, c)} | "
-                           + " | ".join(_cov(rows, event, BUDGETS)) + " |")
+                           + " | ".join(_cov(rows, event, config.EVAL.columns)) + " |")
     for c in r.chunkings:
         if c.startswith("fix") and "rec" + c[3:] in r.chunkings:
             a, b = r.rows(c, "first_stage"), r.rows("rec" + c[3:], "first_stage")
             out.append(f"| Δ rec−fix {c[3:]} | | " + " | ".join(
                 delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
-                for x in BUDGETS) + " |")
+                for x in config.EVAL.columns) + " |")
     return out + [""]
 
 
@@ -118,8 +117,8 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
            "[95%]. In the every-gold table only, `oracle` rows (seeds alone) are a perfect reranker: it reads only the "
            "evidence seeds, so no reranker reads all the evidence in full with fewer tokens; elsewhere it is no bound and "
            "is not shown.\n",
-           "| chunking | ranker | pairs | " + " | ".join(map(str, BUDGETS)) + " | "
-           + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|" + "---|" * (len(BUDGETS) + 3)]
+           "| chunking | ranker | pairs | " + " | ".join(map(str, config.EVAL.columns)) + " | "
+           + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|" + "---|" * (len(config.EVAL.columns) + len(config.EVAL.budgets))]
     for c in r.chunkings:
         for limit in r.limits(c):
             for e in (0, *r.expansions):
@@ -135,7 +134,7 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
                     ds = [] if name.startswith("first_stage") else [
                         delta((rows[event].to_numpy() <= b).astype(float) - (base[event].to_numpy() <= b),
                               base.cluster.to_numpy()) for b in config.EVAL.budgets]
-                    out.append(f"| {c} | {name} | {rows.pairs.mean():.0f} | " + " | ".join(_cov(rows, event, BUDGETS))
+                    out.append(f"| {c} | {name} | {rows.pairs.mean():.0f} | " + " | ".join(_cov(rows, event, config.EVAL.columns))
                                + " | " + " | ".join(ds or [""] * len(config.EVAL.budgets)) + " |")
     return out + [""]
 
@@ -144,7 +143,7 @@ def token_savings(r: Results, event: str) -> list[str]:
     grid = frontier.BUDGET_GRID
     out = ["## 4. Token savings\n", "At each vector search limit L: reader tokens the first stage over the same L seeds "
            "needs to match the reranked coverage (× the reranked budget); 'never' if it does not.\n",
-           "| chunking | model | L | " + " | ".join(f"at {b}" for b in BUDGETS) + " |", "|---|---|---|" + "---|" * len(BUDGETS)]
+           "| chunking | model | L | " + " | ".join(f"at {b}" for b in config.EVAL.columns) + " |", "|---|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
         for limit in r.limits(c):
             base = coverage(r.rows(c, f"first_stage@{limit}")[event].to_numpy(), grid)
@@ -153,7 +152,7 @@ def token_savings(r: Results, event: str) -> list[str]:
                 if rows.empty:
                     continue
                 cells = []
-                for b, target in zip(BUDGETS, coverage(rows[event].to_numpy(), np.asarray(BUDGETS)), strict=True):
+                for b, target in zip(config.EVAL.columns, coverage(rows[event].to_numpy(), np.asarray(config.EVAL.columns)), strict=True):
                     hit = np.flatnonzero(base >= target - 1e-12)
                     cells.append("never" if not len(hit) else f"{grid[hit[0]]:,.0f} ({grid[hit[0]] / b:.1f}×)")
                 out.append(f"| {c} | {m} | {limit[1:]} | " + " | ".join(cells) + " |")

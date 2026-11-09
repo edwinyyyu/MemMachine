@@ -2,8 +2,9 @@
 or per run with command-line flags (cli.py: --budgets, --limits, --readings); report code
 reads them from EVAL rather than hard-coding them.
 
-  budgets      reader budgets (tokens) of the tables and of the charts drawn at fixed budgets;
-               500-4,000 is the realistic range
+  budgets      reader budgets (tokens) the charts drawn at fixed budgets and the tables' focused
+               columns (deltas, settings, query types) use; 500-4,000 is the realistic range
+  columns      reader budgets of the coverage tables' wider sweep
   limits       vector search limits shown, besides the deepest scored (EventMemory's default
                is 20)
   readings     coverage readings the single-reading charts are drawn for: every, first,
@@ -23,6 +24,7 @@ from dataclasses import dataclass, replace
 @dataclass(frozen=True)
 class Evaluation:
     budgets: tuple[int, ...] = (500, 1000, 2000, 4000)
+    columns: tuple[int, ...] = (250, 500, 1000, 2000, 4000, 8000)
     limits: tuple[int, ...] = (10, 20, 50)
     readings: tuple[str, ...] = ("every",)
     expansions: tuple[int, ...] = (1, 2, 3, 6)

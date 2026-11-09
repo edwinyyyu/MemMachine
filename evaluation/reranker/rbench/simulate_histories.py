@@ -21,7 +21,7 @@ Per query, inside its own history's EventMemory partition (memory.py, histories.
      against the gold turns.
 
 Expansions: rerank-then-expand and the expanded first stage need no new scores, so they are
-replayed at every value in EXPANSIONS; expand-then-rerank needs the windows scored and appears
+replayed at every value in config.EVAL.expansions; expand-then-rerank needs the windows scored and appears
 only where a run scored them (grid.py scores expand 3).
 
 Output: results/sim/<embedder>/<dataset>/history/question/<sample>/seg<size>.parquet,
@@ -51,7 +51,6 @@ from rbench.samples import sample
 from rbench.schema import queries
 from rbench.simulate import COLUMNS, scored_prefix
 
-EXPANSIONS = (1, 2, 3, 6)  # expand_context values replayed (EventMemory's default is 0)
 MAX_COST = 16000  # reading stops past the largest reader budget measured
 FIRST_STAGE_LIMIT = 400  # the first stage's vector search limit: enough seeds to fill MAX_COST
 EVENTS = ("first", "every", "first_touch", "every_touch")
@@ -99,7 +98,11 @@ def counts(values: list[float], cum: np.ndarray, ctx: np.ndarray) -> list[float]
 
 
 def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str],
-        expansions: tuple[int, ...] = EXPANSIONS) -> pd.DataFrame:
+        expansions: tuple[int, ...] | None = None) -> pd.DataFrame:
+    """expansions: expand_context values to replay (default: config.EVAL.expansions)."""
+    from rbench import config
+
+    expansions = config.EVAL.expansions if expansions is None else expansions
     return asyncio.run(_run(embedder, dataset, size, sample_name, models, expansions))
 
 
