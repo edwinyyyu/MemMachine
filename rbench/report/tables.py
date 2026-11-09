@@ -9,7 +9,7 @@ Sections, each answering one question (README lists which question maps where):
   6 Equal reranker tokens: the best chunking and depth within each reranker budget
   7 Worth the money: break-even LLM/reranker price ratio by coverage target
   8 Chunkers: recursive minus fixed at matched size, without and with each reranker
-  9 Query types: reranker gain by form, length, context, parts and first-stage difficulty
+  9 Query types: reranker gain by question type, form, length, context and parts
  10 Help and harm: how often reranking makes the gold cheaper or dearer
  11 Expansion: plain chunks vs small seeds expanded to the same read size, reranked before
     or after expansion (separates the embedded, reranked and read units)
@@ -266,8 +266,7 @@ def chunkers(r: Results, event: str) -> list[str]:
 
 def query_types(r: Results, event: str) -> list[str]:
     out = ["## 9. Query types: reranker gain at 1,000 reader tokens\n",
-           "Labels are rule-based (features.py). Difficulty is the first-stage rank of the first gold chunk; it is "
-           "defined by the baseline's own outcome, so its rank-1 slice can only lose. Cells: n, first-stage "
+           "Labels are the dataset's own question types and rule-based features (features.py). Cells: n, first-stage "
            "coverage, Δ [95%].\n"]
     for c in [c for c in ("seg500", "rec64", "fix256", "rec256", "fix1024") if c in r.chunkings] or r.chunkings[:1]:
         _, labels = query_labels(r, c)
@@ -284,7 +283,7 @@ def query_types(r: Results, event: str) -> list[str]:
             gain = (rows[event].to_numpy() <= 1000).astype(float) - hit
             out += [f"**{m}, {c}: {what}, against the first stage {base_name.removeprefix('first_stage') or 'without expansion'}**\n",
                     "| feature | value | n | first stage | Δ |", "|---|---|---|---|---|"]
-            for feature in ("question_type", "form", "length", "context", "parts", "difficulty"):
+            for feature in ("question_type", "form", "length", "context", "parts"):
                 if feature not in labels:
                     continue
                 for v in sorted(set(labels[feature])):

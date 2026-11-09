@@ -151,8 +151,7 @@ def price(model: str | None) -> float:
 
 def query_labels(r: Results, chunking: str) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
     """The chunking's first-stage test rows and, aligned with them, each query's type labels
-    (features.py) plus its first-stage difficulty. Difficulty is defined by the baseline's
-    own outcome, so rank-1 queries can only lose: read that slice with care."""
+    (features.py, and the dataset's own question types where it has them)."""
     from rbench.features import query_features
     from rbench.samples import sample
     from rbench.schema import queries
@@ -164,8 +163,6 @@ def query_labels(r: Results, chunking: str) -> tuple[pd.DataFrame, dict[str, np.
     labels = {k: np.asarray(v)[at] for k, v in query_features(r.dataset, r.variant, idx).items()}
     if "question_type" in base:  # a dataset's own query categories (LongMemEval's question types)
         labels["question_type"] = base["question_type"].to_numpy()
-    rank = base["rank"].to_numpy()
-    labels["difficulty"] = np.select([rank == 1, rank <= 5, rank <= 20], ["rank 1", "rank 2-5", "rank 6-20"], "rank >20")
     return base, labels
 
 

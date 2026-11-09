@@ -529,7 +529,7 @@ def query_types(r: Results, out, head: str) -> None:
     if not depth:
         return
     base, labels = query_labels(r, c)
-    groups = [(f, v) for f in ("question_type", "form", "length", "context", "parts", "difficulty") if f in labels
+    groups = [(f, v) for f in ("question_type", "form", "length", "context", "parts") if f in labels
               for v in sorted(set(labels[f])) if (labels[f] == v).sum() >= 10]
     if not groups:
         return

@@ -38,7 +38,7 @@ set of spans that are all needed:
   the @k versions         the same with "within the first k chunks"
   first_k, every_k (and the _touch_k ones)   chunks read when those events happen
   rank                    position of the first chunk that overlaps any gold character. The only
-                          "touching" measure; used for the difficulty slice, not for quality.
+                          "touching" measure; reported in the headroom table, not as quality.
 Reported coverage, recall, precision and F1 are means of these per-query values over the
 test queries. Anything not reached within the ranking head is inf (coverage 0).
 """
