@@ -1,0 +1,165 @@
+"""Loading simulated results and the views every report section uses.
+
+A configuration is (chunking, ranker, instruction, render). Its per-query rows carry the
+event costs, so coverage at any reader budget B is the share of rows with cost <= B: the
+budget is a continuous knob, not a fixed grid.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+from rbench.paths import SIM
+from rbench.rerankers import RERANKERS
+
+CONFIG = ["chunking", "ranker", "instruction", "render"]
+MODEL_ORDER = ["q06-local", "q06", "q4", "q8"]
+
+
+@dataclass
+class Results:
+    embedder: str
+    dataset: str
+    scope: str
+    variant: str
+    sample: str
+    df: pd.DataFrame
+
+    @property
+    def test(self) -> pd.DataFrame:
+        return self.df[self.df.split == "test"]
+
+    @property
+    def has_dev(self) -> bool:
+        return bool((self.df.split == "dev").any())
+
+    @property
+    def expansions(self) -> list[int]:
+        """expand_context values simulated (above 0)."""
+        return sorted(int(e) for e in self.df.expand.unique() if e > 0)
+
+    @property
+    def chunkings(self) -> list[str]:
+        return sorted(self.df.chunking.unique(), key=lambda c: (int("".join(ch for ch in c if ch.isdigit())), c))
+
+    @property
+    def models(self) -> list[str]:
+        found = set(self.df.loc[self.df.kind == "rerank", "model"].dropna())
+        return [m for m in MODEL_ORDER if m in found]
+
+    @property
+    def render(self) -> str:
+        """The dataset's own rendering: 'em' for history datasets (always rendered as EventMemory
+        renders), else 'plain' unless only another rendering was simulated."""
+        renders = set(self.df.render)
+        return "plain" if "plain" in renders else sorted(renders)[0]
+
+    def rows(self, chunking: str, ranker: str, split: str = "test", instruction: str = "default",
+             render: str | None = None) -> pd.DataFrame:
+        """One configuration's rows, sorted by qid so configurations align query by query."""
+        render = render or self.render
+        d = self.df
+        return d[(d.chunking == chunking) & (d.ranker == ranker) & (d.split == split) & (d.instruction == instruction)
+                 & (d.render == render)].sort_values("qid")
+
+    def select(self, split: str | None = "test", kind: str | None = None, model: str | None = None,
+               expand: int | None = 0, instruction: str = "default", render: str | None = None) -> pd.DataFrame:
+        """Rows with the sweep factors pinned (default instruction, plain render, no expansion)
+        unless asked otherwise, so a section never mixes in another sweep's configurations."""
+        d = self.df[(self.df.instruction == instruction) & (self.df.render == (render or self.render))]
+        if split is not None:
+            d = d[d.split == split]
+        if expand is not None:
+            d = d[d.expand == expand]
+        if kind is not None:
+            d = d[d.kind == kind]
+        if model is not None:
+            d = d[d.model == model]
+        return d
+
+    def models_at(self, chunking: str) -> list[str]:
+        """Models with plain reranked rows at this chunking (sweeps score only some models)."""
+        d = self.select(split=None, kind="rerank")
+        found = set(d.loc[d.chunking == chunking, "model"])
+        return [m for m in MODEL_ORDER if m in found]
+
+    def common_depth(self, chunking: str, models: list[str] | None = None) -> str | None:
+        """The deepest depth every model scored at this chunking was scored to (models without
+        scores there are left out rather than hiding the others): a token depth where there are
+        any (the flat datasets), else a count depth (the history datasets: a vector search
+        limit)."""
+        d = self.select(split=None, kind="rerank")
+        d = d[d.chunking == chunking]
+        shared = None
+        for m in [m for m in (models or self.models_at(chunking)) if m in self.models_at(chunking)]:
+            depths = set(d.loc[d.model == m, "depth"].dropna())
+            shared = depths if shared is None else shared & depths
+        if not shared:
+            return None
+        kind = "t" if any(x.startswith("t") for x in shared) else "n"
+        return max((x for x in shared if x.startswith(kind)), key=lambda x: int(x[1:]))
+
+    def depths_at(self, chunking: str, model: str) -> list[str]:
+        """Count depths (vector search limits) a model's reranked rows exist at, shallowest first."""
+        d = self.select(split=None, kind="rerank", model=model)
+        return sorted({x for x in d.loc[d.chunking == chunking, "depth"] if x.startswith("n")}, key=lambda x: int(x[1:]))
+
+
+def load(embedder: str, dataset: str, scope: str, variant: str, sample: str) -> Results:
+    base = SIM / embedder / dataset / scope / variant / sample
+    frames = []
+    for path in sorted(base.glob("*.parquet")):
+        _, instruction, render = path.stem.split("__")
+        frame = pd.read_parquet(path)
+        frame["instruction"], frame["render"] = instruction, render
+        frames.append(frame)
+    if not frames:
+        raise FileNotFoundError(f"no simulated results under {base}")
+    return Results(embedder, dataset, scope, variant, sample, pd.concat(frames, ignore_index=True))
+
+
+def coverage(costs: np.ndarray, budgets: np.ndarray) -> np.ndarray:
+    """Share of queries whose cost is within each budget."""
+    s = np.sort(costs)
+    return np.searchsorted(s, budgets, "right") / len(s)
+
+
+def price(model: str | None) -> float:
+    """$ per million reranker tokens; the local 0.6B is priced as DeepInfra's 0.6B."""
+    if model is None:
+        return 0.0
+    return RERANKERS[model].usd_per_mtok or RERANKERS["q06"].usd_per_mtok
+
+
+def query_labels(r: Results, chunking: str) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    """The chunking's first-stage test rows and, aligned with them, each query's type labels
+    (features.py) plus its first-stage difficulty. Difficulty is defined by the baseline's
+    own outcome, so rank-1 queries can only lose: read that slice with care."""
+    from rbench.features import query_features
+    from rbench.samples import sample
+    from rbench.schema import queries
+
+    idx = sample(r.dataset, r.sample)
+    position = {queries(r.dataset)[i]["qid"]: j for j, i in enumerate(idx)}
+    base = r.rows(chunking, "first_stage")
+    at = np.asarray([position[q] for q in base.qid])
+    labels = {k: np.asarray(v)[at] for k, v in query_features(r.dataset, r.variant, idx).items()}
+    if "question_type" in base:  # a dataset's own query categories (LongMemEval's question types)
+        labels["question_type"] = base["question_type"].to_numpy()
+    rank = base["rank"].to_numpy()
+    labels["difficulty"] = np.select([rank == 1, rank <= 5, rank <= 20], ["rank 1", "rank 2-5", "rank 6-20"], "rank >20")
+    return base, labels
+
+
+def mean_unit_tokens(r: Results, chunking_name: str) -> str:
+    """Mean chunk tokens for flat datasets; for history datasets, the nominal segment size."""
+    from rbench.datasets import info
+
+    if info(r.dataset).partitioned:
+        return f"≤{chunking_name.removeprefix('seg')} chars"
+    from rbench import chunking
+
+    return f"{chunking.load(r.dataset, chunking_name).tokens.mean():.0f}"
