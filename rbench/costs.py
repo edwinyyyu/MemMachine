@@ -8,13 +8,9 @@ Sources of every rate (kept here so reports and estimates agree):
   tokens/s (PyTorch MPS fp16, GPU to itself); embeddinggemma-300m at about 10,500 tokens/s
   through llama-server.
 - DeepInfra's embeddinggemma-300m: $0.002 per million tokens (checked 2026-11-05).
-- One H100 SXM: ESTIMATED, not measured. FLOPs per token = 2 x non-embedding parameters
-  (from the models' configs: 0.440B, 3.633B, 6.946B; attention adds under 2% at these
-  lengths). Throughput = 989 TFLOPS (dense bf16) x an assumed utilization: 40% for 4B and
-  8B, 20% for 0.6B and embeddinggemma (small matrices use the GPU less well). A served
-  model with a prefix cache (vLLM's enable_prefix_caching, as the model card's vLLM example
-  sets) computes the shared prompt and query once per query. Calibrate with a short run
-  before relying on these.
+- A served model with a prefix cache (vLLM's enable_prefix_caching, as the model card's
+  vLLM example sets) computes the shared prompt and query once per query: the
+  prefix-cached token count, reported beside the billed one.
 """
 
 from __future__ import annotations
@@ -33,13 +29,6 @@ from rbench.schema import corpus, queries
 
 MAC_RERANK_TOK_PER_S = {"q06-local": 2500, "q06": 2500}
 MAC_EMBED_TOK_PER_S = 10500
-H100_FLOPS = 989e12
-H100_UTILIZATION = {"q06": 0.20, "q06-local": 0.20, "q4": 0.40, "q8": 0.40, "embed": 0.20}
-NON_EMBEDDING_PARAMS = {"q06": 0.440e9, "q06-local": 0.440e9, "q4": 3.633e9, "q8": 6.946e9, "embed": 0.30e9}
-
-
-def h100_tok_per_s(model: str) -> float:
-    return H100_FLOPS * H100_UTILIZATION[model] / (2 * NON_EMBEDDING_PARAMS[model])
 
 
 @dataclass
@@ -142,8 +131,6 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER) -> dict:
             "prefix_cached_M": t.prefix_cached / 1e6,
             "deepinfra_usd": t.billed / 1e6 * price if price else None,
             "mac_hours": t.billed / MAC_RERANK_TOK_PER_S[m] / 3600 if m in MAC_RERANK_TOK_PER_S else None,
-            "h100_hours_billed_tokens": t.billed / h100_tok_per_s(m) / 3600,
-            "h100_hours_prefix_cached": t.prefix_cached / h100_tok_per_s(m) / 3600,
         }
     etok = sum(embed.values())
     from rbench.embedding import EMBEDDERS
