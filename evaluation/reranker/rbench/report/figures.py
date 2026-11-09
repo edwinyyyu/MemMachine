@@ -11,7 +11,6 @@ from rbench.config.EVAL. Files (a suffix _<chunking> when several chunkings were
   rerank_cost.png                coverage vs reranker tokens as L grows, beside the first stage at
                                  the same L, at each configured budget
   gain_sizes.png                 reranker gain (same L) vs segment size, at each budget
-  break_even.png                 the LLM input price above which reranking is cheaper overall
   cost_saving.png                % saved by reranking, over LLM price x coverage target
   query_types.png                reranker gain (same L) by question type, at each budget
   first_stage_sizes.png          first-stage coverage vs segment size (no reranker)
@@ -81,7 +80,6 @@ CHUNKERS = {"fix": ("#2a78d6", "x", "-"), "rec": ("#eb6834", "1", (0, (5, 3))), 
 RAMP = {3: ("#86b6ef", "#2a78d6", "#104281"), 5: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281")}
 DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34948", "#f2b8b5", "#f0efec", "#9ec5f4",
                                                                   "#3987e5", "#104281"])  # equal steps per arm
-BREAK_EVEN_TOP = 100.0  # $/M: the break-even chart's ceiling ("never cheaper" bands reach it)
 # What each coverage event means, in words (metrics.py has the definitions).
 EVENT_TEXT = {"first": "some evidence read in full", "every": "all evidence read in full",
               "first_touch": "some evidence at least partly read", "every_touch": "all evidence at least partly read"}
@@ -546,56 +544,17 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
                "of the first stage over the same seeds, mean with 95% interval over questions. Seeds only (expand_context 0).")
 
 
-def break_even(r: Results, out, head: str, reading: str) -> None:
-    """The LLM input price above which reranking is cheaper overall, per coverage target: solid
-    with reranker tokens as an API bills them, dashed with a prefix cache (shared prompt and
-    question computed once per question), both at the reranker's price per token."""
-    if not r.models:
-        return
-    fig, axes = _figure(1, 1, panel=(7.5, 3.8))
-    ax = axes[0][0]
-    finite = lambda v: np.where(np.isfinite(v) & (v > 0) & (v < 1e12), v, np.nan)  # noqa: E731
-    x = frontier.TARGETS
-    lines = {}
-    for m in r.models:
-        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading)
-        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading)[0]
-        lines[m] = finite(api) * price(m)
-        _plot(ax, x, lines[m], drawstyle="steps-mid", color=SERIES[m])
-        _plot(ax, x, finite(cached) * price(m), drawstyle="steps-mid", color=SERIES[m], linestyle=DASH)
-        band_lo, band_hi = finite(lo) * price(m), np.where(hi >= 1e12, BREAK_EVEN_TOP, hi * price(m))
-        ax.fill_between(x, band_lo, band_hi, where=np.isfinite(band_lo) & np.isfinite(lines[m]), step="mid", color=SERIES[m],
-                        alpha=0.12, linewidth=0)  # only where there is a line: elsewhere the estimate is "never"
-    ax.text(0.99, 0.97, "above a line: reranking is cheaper overall\nbelow it: the first stage alone is cheaper",
-            transform=ax.transAxes, ha="right", va="top", fontsize=8.5, color=INK2)
-    ax.set_xlim(x[0] - 0.02, 1.0)
-    ax.set_yscale("log")
-    ax.set_ylim(0.01, BREAK_EVEN_TOP)
-    _log_y(ax)
-    ax.set_ylabel("break-even LLM input price ($ per million tokens)")
-    ax.set_xlabel(f"coverage target ({EVENT_TEXT[reading]})")
-    ax.xaxis.set_major_locator(MultipleLocator(0.1))
-    ax.xaxis.set_minor_locator(MultipleLocator(0.05))
-    handles = [_key(SERIES[k]) for k in r.models] + [_key(INK2), _key(INK2, DASH)]
-    labels = ([_priced(k) for k in r.models] + ["reranker tokens as an API bills them (band: 95% interval)",
-              "with a prefix cache (prompt and question computed once)"])
-    _save(fig, out / _file("break_even", reading), f"Above which LLM price does reranking pay for itself? — {head}", handles,
-          labels, ncol=2,
-          note=f"Held equal: coverage (x: the share of questions with {EVENT_TEXT[reading]}). y: the LLM input price at which "
-               "reaching that coverage costs the same (reader + reranker tokens) with and without the reranker, each at its "
-               "cheapest configuration (any segment length, expansion and vector search limit), chosen on the same questions. "
-               "Above the line reranking is cheaper; no line: never cheaper at that target. Band: 95% interval of the line "
-               "(reaching the top: it includes never).")
-
-
 def cost_saving(r: Results, out, head: str, reading: str) -> None:
     """Over a continuous range of LLM prices and coverage targets: the cost of reaching the target
     with the reranker (its cheapest configuration) relative to without it. Blue saves, red costs
-    more; gray where only the reranker reaches the target."""
+    more; gray where only the reranker reaches the target. Over it, the break-even LLM price per
+    target (the 0% boundary, frontier.break_even) with its 95% interval, and with a prefix cache."""
     if not r.models:
         return
     llm = np.logspace(-2, 2, 81)  # $ per million reader tokens
     fig, axes = _figure(1, len(r.models), panel=(4.6, 3.8), sharey=True)
+    finite = lambda v: np.where(np.isfinite(v) & (v > 0) & (v < 1e12), v, np.nan)  # noqa: E731
+    halo = [patheffects.withStroke(linewidth=3.2, foreground=SURFACE)]
     for k, m in enumerate(r.models):
         curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading)
         no = np.stack([curves[p][0] for p in llm], 1)  # [target, price]
@@ -607,6 +566,15 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
         only = np.where(np.isnan(no) & np.isfinite(yes), 1.0, np.nan)
         ax.pcolormesh(llm, frontier.TARGETS, only, cmap=LinearSegmentedColormap.from_list("only", [ORACLE, ORACLE]),
                       shading="nearest", alpha=0.6)
+        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading)
+        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading)[0]
+        y = frontier.TARGETS
+        shown = np.isfinite(finite(api))  # the interval only where there is a line: elsewhere the estimate is "never"
+        lo, hi = np.where(shown, lo, np.nan), np.where(shown, hi, np.nan)
+        for line, ls, width in ((lo, ":", THIN), (hi, ":", THIN), (cached, DASH, LINE), (api, "-", LINE)):
+            ax.plot(finite(line) * price(m), y, drawstyle="steps-mid", color=INK, linestyle=ls, linewidth=width,
+                    path_effects=halo)
+        ax.set_xlim(llm[0], llm[-1])
         ax.set_facecolor(SURFACE)  # blank where neither reaches the target
         _log_x(ax)
         ax.grid(False)
@@ -617,11 +585,16 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
             ax.set_ylabel(f"coverage target ({EVENT_TEXT[reading]})")
     fig.colorbar(im, ax=axes[0].tolist(), label="% of total cost saved by reranking (red: reranking costs more)")
     _save(fig, out / _file("cost_saving", reading), f"Cost saved by reranking, at every LLM price and coverage target — {head}",
-          [Patch(color=ORACLE, alpha=0.6)], ["only the reranker reaches this target"], ncol=1,
+          [_key(INK), _key(INK, ":"), _key(INK, DASH), Patch(color=ORACLE, alpha=0.6)],
+          ["break-even LLM price (reranker tokens as an API bills them)", "its 95% interval",
+           "break-even with a prefix cache (prompt and question computed once)", "only the reranker reaches this target"],
+          ncol=2,
           note="Held equal: the coverage target (y) and the LLM input price (x). Color: total cost (reader + reranker tokens) "
                "of reaching the target with the reranker, relative to without it, each at its cheapest configuration (any "
-               "segment length, expansion and vector search limit), chosen on the same questions. Blank: neither reaches the "
-               "target. Matches the break-even line.")
+               "segment length, expansion and vector search limit), chosen on the same questions. Right of the break-even "
+               "line reranking is cheaper; no line at a target: never cheaper there (or beyond the price range). Interval "
+               "lines missing on the right: the interval includes never. Blank: neither reaches the target. Exact values: "
+               "report §7.")
 
 
 def query_types(r: Results, out, head: str, reading: str) -> None:
@@ -802,7 +775,7 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
 
 ALL_READINGS = ("coverage", "rpf")  # drawn for every reading or measure at once
 CHARTS = {"coverage": "coverage_by_tokens", "rpf": "recall_precision_f1", "counts": "coverage_counts",
-          "rerank_cost": "rerank_cost", "gain_sizes": "gain_sizes", "break_even": "break_even", "cost_saving": "cost_saving",
+          "rerank_cost": "rerank_cost", "gain_sizes": "gain_sizes", "cost_saving": "cost_saving",
           "query_types": "query_types", "sizes": "first_stage_sizes", "expansion": "expansion"}
 
 

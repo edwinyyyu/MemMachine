@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--sample", default="tiny")
     p.add_argument("--scope", default="history")
     p.add_argument("--variant", default="question")
-    p.add_argument("--chart", default="", help="comma-separated: coverage, rpf, rerank_cost, break_even, cost_saving, "
+    p.add_argument("--chart", default="", help="comma-separated: coverage, rpf, rerank_cost, cost_saving, "
                                                 "query_types, sizes, expansion, counts (default: all)")
     p.add_argument("--embedder", default=EMBEDDER)
     p = sub.add_parser("compare-embedders")

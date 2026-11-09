@@ -230,7 +230,7 @@ def worth_it(r: Results, event: str) -> list[str]:
             "its own choice; the minimum over many reranked configurations leans optimistic for the reranker")
     out = ["## 7. Worth the money: break-even price ratio\n",
            f"{event}-gold coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
-           "exceeds r* (chart: break_even.png). Candidates: every no-reranker configuration (segment length, "
+           "exceeds r* (chart: the break-even lines in cost_saving.png). Candidates: every no-reranker configuration (segment length, "
            "expansion) against every reranked one (seeds or windows, expansion, depth). Configurations are chosen on "
            f"{pick}. '–': the chosen reranked configuration is not cheaper; 'only': only reranking reaches the target "
            "(cheaper at any price); 'n/a': nothing reaches it.\n",
