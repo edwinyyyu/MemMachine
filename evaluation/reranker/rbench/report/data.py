@@ -80,10 +80,13 @@ class Results:
         kind = "t" if any(x.startswith("t") for x in shared) else "n"
         return max((x for x in shared if x.startswith(kind)), key=lambda x: int(x[1:]))
 
-    def limits(self, chunking: str, wanted: tuple[int, ...] = (10, 20, 50)) -> list[str]:
+    def limits(self, chunking: str, wanted: tuple[int, ...] | None = None) -> list[str]:
         """Vector search limits to show for a chunking, as depth labels ("n20"): the wanted ones
         every model there was scored to (all of them when no model was), plus the deepest every
-        model was scored to. EventMemory's default limit is 20."""
+        model was scored to. wanted defaults to config.EVAL.limits (EventMemory's default limit is 20)."""
+        from rbench import config
+
+        wanted = config.EVAL.limits if wanted is None else wanted
         models = self.models_at(chunking)
         if models:
             shared = set.intersection(*(set(self.depths_at(chunking, m)) for m in models))
@@ -124,8 +127,8 @@ def price(model: str | None) -> float:
     return 0.0 if model is None else RERANKERS[model].price
 
 
-def query_labels(r: Results, chunking: str) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
-    """The chunking's first-stage test rows and, aligned with them, each query's type labels
+def query_labels(r: Results, chunking: str, ranker: str = "first_stage") -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    """A configuration's rows (default: the first stage) and, aligned with them, each query's type labels
     (features.py, and the dataset's own question types where it has them)."""
     from rbench.features import query_features
     from rbench.samples import sample
@@ -133,7 +136,7 @@ def query_labels(r: Results, chunking: str) -> tuple[pd.DataFrame, dict[str, np.
 
     idx = sample(r.dataset, r.sample)
     position = {queries(r.dataset)[i]["qid"]: j for j, i in enumerate(idx)}
-    base = r.rows(chunking, "first_stage")
+    base = r.rows(chunking, ranker)
     at = np.asarray([position[q] for q in base.qid])
     labels = {k: np.asarray(v)[at] for k, v in query_features(r.dataset, r.variant, idx).items()}
     if "question_type" in base:  # a dataset's own query categories (LongMemEval's question types)

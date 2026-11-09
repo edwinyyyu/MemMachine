@@ -22,6 +22,8 @@
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
                                      (default: LongMemEval-M's EventMemory embedding text at seg500)
 
+run, adhoc and show take --budgets, --limits and --readings: the values reports are drawn at
+(defaults in rbench/config.py).
 run, adhoc, estimate and explain take --embedder (default gemma300m-raw, the local server without prompts;
 gemma300m-di-raw is DeepInfra's).
 """
@@ -109,7 +111,17 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("fidelity")
     for name in ("dataset", "scope", "variant", "chunking", "sample"):
         p.add_argument(name)
+    ints = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
+    for name in ("run", "adhoc", "show"):  # the values reports are drawn at (rbench/config.py)
+        sub.choices[name].add_argument("--budgets", type=ints, help="reader budgets, e.g. 500,1000,2000,4000")
+        sub.choices[name].add_argument("--limits", type=ints, help="vector search limits shown, e.g. 10,20,50")
+        sub.choices[name].add_argument("--readings", type=lambda text: tuple(text.split(",")),
+                                       help="single-reading charts for these readings, e.g. every,first")
     args = parser.parse_args(argv)
+    if args.command in ("run", "adhoc", "show"):
+        from rbench import config
+
+        config.configure(budgets=args.budgets, limits=args.limits, readings=args.readings)
 
     if args.command == "prepare":
         for name in DATASETS if args.datasets == ["all"] else args.datasets:

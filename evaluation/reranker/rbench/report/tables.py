@@ -28,13 +28,13 @@ from __future__ import annotations
 import numpy as np
 
 from rbench.paths import SUMMARY
+from rbench import config
 from rbench.report import frontier
 from rbench.report.data import Results, coverage, mean_unit_tokens, query_labels
 from rbench.report.stats import delta
 
 BUDGETS = (250, 500, 1000, 2000, 4000, 8000)
 EVENTS = ("first", "every", "first_touch", "every_touch")  # complete and touched readings (metrics.py)
-DELTA_BUDGETS = (500, 1000, 4000)
 RERANK_BUDGETS = (1000, 2000, 4000, 8000, 16000, 32000, 64000)
 SHOW_TARGETS = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
 
@@ -74,25 +74,24 @@ HEADROOM = {"first": "some gold span complete", "every": "every gold span of one
 
 
 def headroom(r: Results, event: str) -> list[str]:
-    out = ["## 2. Headroom: the gold inside the rerank pool\n",
-           "A reranker can only reorder what the first stage retrieved. Share of test queries for which the pool the "
-           f"model scored holds {HEADROOM[event]} (so a reranker could deliver it), and the share whose first-ranked "
-           "chunk already overlaps gold.\n",
-           "| chunking | " + " | ".join(f"{m}: pool pairs / {event} in pool" for m in r.models) + " | first chunk overlaps gold |",
-           "|---|" + "---|" * (len(r.models) + 1)]
+    out = ["## 2. Headroom: the gold among the seeds retrieved\n",
+           "A reranker can only reorder the seeds the vector search returned. At each vector search limit L, the share of "
+           f"questions for which the top L seeds hold {HEADROOM[event]} (so a reranker could deliver it), with the "
+           "reranker's pairs per question; and the share whose first-ranked segment already overlaps gold.\n",
+           "| chunking | L | " + " | ".join(f"{m}: pairs / {event} among the L seeds" for m in r.models)
+           + " | first segment overlaps gold |", "|---|---|" + "---|" * (len(r.models) + 1)]
     for c in r.chunkings:
-        base = r.rows(c, "first_stage")
-        cells = []
-        for m in r.models:
-            depth = r.common_depth(c, [m])
-            oracle = r.rows(c, f"oracle@{depth}") if depth else None
-            rows = r.rows(c, f"rerank:{m}@{depth}") if depth else None
-            if oracle is None or oracle.empty:
-                cells.append("–")
+        first = (r.rows(c, "first_stage")["rank"] == 1).mean()
+        for limit in r.limits(c):
+            oracle = r.rows(c, f"oracle@{limit}")
+            if oracle.empty:
                 continue
             in_pool = (oracle[f"{event}_k"].to_numpy() <= oracle.oracle_pairs.to_numpy()).mean()
-            cells.append(f"{rows.pairs.mean():.0f} / {in_pool:.3f}")
-        out.append(f"| {c} | " + " | ".join(cells) + f" | {(base['rank'] == 1).mean():.3f} |")
+            cells = []
+            for m in r.models:
+                rows = r.rows(c, f"rerank:{m}@{limit}")
+                cells.append("–" if rows.empty else f"{rows.pairs.mean():.0f} / {in_pool:.3f}")
+            out.append(f"| {c} | {limit[1:]} | " + " | ".join(cells) + f" | {first:.3f} |")
     return out + [""]
 
 
@@ -120,7 +119,7 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
            "evidence seeds, so no reranker reads all the evidence in full with fewer tokens; elsewhere it is no bound and "
            "is not shown.\n",
            "| chunking | ranker | pairs | " + " | ".join(map(str, BUDGETS)) + " | "
-           + " | ".join(f"Δ@{b}" for b in DELTA_BUDGETS) + " |", "|---|---|---|" + "---|" * (len(BUDGETS) + 3)]
+           + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|" + "---|" * (len(BUDGETS) + 3)]
     for c in r.chunkings:
         for limit in r.limits(c):
             for e in (0, *r.expansions):
@@ -135,49 +134,57 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
                         continue
                     ds = [] if name.startswith("first_stage") else [
                         delta((rows[event].to_numpy() <= b).astype(float) - (base[event].to_numpy() <= b),
-                              base.cluster.to_numpy()) for b in DELTA_BUDGETS]
+                              base.cluster.to_numpy()) for b in config.EVAL.budgets]
                     out.append(f"| {c} | {name} | {rows.pairs.mean():.0f} | " + " | ".join(_cov(rows, event, BUDGETS))
-                               + " | " + " | ".join(ds or [""] * len(DELTA_BUDGETS)) + " |")
+                               + " | " + " | ".join(ds or [""] * len(config.EVAL.budgets)) + " |")
     return out + [""]
 
 
 def token_savings(r: Results, event: str) -> list[str]:
     grid = frontier.BUDGET_GRID
-    out = ["## 4. Token savings\n", "Reader tokens the first stage alone needs to match the reranked coverage "
-           "(× the reranked budget); '>16,000' if it never does.\n",
-           "| chunking | model | " + " | ".join(f"at {b}" for b in BUDGETS) + " |", "|---|---|" + "---|" * len(BUDGETS)]
+    out = ["## 4. Token savings\n", "At each vector search limit L: reader tokens the first stage over the same L seeds "
+           "needs to match the reranked coverage (× the reranked budget); 'never' if it does not.\n",
+           "| chunking | model | L | " + " | ".join(f"at {b}" for b in BUDGETS) + " |", "|---|---|---|" + "---|" * len(BUDGETS)]
     for c in r.chunkings:
-        base = coverage(r.rows(c, "first_stage")[event].to_numpy(), grid)
-        depth = r.common_depth(c)
-        for m in r.models_at(c) if depth else []:
-            rr = r.rows(c, f"rerank:{m}@{depth}")[event].to_numpy()
-            cells = []
-            for b, target in zip(BUDGETS, coverage(rr, np.asarray(BUDGETS)), strict=True):
-                hit = np.flatnonzero(base >= target - 1e-12)
-                cells.append(">16,000" if not len(hit) else f"{grid[hit[0]]:,.0f} ({grid[hit[0]] / b:.1f}×)")
-            out.append(f"| {c} | {m} | " + " | ".join(cells) + " |")
+        for limit in r.limits(c):
+            base = coverage(r.rows(c, f"first_stage@{limit}")[event].to_numpy(), grid)
+            for m in r.models_at(c):
+                rows = r.rows(c, f"rerank:{m}@{limit}")
+                if rows.empty:
+                    continue
+                cells = []
+                for b, target in zip(BUDGETS, coverage(rows[event].to_numpy(), np.asarray(BUDGETS)), strict=True):
+                    hit = np.flatnonzero(base >= target - 1e-12)
+                    cells.append("never" if not len(hit) else f"{grid[hit[0]]:,.0f} ({grid[hit[0]] / b:.1f}×)")
+                out.append(f"| {c} | {m} | {limit[1:]} | " + " | ".join(cells) + " |")
     return out + [""]
 
 
 def overfetch(r: Results, event: str) -> list[str]:
-    out = ["## 5. Overfetch\n", "Coverage at 1,000 / 4,000 reader tokens by rerank depth (chunks); reranker "
-           "tokens per query in parentheses; '=' where the pool is exhausted.\n"]
+    budgets = config.EVAL.budgets
+    out = ["## 5. Overfetch\n", f"Coverage at {' / '.join(f'{b:,}' for b in budgets)} reader tokens as the vector search "
+           "limit (the rerank depth) grows: reranked, then the first stage over the same seeds; reranker tokens per query "
+           "in parentheses; '=' where the pool is exhausted.\n"]
     for m in r.models:
         d = r.select(kind="rerank", model=m)
         depths = sorted({x for x in d.depth if x.startswith("n")}, key=lambda x: int(x[1:]))
-        out += [f"**{m}**\n", "| chunking | none | " + " | ".join(depths) + " |", "|---|---|" + "---|" * len(depths)]
+        out += [f"**{m}**\n", "| chunking | | " + " | ".join(f"L {x[1:]}" for x in depths) + " |", "|---|---|" + "---|" * len(depths)]
         for c in r.chunkings:
-            cells, last = [" / ".join(_cov(r.rows(c, "first_stage"), event, (1000, 4000)))], None
+            reranked, first, last = [], [], None
             for x in depths:
-                rows = r.rows(c, f"rerank:{m}@{x}")
+                rows, base = r.rows(c, f"rerank:{m}@{x}"), r.rows(c, f"first_stage@{x}")
                 if rows.empty:
-                    cells.append("–")
+                    reranked.append("–")
+                    first.append("–")
                 elif last is not None and rows.pairs.mean() == last:
-                    cells.append("=")
+                    reranked.append("=")
+                    first.append("=")
                 else:
                     last = rows.pairs.mean()
-                    cells.append(" / ".join(_cov(rows, event, (1000, 4000))) + f" ({rows.rr_tokens.mean():,.0f})")
-            out.append(f"| {c} | " + " | ".join(cells) + " |")
+                    reranked.append(" / ".join(_cov(rows, event, budgets)) + f" ({rows.rr_tokens.mean():,.0f})")
+                    first.append(" / ".join(_cov(base, event, budgets)))
+            out.append(f"| {c} | reranked | " + " | ".join(reranked) + " |")
+            out.append(f"| {c} | first stage | " + " | ".join(first) + " |")
         out.append("")
     return out
 
@@ -189,7 +196,7 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
     test = r.select(expand=None)
     families = sorted({c[:3] for c in r.chunkings})
     for m in r.models:
-        out += [f"**{m}**\n", "| reranker tokens | chunker | " + " | ".join(f"reader {b}" for b in (500, 1000, 2000, 4000)) + " |",
+        out += [f"**{m}**\n", "| reranker tokens | chunker | " + " | ".join(f"reader {b}" for b in config.EVAL.budgets) + " |",
                 "|---|---|---|---|---|---|"]
         cands = r.select(model=m, expand=None)
         cands = cands[cands.kind.isin(frontier.RERANKED)]
@@ -197,7 +204,7 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
         for R in RERANK_BUDGETS:
             for family in ([*families, "any"] if len(families) > 1 else ["any"]):
                 cells = []
-                for b in (500, 1000, 2000, 4000):
+                for b in config.EVAL.budgets:
                     best = None
                     for (c, name), mean_tokens in cost.items():
                         if mean_tokens > R or (family != "any" and not c.startswith(family)):
@@ -247,7 +254,7 @@ def chunkers(r: Results, event: str) -> list[str]:
     if not _pairs(r):
         return []  # history datasets have one segmenter (EventMemory's)
     out = ["## 8. Chunkers with a reranker: recursive minus fixed\n",
-           "| size | ranker | " + " | ".join(f"Δ@{b}" for b in DELTA_BUDGETS) + " |", "|---|---|---|---|---|"]
+           "| size | ranker | " + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|---|---|"]
     for c in r.chunkings:
         other = "rec" + c[3:]
         if not c.startswith("fix") or other not in r.chunkings:
@@ -261,52 +268,66 @@ def chunkers(r: Results, event: str) -> list[str]:
                 continue
             out.append(f"| {c[3:]} | {name} | " + " | ".join(
                 delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
-                for x in DELTA_BUDGETS) + " |")
+                for x in config.EVAL.budgets) + " |")
     return out + [""]
 
 
 def query_types(r: Results, event: str) -> list[str]:
-    out = ["## 9. Query types: reranker gain at 1,000 reader tokens\n",
-           "Labels are the dataset's own question types and rule-based features (features.py). Cells: n, first-stage "
-           "coverage, Δ [95%].\n"]
-    for c in [c for c in ("seg500", "rec64", "fix256", "rec256", "fix1024") if c in r.chunkings] or r.chunkings[:1]:
-        _, labels = query_labels(r, c)
-        depth = r.common_depth(c)
-        pairs = [(model, base_name, f"{kind}:{model}@{depth}{tail}", what) for model in (r.models_at(c) if depth else [])
-                 for base_name, kind, tail, what in (
-                     ("first_stage", "rerank", "", "seeds reranked, no expansion"),
-                     ("first_stage+x3", "xrerank", "+x3", "windows reranked, expand_context 3 (EventMemory with expansion)"))]
-        for m, base_name, name, what in pairs:
-            rows, base = r.rows(c, name), r.rows(c, base_name)
-            if rows.empty or base.empty:
-                continue
-            hit = base[event].to_numpy() <= 1000
-            gain = (rows[event].to_numpy() <= 1000).astype(float) - hit
-            out += [f"**{m}, {c}: {what}, against the first stage {base_name.removeprefix('first_stage') or 'without expansion'}**\n",
-                    "| feature | value | n | first stage | Δ |", "|---|---|---|---|---|"]
-            for feature in ("question_type", "form", "length", "context", "parts"):
-                if feature not in labels:
+    budgets = config.EVAL.budgets
+    out = ["## 9. Query types: reranker gain\n",
+           "Labels are the dataset's own question types and rule-based features (features.py). Gain: coverage reranked "
+           "minus the first stage over the same seeds (vector search limit 20, EventMemory's default, where scored; else "
+           f"the deepest), at {', '.join(f'{b:,}' for b in budgets)} reader tokens. Cells: first-stage coverage, Δ [95%].\n"]
+    for c in r.chunkings:
+        limits = r.limits(c)
+        if not limits:
+            continue
+        limit = "n20" if "n20" in limits else limits[-1]
+        for e, kind, what in ((0, "rerank", "seeds reranked"), (3, "xrerank", "windows reranked, expand_context 3")):
+            tail = f"+x{e}" if e else ""
+            base_name = f"first_stage@{limit}{tail}"
+            base, labels = query_labels(r, c, base_name)
+            for m in r.models_at(c):
+                rows = r.rows(c, f"{kind}:{m}@{limit}{tail}")
+                if rows.empty or base.empty:
                     continue
-                for v in sorted(set(labels[feature])):
-                    mask = labels[feature] == v
-                    if mask.sum() >= 10:
-                        out.append(f"| {feature} | {v} | {int(mask.sum())} | {hit[mask].mean():.3f} | "
-                                   f"{delta(gain[mask], base.cluster.to_numpy()[mask])} |")
-            out.append("")
+                out += [f"**{m}, {c}, L {limit[1:]}: {what}**\n",
+                        "| feature | value | n | " + " | ".join(f"@{b:,}" for b in budgets) + " |",
+                        "|---|---|---|" + "---|" * len(budgets)]
+                for feature in ("question_type", "form", "length", "context", "parts"):
+                    if feature not in labels:
+                        continue
+                    for v in sorted(set(labels[feature])):
+                        mask = labels[feature] == v
+                        if mask.sum() < 10:
+                            continue
+                        cells = []
+                        for b in budgets:
+                            hit = base[event].to_numpy() <= b
+                            gain = (rows[event].to_numpy() <= b).astype(float) - hit
+                            cells.append(f"{hit[mask].mean():.3f}, {delta(gain[mask], base.cluster.to_numpy()[mask])}")
+                        out.append(f"| {feature} | {v} | {int(mask.sum())} | " + " | ".join(cells) + " |")
+                out.append("")
     return out
 
 
 def help_harm(r: Results, event: str) -> list[str]:
-    out = ["## 10. Help and harm\n", f"Share of test queries whose {event} cost the reranker lowers or raises, and "
-           "that cross 1,000 reader tokens either way.\n",
-           "| chunking | model | helped | hurt | lost@1000 | gained@1000 |", "|---|---|---|---|---|---|"]
+    budgets = config.EVAL.budgets
+    out = ["## 10. Help and harm\n", f"At each vector search limit L: the share of questions whose {event} cost the reranker "
+           "lowers or raises against the first stage over the same seeds, and that it makes cross each reader budget either "
+           "way (lost: within the budget before reranking, not after; gained: the reverse).\n",
+           "| chunking | model | L | helped | hurt | " + " | ".join(f"lost / gained @{b:,}" for b in budgets) + " |",
+           "|---|---|---|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
-        depth = r.common_depth(c)
-        a = r.rows(c, "first_stage")[event].to_numpy()
-        for m in r.models_at(c) if depth else []:
-            b = r.rows(c, f"rerank:{m}@{depth}")[event].to_numpy()
-            out.append(f"| {c} | {m} | {(b < a).mean():.3f} | {(b > a).mean():.3f} | {((a <= 1000) & (b > 1000)).mean():.3f} | "
-                       f"{((a > 1000) & (b <= 1000)).mean():.3f} |")
+        for limit in r.limits(c):
+            a = r.rows(c, f"first_stage@{limit}")[event].to_numpy()
+            for m in r.models_at(c):
+                rows = r.rows(c, f"rerank:{m}@{limit}")
+                if rows.empty:
+                    continue
+                b = rows[event].to_numpy()
+                cells = [f"{((a <= x) & (b > x)).mean():.3f} / {((a > x) & (b <= x)).mean():.3f}" for x in budgets]
+                out.append(f"| {c} | {m} | {limit[1:]} | {(b < a).mean():.3f} | {(b > a).mean():.3f} | " + " | ".join(cells) + " |")
     return out + [""]
 
 
@@ -319,13 +340,13 @@ def expansion(r: Results, event: str) -> list[str]:
     out = ["## 11. Expansion: embedded vs reranked vs read unit\n",
            "Seeds are the smallest expanded chunking. 'Plain' chunks are embedded, reranked and read whole; expanded seeds are embedded small "
            "and read as EventMemory windows. Reader cost counts overlapping windows once.\n",
-           "| model | read unit | approach | reranker tokens | " + " | ".join(f"@{b}" for b in (500, 1000, 2000, 4000)) + " |",
+           "| model | read unit | approach | reranker tokens | " + " | ".join(f"@{b}" for b in config.EVAL.budgets) + " |",
            "|---|---|---|---|---|---|---|---|"]
     for m, unit, items in groups:
         for label, c, name in items:
             rows = r.rows(c, name)
             out.append(f"| {m} | ~{unit} | {label} ({c} {name}) | {rows.rr_tokens.mean():,.0f} | "
-                       + " | ".join(_cov(rows, event, (500, 1000, 2000, 4000))) + " |")
+                       + " | ".join(_cov(rows, event, config.EVAL.budgets)) + " |")
     return out + [""]
 
 
@@ -339,7 +360,6 @@ bootstraps over the dataset's clusters (questions for LongMemEval; documents, di
 """
 
 
-COUNT_LIMITS = (10, 20, 30, 50)  # vector search limits shown (EventMemory's default is 20)
 KEPT, SEGMENTS = (5, 10), (10, 20, 50)
 
 
@@ -363,7 +383,7 @@ def equal_counts(r: Results, event: str) -> list[str]:
            "| chunking | L | ranker | " + " | ".join(f"k≤{k}" for k in KEPT) + " | " + " | ".join(f"m≤{m}" for m in SEGMENTS)
            + " | all |", "|---|---|---|" + "---|" * (len(KEPT) + len(SEGMENTS) + 1)]
     for c in r.chunkings:
-        for L in COUNT_LIMITS:
+        for L in (int(x[1:]) for x in r.limits(c)):
             for name in _count_rows(r, c, L):
                 rows = r.rows(c, name)
                 if rows.empty:
@@ -376,21 +396,24 @@ def equal_counts(r: Results, event: str) -> list[str]:
     return out + [""]
 
 
-SETTING_BUDGETS = (500, 1000, 2000, 4000)
 
 
 def settings(r: Results, event: str) -> list[str]:
     """What each configuration needs EventMemory set to at a reader budget: max_num_segments
     (segments read within it) and, for the first stage, vector_search_limit (seeds reached)."""
-    if "segs_t500" not in r.df:
+    budgets = [b for b in config.EVAL.budgets if f"segs_t{b}" in r.df]  # counts are stored at metrics.BUDGETS only
+    if not budgets:
         return []
+    skipped = [b for b in config.EVAL.budgets if b not in budgets]
     out = ["## 14. EventMemory settings at each reader budget\n",
            f"Each cell: {event}-gold coverage · max_num_segments · seeds read, as the median (10th percentile) over "
            "questions. Segment counts vary with the text, so a limit that keeps 90% of questions within the budget is "
            "the 10th percentile. Without a reranker, the seeds read are the vector_search_limit to set; with one, the "
-           "vector_search_limit is the depth in the name (every one of those seeds is reranked).\n",
-           "| chunking | ranker | " + " | ".join(f"@{b}" for b in SETTING_BUDGETS) + " |",
-           "|---|---|" + "---|" * len(SETTING_BUDGETS)]
+           "vector_search_limit is the depth in the name (every one of those seeds is reranked)."
+           + (f" Not shown: {', '.join(map(str, skipped))} (segment counts are stored at metrics.BUDGETS only)." if skipped else "")
+           + "\n",
+           "| chunking | ranker | " + " | ".join(f"@{b}" for b in budgets) + " |",
+           "|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
         depth = r.common_depth(c)
         names = ["first_stage", *(f"first_stage+x{e}" for e in r.expansions if e == 3)]
@@ -402,7 +425,7 @@ def settings(r: Results, event: str) -> list[str]:
             if rows.empty:
                 continue
             cells = []
-            for b in SETTING_BUDGETS:
+            for b in budgets:
                 segs, ctx = rows[f"segs_t{b}"], rows[f"ctx_t{b}"]
                 cells.append(f"{(rows[event] <= b).mean():.2f} · {segs.median():.0f} ({segs.quantile(0.1):.0f}) · "
                              f"{ctx.median():.0f} ({ctx.quantile(0.1):.0f})")

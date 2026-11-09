@@ -1,35 +1,34 @@
 """Charts for one (embedder, dataset, scope, variant, sample); the markdown is their table view.
+The values they are drawn at (reader budgets, vector search limits, readings, expansions) come
+from rbench.config.EVAL. Files (a suffix _<chunking> when several chunkings were simulated):
 
-  coverage_tokens_{first,every}.png  coverage vs reader tokens, panel per chunking: first stage,
-                                     each model at the common depth,
-                                     and dashed, the same with expand_context 3 (windows reranked)
-  rpf_tokens.png, rpf_k.png          gold-character recall, precision and F1 vs tokens and vs k
-  rerank_cost.png                    coverage at fixed reader budgets vs reranker tokens as
-                                     overfetch grows; one line per chunking, so equal-x points
-                                     compare many small chunks with few large ones
-  break_even.png                     the LLM input price above which reranking is cheaper overall,
-                                     vs coverage target (API-billed and prefix-cached reranker tokens)
-  cost_saving.png                    % saved by allowing a reranker, over LLM price x coverage target
-  query_types.png                    reranker gain at 1,000 tokens by query type, 95% intervals
-  first_stage_sizes.png              first-stage coverage vs chunk size at fixed reader budgets, per
-                                     chunker: where an optimal embedding chunk size shows
-  expansion.png                      plain chunks vs small seeds expanded to the same read size, with
-                                     no reranker, reranking before expansion, and after it
-  coverage_counts.png                coverage at equal counts: seeds kept after reranking, segments
-                                     read, and 10 seeds kept as the vector search limit grows
+  coverage_tokens_<reading>.png  coverage vs reader tokens: a row per expand_context, a column per
+                                 vector search limit L; in each panel every line reads only the top
+                                 L seeds: the first stage in vector order, each reranker scoring the
+                                 seeds (solid) or their windows (dashed, where scored)
+  rpf_<tokens|k>[_x<E>].png      gold-character recall, precision and F1 vs tokens and vs k
+  coverage_counts.png            coverage at equal counts (seeds kept, segments read, L)
+  rerank_cost.png                coverage vs reranker tokens as L grows, beside the first stage at
+                                 the same L, at each configured budget
+  gain_sizes.png                 reranker gain (same L) vs segment size, at each budget
+  break_even.png                 the LLM input price above which reranking is cheaper overall
+  cost_saving.png                % saved by reranking, over LLM price x coverage target
+  query_types.png                reranker gain (same L) by question type, at each budget
+  first_stage_sizes.png          first-stage coverage vs segment size (no reranker)
+  expansion.png                  plain chunks vs small seeds expanded to the same read size
+Single-reading charts are drawn for each reading in EVAL.readings, with a _<reading> suffix
+except for "every".
 
-Colors follow the dataviz reference palette and were checked with its validator: models
-take categorical slots in fixed order (first stage, 0.6B, 4B, 8B, then the local 0.6B); the
-perfect reranker is neutral gray; chunk sizes use a one-hue ordinal ramp; savings use a
-diverging blue (saves) / red (costs more) scale around a neutral gray midpoint.
+Colors follow the dataviz reference palette and were checked with its validator: models take
+their color, marker and label from their registry entry (rerankers.RERANKERS); the perfect
+reranker is neutral gray; ordered values (segment sizes, budgets) use a one-hue ordinal ramp;
+savings use a diverging blue (saves) / red (costs more) scale around a neutral gray midpoint.
 
 Reading the charts: lines are thin with a light outline so crossings stay apart; each ranking
-also has a line-only marker shape (MARKERS), and dashes mean expanded windows. Coverage curves
-are exact step functions (one step per question); recall, precision and F1 are measured at
-every minor gridline (every 250 reader tokens, every k: metrics.CURVE_BUDGETS, CURVE_KS).
-Markers only identify the series (every 1,000 tokens, every 5 counts). Token and count axes are
-linear. Under each title, a line says what is held equal and what is not; the legend under the
-panels gives each line's vector search limit.
+also has a line-only marker shape (MARKERS). Coverage curves are exact step functions (one step
+per question); recall, precision and F1 are measured at every minor gridline (every 250 reader
+tokens, every k: metrics.CURVE_BUDGETS, CURVE_KS). Markers only identify the series. Token and
+count axes are linear. Under each title, a line says what is held equal and what is not.
 
 python -m rbench show <dataset> opens the same charts in zoomable matplotlib windows (show()).
 """
@@ -49,10 +48,11 @@ from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 from matplotlib.ticker import FuncFormatter, LogLocator, MultipleLocator, NullFormatter  # noqa: E402
 
+from rbench import config  # noqa: E402
 from rbench.metrics import CURVE_BUDGETS, CURVE_KS  # noqa: E402
 from rbench.paths import FIGURES  # noqa: E402
 from rbench.report import frontier  # noqa: E402
-from rbench.report.data import Results, coverage, mean_unit_tokens, price, query_labels  # noqa: E402
+from rbench.report.data import Results, coverage, price, query_labels  # noqa: E402
 from rbench.report.stats import interval  # noqa: E402
 from rbench.rerankers import RERANKERS  # noqa: E402
 
@@ -72,13 +72,10 @@ RAMP = {3: ("#86b6ef", "#2a78d6", "#104281"), 5: ("#86b6ef", "#5598e7", "#2a78d6
 DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34948", "#f2b8b5", "#f0efec", "#9ec5f4",
                                                                   "#3987e5", "#104281"])  # equal steps per arm
 BREAK_EVEN_TOP = 100.0  # $/M: the break-even chart's ceiling ("never cheaper" bands reach it)
-PRIMARY = "every"  # single-event charts: every gold turn read (all of a question's evidence is needed)
 # What each coverage event means, in words (metrics.py has the definitions).
 EVENT_TEXT = {"first": "some evidence read in full", "every": "all evidence read in full",
               "first_touch": "some evidence at least partly read", "every_touch": "all evidence at least partly read"}
 EVENT_NOTE = "Evidence: the turns marked as holding the answer; in full = all their segments read, partly = any."
-COVERAGE = f"coverage: {EVENT_TEXT[PRIMARY]}"
-SHOWN_EXPANSION = 3  # coverage and recall charts add this expand_context, dashed, when simulated
 
 plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE, "axes.edgecolor": GRID,
@@ -92,7 +89,6 @@ plt.rcParams.update({
 DASH = (0, (5, 3))  # the dashed style: long enough dashes to read in the legend's line samples
 PANEL = (4.4, 3.2)  # inches per panel; figures are at least MIN_WIDTH wide so the legend never dwarfs the plot
 MIN_WIDTH = 7.5
-TOKEN_TOP = 8000  # reader-token axes show 0..8k (500-4,000 is the realistic range); data runs to 16k
 TOKEN_MARKS = list(range(1000, 16000 + 1, 1000))  # where step curves carry their series marker
 LINE, THIN = 1.3, 1.0  # line widths (points): thin enough that overlapping lines stay apart
 
@@ -133,7 +129,7 @@ def _steps(ax, costs: np.ndarray, lo: float, hi: float, marks=None, marker: str 
 
 
 def _marker(key: str) -> str:
-    return MARKERS.get(key.split("+x")[0], "o")
+    return MARKERS.get(key.split("~")[0], "o")
 
 
 _SHOWING = False  # set by show(): figures stay open in windows instead of being written
@@ -158,11 +154,11 @@ def _log_x(ax, base: int = 10, ticks=None) -> None:
     ax.xaxis.set_minor_formatter(NullFormatter())
 
 
-def _token_x(ax, top: int = TOKEN_TOP) -> None:
+def _token_x(ax, top: int | None = None) -> None:
     """Reader tokens on a linear axis: labelled every 500 (every 1,000 in narrow panels), minor gridlines every 250 (where
     recall and precision are measured: metrics.CURVE_BUDGETS). Data beyond `top` is drawn and
     can be panned to in `show`."""
-    ax.set_xlim(0, top)
+    ax.set_xlim(0, top or config.EVAL.token_top)
     wide = ax.get_position().width * ax.figure.get_figwidth() >= 5.5  # inches: room for a label every 500
     ax.xaxis.set_major_locator(MultipleLocator(500 if wide else 1000))
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: _human(v) if v else "0"))
@@ -239,121 +235,196 @@ def _save(fig, path, title: str, handles=None, labels=None, ncol: int | None = N
     plt.close(fig)
 
 
-def _rankers(r: Results, c: str, limit: str, bound: bool = False) -> list[tuple[str, str, str, str]]:
-    """(legend key, ranker, color, line style) at one vector search limit: the first stage in
-    vector order and each model's reranking, over the same top seeds; solid reads the seeds,
-    dashed their EventMemory windows (expand, then rerank). bound adds the perfect reranker,
-    which is a bound only for "all evidence read in full" with seeds alone (see rankers.py):
-    pass it only there."""
-    e = SHOWN_EXPANSION
-    out = [("first_stage", f"first_stage@{limit}", SERIES["first_stage"], "-")]
-    out += [(m, f"rerank:{m}@{limit}", SERIES[m], "-") for m in r.models_at(c)]
-    if bound:
+def _coverage(reading: str) -> str:
+    return f"coverage: {EVENT_TEXT[reading]}"
+
+
+def _file(base: str, reading: str | None = None, chunking: str | None = None, r: Results | None = None) -> str:
+    """A chart's file name: the reading as a suffix unless it is every, the chunking when several."""
+    name = base + (f"_{reading}" if reading and reading != "every" else "")
+    return name + (f"_{chunking}" if chunking and r is not None and len(r.chunkings) > 1 else "") + ".png"
+
+
+def _expansions(r: Results) -> list[int]:
+    """expand_context values to draw: 0 and the configured ones that were simulated."""
+    return [0, *(e for e in r.expansions if e in config.EVAL.expansions)]
+
+
+def _series(r: Results, c: str, limit: str, e: int, bound: bool = False) -> list[tuple[str, str, str, str]]:
+    """(legend key, ranker, color, line style) at one vector search limit and expand_context e.
+    Every line reads only the top `limit` seeds: the first stage in vector order; each model
+    scoring the seeds (solid: rerank, then read the seeds or their windows); each model scoring
+    the windows (dashed: expand, then rerank; only where they were scored). bound adds the
+    perfect reranker, which is a bound only for "all evidence read in full" with seeds alone
+    (rankers.py): pass it only there."""
+    tail = f"+x{e}" if e else ""
+    out = [("first_stage", f"first_stage@{limit}{tail}", SERIES["first_stage"], "-")]
+    out += [(m, f"rerank:{m}@{limit}{tail}", SERIES[m], "-") for m in r.models_at(c)]
+    if e:
+        out += [(f"{m}~windows", f"xrerank:{m}@{limit}{tail}", SERIES[m], DASH) for m in r.models_at(c)]
+    if bound and not e:
         out.append(("oracle", f"oracle@{limit}", ORACLE, "-"))
-    if e in r.expansions:
-        out.append((f"first_stage+x{e}", f"first_stage@{limit}+x{e}", SERIES["first_stage"], DASH))
-        out += [(f"{m}+x{e}", f"xrerank:{m}@{limit}+x{e}", SERIES[m], DASH) for m in r.models_at(c)]
     return [x for x in out if not r.rows(c, x[1]).empty]
+
+
+def _name_at(key: str, limit: str, e: int) -> str:
+    """The ranker name of a _series legend key at another vector search limit."""
+    base, _, what = key.partition("~")
+    tail = f"+x{e}" if e else ""
+    if base in ("first_stage", "oracle"):
+        return f"{base}@{limit}{tail}"
+    return f"{'xrerank' if what else 'rerank'}:{base}@{limit}{tail}"
 
 
 def _priced(m: str) -> str:
     """A model's label for charts that put a price on its tokens: a local model has none of its
-    own, so it is priced as DeepInfra's model of the same size, and says so."""
+    own, so it is priced as its stand-in on DeepInfra, and says so."""
     spec = RERANKERS[m]
     if spec.usd_per_mtok is None:
         return f"{spec.label}, priced as {RERANKERS[spec.priced_as].label} on DeepInfra (${price(m):g}/M)"
-    return f"{LABEL[m]} (DeepInfra ${price(m):g}/M)"
+    return f"{spec.label} (DeepInfra ${price(m):g}/M)"
 
 
 def _ranker_groups(r: Results, keys: set[str]) -> list[tuple[str, list, list[str]]]:
-    """Two legend columns for charts drawn with _rankers: color and marker = how the seeds are
-    ordered, line style = what is read (the seeds, or their windows)."""
-    e = SHOWN_EXPANSION
-    bases = {k.split("+x")[0] for k in keys}
+    """Two legend columns for charts drawn with _series: color and marker = how the seeds are
+    ordered, line style = what the reranker scores."""
+    bases = {k.split("~")[0] for k in keys}
     color_keys = [k for k in ("first_stage", *r.models, "oracle") if k in bases]
     names = {"first_stage": "first stage (vector search order)",
-             "oracle": "perfect reranker, seeds only: a bound for the solid lines (windows can reach evidence it cannot)"}
+             "oracle": "perfect reranker, seeds only: a bound for the solid lines at expand_context 0"}
     labels = [names.get(k, LABEL.get(k, k)) for k in color_keys]
     groups = [("order (color, marker)", [_key(SERIES.get(k, ORACLE), marker=MARKERS.get(k, "o")) for k in color_keys], labels)]
-    if any("+x" in k for k in keys):
-        groups.append(("reading (line)", [_key(INK2), _key(INK2, DASH)],
-                       ["seeds (expand_context 0)", f"windows (expand_context {e}); a reranker scores the windows"]))
+    if any("~windows" in k for k in keys):
+        groups.append(("what the reranker scores (line)", [_key(INK2), _key(INK2, DASH)],
+                       ["the seeds (rerank, then read the seeds or their windows)",
+                        "the windows (expand, then rerank)"]))
     return groups
 
 
-SAME_LIMIT = ("Each panel is one vector search limit L: every line reads only the top L seeds of the same vector search, "
-              "in vector order (first stage) or reranked. Dashed: seeds read with their windows.")
-BOUND = (" Gray: a perfect reranker over the same seeds, which reads only the evidence seeds: no reranker can read all "
-         "the evidence in full with fewer tokens (drawn only here; with windows, or for other measures, it is no bound).")
-TOKENS_EQUAL = "Held equal: reader tokens, and the vector search limit (panel). Not equal: reranker tokens. " + SAME_LIMIT
+SAME_LIMIT = ("Each panel is one vector search limit L and one expand_context E: every line reads only the top L seeds of the "
+              "same vector search, each with its window of E neighbouring segments, in vector order (first stage) or reranked.")
+BOUND = (" Gray: a perfect reranker over the same seeds, which reads only the evidence seeds: no reranker reads all the "
+         "evidence in full with fewer tokens (drawn only at expand_context 0, and only for this reading).")
+TOKENS_EQUAL = "Held equal: reader tokens, the vector search limit and the expansion (panel). Not equal: reranker tokens. " + SAME_LIMIT
 
 
-def _limit_grid(r: Results) -> tuple[list[str], list[str]]:
-    """(chunkings, vector search limits) for panel grids: a row per chunking, a column per limit."""
-    return r.chunkings, sorted({x for c in r.chunkings for x in r.limits(c)}, key=lambda d: int(d[1:]))
+def _limit_grid(r: Results) -> list[str]:
+    """Vector search limits for panel columns: those shown for any chunking."""
+    return sorted({x for c in r.chunkings for x in r.limits(c, config.EVAL.limits)}, key=lambda d: int(d[1:]))
 
 
 def coverage_by_tokens(r: Results, out, head: str) -> None:
-    chunkings, limits = _limit_grid(r)
-    for event in ("first", "every", "first_touch", "every_touch"):
-        fig, axes = _figure(len(chunkings), len(limits), panel=(4.0, 3.2), sharex=True, sharey=True)
-        keys = set()
-        for i, c in enumerate(chunkings):
-            for j, limit in enumerate(limits):
-                ax = axes[i][j]
-                if limit not in r.limits(c):
-                    ax.set_visible(False)
-                    continue
-                for key, name, color, ls in _rankers(r, c, limit, bound=event == "every"):
-                    _steps(ax, r.rows(c, name)[event].to_numpy(), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
-                           linestyle=ls, linewidth=THIN if key.startswith("oracle") else LINE)
-                    keys.add(key)
-                _token_x(ax)
-                _share_y(ax)
-                ax.set_title(f"{c} ({mean_unit_tokens(r, c)}) · vector search limit {limit[1:]}", loc="left")
-                if i == len(chunkings) - 1:
-                    ax.set_xlabel("reader tokens (rendered context)\nexact at every budget; markers every 1,000")
-                if j == 0:
-                    ax.set_ylabel(f"share of questions: {EVENT_TEXT[event]}")
-        _save(fig, out / f"coverage_tokens_{event}.png", f"Coverage ({EVENT_TEXT[event]}) vs reader tokens — {head}",
-              groups=_ranker_groups(r, keys), note=TOKENS_EQUAL + (BOUND if event == "every" else "") + " " + EVENT_NOTE)
+    limits, expansions = _limit_grid(r), _expansions(r)
+    for c in r.chunkings:
+        for reading in config.READINGS:
+            fig, axes = _figure(len(expansions), len(limits), panel=(4.0, 3.0), sharex=True, sharey=True)
+            keys = set()
+            for i, e in enumerate(expansions):
+                for j, limit in enumerate(limits):
+                    ax = axes[i][j]
+                    if limit not in r.limits(c, config.EVAL.limits):
+                        ax.set_visible(False)
+                        continue
+                    for key, name, color, ls in _series(r, c, limit, e, bound=reading == "every"):
+                        _steps(ax, r.rows(c, name)[reading].to_numpy(), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
+                               linestyle=ls, linewidth=THIN if key == "oracle" else LINE)
+                        keys.add(key)
+                    _token_x(ax)
+                    _share_y(ax)
+                    ax.set_title(f"{c} · L {limit[1:]} · expand_context {e}", loc="left")
+                    if i == len(expansions) - 1:
+                        ax.set_xlabel("reader tokens (rendered context)\nexact at every budget; markers every 1,000")
+                    if j == 0:
+                        ax.set_ylabel(f"share of questions: {EVENT_TEXT[reading]}")
+            _save(fig, out / (f"coverage_tokens_{reading}" + (f"_{c}" if len(r.chunkings) > 1 else "") + ".png"),
+                  f"Coverage ({EVENT_TEXT[reading]}) vs reader tokens, {c} — {head}", groups=_ranker_groups(r, keys),
+                  note=TOKENS_EQUAL + (BOUND if reading == "every" else "") + " " + EVENT_NOTE)
 
 
 def recall_precision_f1(r: Results, out, head: str) -> None:
     for c in r.chunkings:
-        limits = r.limits(c)
-        for axis, fmt, grid, xlabel in (("tokens", "t{}", CURVE_BUDGETS, "reader tokens (rendered context)"),
-                                        ("k", "k{}", CURVE_KS, "segments read (k, window neighbours included)")):
-            xs = [v for v in grid if f"recall_{fmt.format(v)}" in r.df]  # results simulated before the finer grid
-            fig, axes = _figure(3, len(limits), panel=(4.0, 2.6), sharex=True)
-            keys = set()
-            for j, limit in enumerate(limits):
-                for key, name, color, ls in _rankers(r, c, limit):
-                    rows = r.rows(c, name)
-                    rec = np.stack([rows[f"recall_{fmt.format(v)}"].to_numpy() for v in xs], 1)
-                    pre = np.stack([rows[f"precision_{fmt.format(v)}"].to_numpy() for v in xs], 1)
-                    f1 = np.where(rec + pre > 0, 2 * rec * pre / np.maximum(rec + pre, 1e-12), 0.0)
-                    every = [n for n, v in enumerate(xs) if v % (1000 if axis == "tokens" else 5) == 0]
-                    for i, values in enumerate((rec, pre, f1)):
-                        _plot(axes[i][j], xs, values.mean(0), color=color, linestyle=ls, marker=_marker(key),
-                              markevery=every, linewidth=THIN if key.startswith("oracle") else LINE)
+        limits = r.limits(c, config.EVAL.limits)
+        for e in _expansions(r):
+            for axis, fmt, grid, xlabel in (("tokens", "t{}", CURVE_BUDGETS, "reader tokens (rendered context)"),
+                                            ("k", "k{}", CURVE_KS, "segments read (k, window neighbours included)")):
+                xs = [v for v in grid if f"recall_{fmt.format(v)}" in r.df]  # results simulated before the finer grid
+                fig, axes = _figure(3, len(limits), panel=(4.0, 2.6), sharex=True)
+                keys = set()
+                for j, limit in enumerate(limits):
+                    for key, name, color, ls in _series(r, c, limit, e):
+                        rows = r.rows(c, name)
+                        rec = np.stack([rows[f"recall_{fmt.format(v)}"].to_numpy() for v in xs], 1)
+                        pre = np.stack([rows[f"precision_{fmt.format(v)}"].to_numpy() for v in xs], 1)
+                        f1 = np.where(rec + pre > 0, 2 * rec * pre / np.maximum(rec + pre, 1e-12), 0.0)
+                        every = [n for n, v in enumerate(xs) if v % (1000 if axis == "tokens" else 5) == 0]
+                        for i, values in enumerate((rec, pre, f1)):
+                            _plot(axes[i][j], xs, values.mean(0), color=color, linestyle=ls, marker=_marker(key),
+                                  markevery=every, linewidth=LINE)
+                        keys.add(key)
+                    axes[0][j].set_title(f"{c} · L {limit[1:]} · expand_context {e}", loc="left")
+                    for i, label in enumerate(("recall (gold characters)", "precision", "F1")):
+                        _token_x(axes[i][j]) if axis == "tokens" else _k_x(axes[i][j], max(CURVE_KS))
+                        if j == 0:
+                            axes[i][j].set_ylabel(label)
+                    axes[2][j].set_xlabel(f"{xlabel}\nmeasured at every minor gridline")
+                for row in axes:
+                    tops = [line.get_ydata().max() for ax in row for line in ax.get_lines()]
+                    for ax in row:
+                        _share_y(ax, min(1.0, max(tops, default=1.0)))
+                note = (TOKENS_EQUAL if axis == "tokens" else
+                        "Held equal: segments read (x; window neighbours count), the vector search limit and the expansion "
+                        "(panel). Not equal: reader tokens, reranker tokens. " + SAME_LIMIT)
+                name = f"rpf_{axis}" + (f"_x{e}" if e else "")
+                _save(fig, out / _file(name, None, c, r), f"Gold-character recall, precision and F1 vs {xlabel}, {c} — {head}",
+                      groups=_ranker_groups(r, keys), note=note)
+
+
+def coverage_counts(r: Results, out, head: str, reading: str) -> None:
+    """Coverage at equal counts instead of tokens: against seeds kept (k) and segments read (m)
+    at one vector search limit L (EventMemory's default, 20, where scored), and at k = 10 kept
+    seeds as L grows; a row per expand_context."""
+    if f"{reading}_ctx" not in r.df:
+        return
+    for c in r.chunkings:
+        limits = r.limits(c, config.EVAL.limits)
+        if not limits:
+            continue
+        limit = "n20" if "n20" in limits else limits[-1]
+        expansions = _expansions(r)
+        fig, axes = _figure(len(expansions), 3, panel=(4.0, 3.0))
+        keys = set()
+        for i, e in enumerate(expansions):
+            series = _series(r, c, limit, e, bound=reading == "every")
+            for j, (column, top, xlabel) in enumerate(((f"{reading}_ctx", min(50, int(limit[1:])), "seeds kept (k)"),
+                                                        (f"{reading}_k", 200, "segments read (m = max_num_segments)"))):
+                ax = axes[i][j]
+                for key, name, color, ls in series:
+                    _steps(ax, r.rows(c, name)[column].to_numpy(), 0, top,
+                           range(5 if top <= 50 else 20, top + 1, 5 if top <= 50 else 20), _marker(key), color=color,
+                           linestyle=ls, linewidth=THIN if key == "oracle" else LINE)
                     keys.add(key)
-                axes[0][j].set_title(f"{c} · vector search limit {limit[1:]}", loc="left")
-                for i, label in enumerate(("recall (gold characters)", "precision", "F1")):
-                    _token_x(axes[i][j]) if axis == "tokens" else _k_x(axes[i][j], max(CURVE_KS))
-                    if j == 0:
-                        axes[i][j].set_ylabel(label)
-                axes[2][j].set_xlabel(f"{xlabel}\nmeasured at every minor gridline")
-            for row in axes:
-                tops = [line.get_ydata().max() for ax in row for line in ax.get_lines()]
-                for ax in row:
-                    _share_y(ax, min(1.0, max(tops, default=1.0)))
-            note = (TOKENS_EQUAL if axis == "tokens" else
-                    "Held equal: segments read (x; window neighbours count), and the vector search limit (panel). "
-                    "Not equal: reader tokens, reranker tokens. " + SAME_LIMIT)
-            name = f"rpf_{axis}.png" if len(r.chunkings) == 1 else f"rpf_{axis}_{c}.png"
-            _save(fig, out / name, f"Gold-character recall, precision and F1 vs {xlabel} — {head}",
-                  groups=_ranker_groups(r, keys), note=note)
+                _k_x(ax, top)
+                ax.set_xlabel(f"{xlabel}\nexact at every count")
+                _share_y(ax)
+                ax.set_title(f"{c} · L {limit[1:]} · expand_context {e}: equal {'seeds kept' if j == 0 else 'segments'}",
+                             loc="left")
+                if j == 0:
+                    ax.set_ylabel(_coverage(reading))
+            ax = axes[i][2]
+            values = [int(d[1:]) for d in limits]
+            for key, _, color, ls in series:
+                names = [_name_at(key, d, e) for d in limits]
+                ys = [(r.rows(c, n)[f"{reading}_ctx"] <= 10).mean() if not r.rows(c, n).empty else np.nan for n in names]
+                _plot(ax, values, ys, color=color, linestyle=ls, marker=_marker(key), linewidth=THIN if key == "oracle" else LINE)
+            _log_x(ax, 10, values)
+            _share_y(ax)
+            ax.set_xlabel("vector search limit L (seeds retrieved; a reranker scores all of them)\nmarkers: the limits measured")
+            ax.set_title(f"{c} · expand_context {e}: 10 seeds kept, as L grows", loc="left")
+        _save(fig, out / _file("coverage_counts", reading, c, r), f"Coverage at equal counts instead of tokens, {c} — {head}",
+              groups=_ranker_groups(r, keys),
+              note="Held equal: seeds kept (left), segments read (middle), the vector search limit L (each panel; right: "
+                   "as it grows) and the expansion (row). Not equal: reader tokens and reranker tokens. " + SAME_LIMIT
+                   + (BOUND if reading == "every" else ""))
 
 
 def _size_styles(chunkings: list[str]) -> dict[str, dict]:
@@ -364,40 +435,87 @@ def _size_styles(chunkings: list[str]) -> dict[str, dict]:
                 "marker": "1" if c.startswith("rec") else "2"} for c in chunkings if int(c[3:]) in color}
 
 
-def rerank_cost(r: Results, out, head: str) -> None:
+def rerank_cost(r: Results, out, head: str, reading: str) -> None:
+    """Coverage at each configured reader budget against reranker tokens, as the vector search
+    limit grows (one marker per limit), with the first stage at the same limits drawn at the
+    same x: what the same seeds give without a reranker."""
     if not r.models:
         return
-    styles, budgets = _size_styles(r.chunkings), (1000, 4000)
-    fig, axes = _figure(len(r.models), 2, sharey=True)
+    styles, budgets = _size_styles(r.chunkings), config.EVAL.budgets
+    fig, axes = _figure(len(r.models), len(budgets), panel=(3.8, 3.2), sharey=True)
     for i, m in enumerate(r.models):
         for j, b in enumerate(budgets):
             ax = axes[i][j]
             for c, s in styles.items():
-                rows = r.select(kind="rerank", model=m)
-                rows = rows[rows.chunking == c]
-                pts = sorted({(g.rr_tokens.mean(), (g[PRIMARY] <= b).mean()) for _, g in rows.groupby("ranker")
-                              if g.depth.iloc[0].startswith("n")})
+                pts = []
+                for d in r.depths_at(c, m):
+                    rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
+                    if not rows.empty and not base.empty:
+                        pts.append((rows.rr_tokens.mean(), (rows[reading] <= b).mean(), (base[reading] <= b).mean()))
                 if not pts:
                     continue
-                xs, ys = zip(*pts, strict=True)
-                base = (r.rows(c, "first_stage")[PRIMARY] <= b).mean()
-                ax.axhline(base, color=s["color"], linestyle=":", linewidth=THIN)  # the same segments, no reranker
+                xs, ys, bs = zip(*sorted(pts), strict=True)
                 _plot(ax, xs, ys, color=s["color"], linestyle=s["ls"], marker=s["marker"])
+                _plot(ax, xs, bs, color=s["color"], linestyle=":", linewidth=THIN, marker="x", markersize=4)
             _log_x(ax)
             ax.xaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
             _share_y(ax)
             ax.set_title(f"{LABEL[m]} · reader budget {b:,}", loc="left")
-            ax.set_xlabel("reranker tokens per query (API billing)\nmarkers: the vector search limits measured")
+            ax.set_xlabel("reranker tokens per query (API billing)")
             if j == 0:
-                ax.set_ylabel(COVERAGE)
+                ax.set_ylabel(_coverage(reading))
     keys = list(styles)
-    _save(fig, out / "rerank_cost.png", f"Coverage vs reranker tokens as the vector search limit grows — {head}",
-          [_key(styles[k]["color"], styles[k]["ls"], styles[k]["marker"]) for k in keys], keys, ncol=min(len(keys), 5),
-          note="Held equal: reader tokens (per panel). x: reranker tokens per query, one marker per vector search limit "
-               "(5, 10, 20, ...). Dotted line: the same segments with no reranker (first stage, no limit).")
+    handles = [_key(styles[k]["color"], styles[k]["ls"], styles[k]["marker"]) for k in keys] + [_key(INK2, ":", "x")]
+    labels = [f"{k}, reranked" for k in keys] + ["first stage at the same vector search limits (no reranker tokens)"]
+    _save(fig, out / _file("rerank_cost", reading), f"Coverage vs reranker tokens as the vector search limit grows — {head}",
+          handles, labels, ncol=2,
+          note="Held equal: reader tokens (per panel) and, at each marker, the vector search limit (5, 10, 20, ...). x: the "
+               "reranker's tokens per query at that limit; the dotted line is the first stage over the same seeds, drawn at "
+               "the same x though it spends no reranker tokens. Seeds only (expand_context 0).")
 
 
-def break_even(r: Results, out, head: str) -> None:
+def gain_sizes(r: Results, out, head: str, reading: str) -> None:
+    """Reranker gain against segment size: coverage reranked minus coverage of the first stage
+    over the same seeds (same vector search limit), at each configured budget, with 95%
+    intervals; a panel per (model, limit)."""
+    sized = sorted((c for c in r.chunkings if c.startswith("seg")), key=lambda c: int(c[3:]))
+    if len(sized) < 2 or not r.models:
+        return
+    limits = [d for d in _limit_grid(r) if all(d in r.limits(c, config.EVAL.limits) for c in sized)]
+    if not limits:
+        return
+    budgets = config.EVAL.budgets
+    ramp = dict(zip(budgets, RAMP[5] if len(budgets) > 3 else RAMP[3], strict=False))
+    fig, axes = _figure(len(r.models), len(limits), panel=(3.8, 3.2), sharey=True)
+    sizes = [int(c[3:]) for c in sized]
+    for i, m in enumerate(r.models):
+        for j, d in enumerate(limits):
+            ax = axes[i][j]
+            for k, b in enumerate(budgets):
+                means, los, his = [], [], []
+                for c in sized:
+                    rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
+                    gain = (rows[reading].to_numpy() <= b).astype(float) - (base[reading].to_numpy() <= b)
+                    lo, hi = interval(gain, base.cluster.to_numpy())
+                    means.append(gain.mean())
+                    los.append(gain.mean() - lo if np.isfinite(lo) else 0.0)
+                    his.append(hi - gain.mean() if np.isfinite(hi) else 0.0)
+                xs = [x * (1 + 0.03 * (k - (len(budgets) - 1) / 2)) for x in sizes]  # side by side
+                ax.errorbar(xs, means, yerr=[los, his], color=ramp.get(b, INK2), linewidth=THIN, capsize=0, fmt="none")
+                _plot(ax, xs, means, color=ramp.get(b, INK2), marker="2")
+            ax.axhline(0, color=INK2, linewidth=0.8)
+            _log_x(ax, 2, sizes)
+            ax.set_title(f"{LABEL[m]} · L {d[1:]}", loc="left")
+            ax.set_xlabel("segment size (characters, EventMemory's limit)")
+            if j == 0:
+                ax.set_ylabel(f"gain in {_coverage(reading)}")
+    _save(fig, out / _file("gain_sizes", reading), f"Reranker gain vs segment size — {head}",
+          [_key(ramp.get(b, INK2), marker="2") for b in budgets], [f"reader budget {b:,}" for b in budgets], ncol=4,
+          note="Held equal: the vector search limit (panel) and the reader budget (line). y: coverage reranked minus coverage "
+               "of the first stage over the same seeds, mean with 95% interval over questions. Seeds only (expand_context 0).")
+
+
+def break_even(r: Results, out, head: str, reading: str) -> None:
     """The LLM input price above which reranking is cheaper overall, per coverage target: solid
     with reranker tokens as an API bills them, dashed with a prefix cache (shared prompt and
     question computed once per question), both at the reranker's price per token."""
@@ -409,15 +527,14 @@ def break_even(r: Results, out, head: str) -> None:
     x = frontier.TARGETS
     lines = {}
     for m in r.models:
-        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=PRIMARY)
-        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=PRIMARY)[0]
+        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading)
+        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading)[0]
         lines[m] = finite(api) * price(m)
         _plot(ax, x, lines[m], drawstyle="steps-mid", color=SERIES[m])
         _plot(ax, x, finite(cached) * price(m), drawstyle="steps-mid", color=SERIES[m], linestyle=DASH)
         band_lo, band_hi = finite(lo) * price(m), np.where(hi >= 1e12, BREAK_EVEN_TOP, hi * price(m))
         ax.fill_between(x, band_lo, band_hi, where=np.isfinite(band_lo) & np.isfinite(lines[m]), step="mid", color=SERIES[m],
                         alpha=0.12, linewidth=0)  # only where there is a line: elsewhere the estimate is "never"
-    m = r.models[-1]
     ax.text(0.99, 0.97, "above a line: reranking is cheaper overall\nbelow it: the first stage alone is cheaper",
             transform=ax.transAxes, ha="right", va="top", fontsize=8.5, color=INK2)
     ax.set_xlim(x[0] - 0.02, 1.0)
@@ -425,22 +542,22 @@ def break_even(r: Results, out, head: str) -> None:
     ax.set_ylim(0.01, BREAK_EVEN_TOP)
     _log_y(ax)
     ax.set_ylabel("break-even LLM input price ($ per million tokens)")
-    ax.set_xlabel(f"coverage target ({EVENT_TEXT[PRIMARY]})")
+    ax.set_xlabel(f"coverage target ({EVENT_TEXT[reading]})")
     ax.xaxis.set_major_locator(MultipleLocator(0.1))
     ax.xaxis.set_minor_locator(MultipleLocator(0.05))
-    split = "the same questions"
     handles = [_key(SERIES[k]) for k in r.models] + [_key(INK2), _key(INK2, DASH)]
     labels = ([_priced(k) for k in r.models] + ["reranker tokens as an API bills them (band: 95% interval)",
-               "with a prefix cache (prompt and question computed once)"])
-    _save(fig, out / "break_even.png", f"Above which LLM price does reranking pay for itself? — {head}", handles, labels,
-          ncol=2, note=f"Held equal: coverage (x: the share of questions with {EVENT_TEXT[PRIMARY]}). y: the LLM input "
-                       "price at which reaching that coverage costs the same (reader + reranker tokens) with and without "
-                       f"the reranker, each at its cheapest configuration, chosen on {split}. Above the line reranking is "
-                       "cheaper; no line: reranking is never cheaper at that target. Band: 95% interval of the line (reaching "
-                       "the top: it includes never).")
+              "with a prefix cache (prompt and question computed once)"])
+    _save(fig, out / _file("break_even", reading), f"Above which LLM price does reranking pay for itself? — {head}", handles,
+          labels, ncol=2,
+          note=f"Held equal: coverage (x: the share of questions with {EVENT_TEXT[reading]}). y: the LLM input price at which "
+               "reaching that coverage costs the same (reader + reranker tokens) with and without the reranker, each at its "
+               "cheapest configuration (any segment length, expansion and vector search limit), chosen on the same questions. "
+               "Above the line reranking is cheaper; no line: never cheaper at that target. Band: 95% interval of the line "
+               "(reaching the top: it includes never).")
 
 
-def cost_saving(r: Results, out, head: str) -> None:
+def cost_saving(r: Results, out, head: str, reading: str) -> None:
     """Over a continuous range of LLM prices and coverage targets: the cost of reaching the target
     with the reranker (its cheapest configuration) relative to without it. Blue saves, red costs
     more; gray where only the reranker reaches the target."""
@@ -449,7 +566,7 @@ def cost_saving(r: Results, out, head: str) -> None:
     llm = np.logspace(-2, 2, 81)  # $ per million reader tokens
     fig, axes = _figure(1, len(r.models), panel=(4.6, 3.8), sharey=True)
     for k, m in enumerate(r.models):
-        curves = frontier.cost_curves(r, m, list(llm), price(m), event=PRIMARY)
+        curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading)
         no = np.stack([curves[p][0] for p in llm], 1)  # [target, price]
         yes = np.stack([curves[p][1] for p in llm], 1)
         ax = axes[0][k]
@@ -466,56 +583,62 @@ def cost_saving(r: Results, out, head: str) -> None:
         ax.set_title(_priced(m), loc="left")
         ax.set_xlabel("LLM input price ($ per million tokens)")
         if k == 0:
-            ax.set_ylabel(f"coverage target ({EVENT_TEXT[PRIMARY]})")
+            ax.set_ylabel(f"coverage target ({EVENT_TEXT[reading]})")
     fig.colorbar(im, ax=axes[0].tolist(), label="% of total cost saved by reranking (red: reranking costs more)")
-    split = "the same questions"
-    _save(fig, out / "cost_saving.png", f"Cost saved by reranking, at every LLM price and coverage target — {head}",
+    _save(fig, out / _file("cost_saving", reading), f"Cost saved by reranking, at every LLM price and coverage target — {head}",
           [Patch(color=ORACLE, alpha=0.6)], ["only the reranker reaches this target"], ncol=1,
-          note="Held equal: the coverage target (y) and the LLM input price (x). Color: total cost (reader + reranker "
-               "tokens) of reaching the target with the reranker, relative to without it, each at its cheapest "
-               f"configuration, chosen on {split}. Blank: neither reaches the target. Matches the "
-               "break-even line.")
+          note="Held equal: the coverage target (y) and the LLM input price (x). Color: total cost (reader + reranker tokens) "
+               "of reaching the target with the reranker, relative to without it, each at its cheapest configuration (any "
+               "segment length, expansion and vector search limit), chosen on the same questions. Blank: neither reaches the "
+               "target. Matches the break-even line.")
 
 
-def query_types(r: Results, out, head: str) -> None:
+def query_types(r: Results, out, head: str, reading: str) -> None:
+    """Reranker gain by question type at each configured budget: reranked minus the first stage
+    over the same seeds (EventMemory's default limit, 20, where scored)."""
     if not r.models or r.df.qid.nunique() < 20:
         return
-    c = next((c for c in ("seg500", "rec64", "fix256", "rec256", "fix1024") if c in r.chunkings), r.chunkings[0])
-    depth = r.common_depth(c)
-    if not depth:
+    c = "seg500" if "seg500" in r.chunkings else r.chunkings[0]
+    limits = r.limits(c, config.EVAL.limits)
+    if not limits:
         return
-    base, labels = query_labels(r, c)
+    limit = "n20" if "n20" in limits else limits[-1]
+    base, labels = query_labels(r, c, f"first_stage@{limit}")
     groups = [(f, v) for f in ("question_type", "form", "length", "context", "parts") if f in labels
               for v in sorted(set(labels[f])) if (labels[f] == v).sum() >= 10]
     if not groups:
         return
-    hit = (base[PRIMARY].to_numpy() <= 1000).astype(float)
-    fig, axes = _figure(1, 1, panel=(7.5, 0.34 * len(groups) + 1.2))
-    ax = axes[0][0]
-    for k, m in enumerate(r.models):
-        gain = (r.rows(c, f"rerank:{m}@{depth}")[PRIMARY].to_numpy() <= 1000).astype(float) - hit
-        for g, (f, v) in enumerate(groups):
-            mask = labels[f] == v
-            lo, hi = interval(gain[mask], base.cluster.to_numpy()[mask])
-            y = g + (k - (len(r.models) - 1) / 2) * 0.22
-            if not np.isnan(lo):
-                ax.plot([lo, hi], [y, y], color=SERIES[m], linewidth=LINE)
-            ax.plot([gain[mask].mean()], [y], "o", color=SERIES[m], markersize=5.5)
-    ax.axvline(0, color=INK2, linewidth=1)
-    ax.set_yticks(range(len(groups)), [f"{f}: {v} (n={int((labels[f] == v).sum())})" for f, v in groups])
-    ax.invert_yaxis()
-    ax.xaxis.set_major_locator(MultipleLocator(0.1))
-    ax.set_xlabel(f"gain in {COVERAGE} at 1,000 reader tokens ({c} @{depth}); dot: mean, line: 95% interval")
-    _save(fig, out / "query_types.png", f"Reranker gain by query type — {head}", [_key(SERIES[m], marker="o") for m in r.models],
-          [LABEL[m] for m in r.models],
-          note=f"Held equal: 1,000 reader tokens. The reranker reads only its top {depth[1:]}; the first stage has no limit.")
+    budgets = config.EVAL.budgets
+    fig, axes = _figure(1, len(budgets), panel=(3.4, 0.34 * len(groups) + 1.2), sharey=True)
+    for j, b in enumerate(budgets):
+        ax = axes[0][j]
+        hit = (base[reading].to_numpy() <= b).astype(float)
+        for k, m in enumerate(r.models):
+            gain = (r.rows(c, f"rerank:{m}@{limit}")[reading].to_numpy() <= b).astype(float) - hit
+            for g, (f, v) in enumerate(groups):
+                mask = labels[f] == v
+                lo, hi = interval(gain[mask], base.cluster.to_numpy()[mask])
+                y = g + (k - (len(r.models) - 1) / 2) * 0.22
+                if not np.isnan(lo):
+                    ax.plot([lo, hi], [y, y], color=SERIES[m], linewidth=LINE)
+                ax.plot([gain[mask].mean()], [y], "o", color=SERIES[m], markersize=5.5)
+        ax.axvline(0, color=INK2, linewidth=1)
+        ax.set_yticks(range(len(groups)), [f"{f}: {v} (n={int((labels[f] == v).sum())})" for f, v in groups])
+        ax.invert_yaxis()
+        ax.xaxis.set_major_locator(MultipleLocator(0.2))
+        ax.set_title(f"reader budget {b:,}", loc="left")
+        ax.set_xlabel("gain in coverage")
+    _save(fig, out / _file("query_types", reading), f"Reranker gain by question type ({c}, L {limit[1:]}) — {head}",
+          [_key(SERIES[m], marker="o") for m in r.models], [LABEL[m] for m in r.models],
+          note=f"Held equal: the reader budget (panel) and the vector search limit ({limit[1:]}): gain = {_coverage(reading)} "
+               "reranked minus the first stage over the same seeds. Dot: mean; line: 95% interval. Seeds only.")
 
 
-def first_stage_sizes(r: Results, out, head: str) -> None:
+def first_stage_sizes(r: Results, out, head: str, reading: str) -> None:
     sizes = sorted({int(c[3:]) for c in r.chunkings if c[:3] in ("fix", "rec", "seg")})
     if len(sizes) < 3:
         return
-    budgets = (500, 1000, 2000, 4000)
+    budgets = config.EVAL.budgets
     fig, axes = _figure(1, len(budgets), panel=(3.4, 3.2), sharey=True)
     styles = CHUNKERS
     present = set()
@@ -525,7 +648,7 @@ def first_stage_sizes(r: Results, out, head: str) -> None:
             xs = [n for n in sizes if f"{fam}{n}" in r.chunkings]
             if not xs:
                 continue
-            ys = [(r.rows(f"{fam}{n}", "first_stage")[PRIMARY] <= b).mean() for n in xs]
+            ys = [(r.rows(f"{fam}{n}", "first_stage")[reading] <= b).mean() for n in xs]
             _plot(ax, xs, ys, color=color, marker=marker, linestyle=ls)
             present.add(fam)
         _log_x(ax, 2, sizes)
@@ -533,12 +656,13 @@ def first_stage_sizes(r: Results, out, head: str) -> None:
         ax.set_title(f"reader budget {b:,}", loc="left")
         ax.set_xlabel("segment / chunk size; markers: sizes measured")
         if j == 0:
-            ax.set_ylabel(f"{COVERAGE}, no reranker")
+            ax.set_ylabel(f"{_coverage(reading)}, no reranker")
     names = {"fix": "fixed windows", "rec": "recursive, size-matched", "seg": "EventMemory segments (characters)"}
     keys = [k for k in styles if k in present]
-    _save(fig, out / "first_stage_sizes.png", f"First-stage coverage vs segment size (no reranker) — {head}",
+    _save(fig, out / _file("first_stage_sizes", reading), f"First-stage coverage vs segment size (no reranker) — {head}",
           [_key(styles[k][0], styles[k][2], styles[k][1]) for k in keys], [names[k] for k in keys],
-          note="Held equal: reader tokens (per panel). No reranker; the first stage reads as deep as the budget allows.")
+          note="Held equal: reader tokens (per panel). No reranker: the first stage reads as deep as the budget allows "
+               "(this chart compares segment sizes, not rerankers).")
 
 
 EXPANSION_APPROACHES = (("plain chunks of the read size", "#2a78d6"), ("seeds, expanded (no reranker)", "#8f8e89"),
@@ -573,7 +697,7 @@ def expansion_rows(r: Results) -> list[tuple[str, int, list[tuple[str, str, str]
     return out
 
 
-def expansion(r: Results, out, head: str) -> None:
+def expansion(r: Results, out, head: str, reading: str) -> None:
     rows = expansion_rows(r)
     if not rows:
         return
@@ -583,89 +707,45 @@ def expansion(r: Results, out, head: str) -> None:
     for j, (m, unit, items) in enumerate(rows):
         ax = axes[0][j]
         for label, c, name in items:
-            _steps(ax, r.rows(c, name)[PRIMARY].to_numpy(), 0, 16000, TOKEN_MARKS, EXPANSION_MARKERS[label],
+            _steps(ax, r.rows(c, name)[reading].to_numpy(), 0, 16000, TOKEN_MARKS, EXPANSION_MARKERS[label],
                    color=colors[label])
             present.add(label)
         _token_x(ax)
         _share_y(ax)
         ax.set_title(f"{LABEL[m]} · window ≈ {unit}", loc="left")
-        ax.set_xlabel("reader tokens: exact steps, one per question; markers every 1k")
+        ax.set_xlabel("reader tokens: exact steps, one per question; markers every 1,000")
         if j == 0:
-            ax.set_ylabel(COVERAGE)
+            ax.set_ylabel(_coverage(reading))
     keys = [k for k, _ in EXPANSION_APPROACHES if k in present]
-    _save(fig, out / "expansion.png", f"Embedded vs reranked vs read unit — {head}",
+    _save(fig, out / _file("expansion", reading), f"Embedded vs reranked vs read unit — {head}",
           [_key(colors[k], marker=EXPANSION_MARKERS[k]) for k in keys], keys, ncol=2,
           note="Held equal: reader tokens (x). Not equal: reranker tokens and vector search limit.")
 
 
-def coverage_counts(r: Results, out, head: str) -> None:
-    """Coverage at equal counts instead of tokens, per chunking: against seeds kept (k) and
-    segments read after expansion (m) at one vector search limit L (EventMemory's default, 20,
-    where scored), and at k = 10 kept seeds as L grows."""
-    if f"{PRIMARY}_ctx" not in r.df:
-        return
-    fig, axes = _figure(len(r.chunkings), 3, panel=(4.0, 3.2))
-    keys = set()
-    for i, c in enumerate(r.chunkings):
-        limits = r.limits(c)
-        if not limits:
-            continue
-        limit = "n20" if "n20" in limits else limits[-1]
-        series = _rankers(r, c, limit, bound=PRIMARY == "every")
-        for j, (column, top, xlabel) in enumerate(((f"{PRIMARY}_ctx", min(50, int(limit[1:])), "seeds kept (k)"),
-                                                    (f"{PRIMARY}_k", 200, "segments read (m = max_num_segments)"))):
-            ax = axes[i][j]
-            for key, name, color, ls in series:
-                _steps(ax, r.rows(c, name)[column].to_numpy(), 0, top, range(5 if top <= 50 else 20, top + 1, 5 if top <= 50 else 20),
-                       _marker(key), color=color, linestyle=ls, linewidth=THIN if key.startswith("oracle") else LINE)
-                keys.add(key)
-            _k_x(ax, top)
-            ax.set_xlabel(f"{xlabel}\nexact at every count; markers identify series")
-            _share_y(ax)
-            ax.set_title(f"{c} · vector search limit {limit[1:]}: equal {'seeds kept' if j == 0 else 'segments'}", loc="left")
-            if j == 0:
-                ax.set_ylabel(COVERAGE)
-        ax = axes[i][2]
-        values = [int(d[1:]) for d in limits]
-        for key, _, color, ls in series:
-            ys = [(r.rows(c, n)[f"{PRIMARY}_ctx"] <= 10).mean() for n in (_name_at(key, d) for d in limits)]
-            _plot(ax, values, ys, color=color, linestyle=ls, marker=_marker(key),
-                  linewidth=THIN if key.startswith("oracle") else LINE)
-        _log_x(ax, 10, values)
-        _share_y(ax)
-        ax.set_xlabel("vector search limit L (seeds retrieved; a reranker scores all of them)\nmarkers: the limits measured")
-        ax.set_title(f"{c}: 10 seeds kept, as L grows", loc="left")
-    _save(fig, out / "coverage_counts.png", f"Coverage at equal counts instead of tokens — {head}",
-          groups=_ranker_groups(r, keys),
-          note="Held equal: seeds kept (left), segments read (middle), vector search limit L (each panel; right: "
-               "as it grows). Not equal: reader tokens and reranker tokens. " + SAME_LIMIT + (BOUND if PRIMARY == "every" else ""))
-
-
-def _name_at(key: str, limit: str) -> str:
-    """The ranker name of a _rankers legend key at another vector search limit."""
-    base, _, e = key.partition("+x")
-    tail = f"+x{e}" if e else ""
-    if base == "first_stage":
-        return f"first_stage@{limit}{tail}"
-    if base == "oracle":
-        return f"oracle@{limit}{tail}"
-    return f"{'xrerank' if e else 'rerank'}:{base}@{limit}{tail}"
-
-
-CHARTS = {"coverage": "coverage_by_tokens", "rpf": "recall_precision_f1", "rerank_cost": "rerank_cost",
-          "break_even": "break_even", "cost_saving": "cost_saving", "query_types": "query_types",
-          "sizes": "first_stage_sizes", "expansion": "expansion", "counts": "coverage_counts"}
+ALL_READINGS = ("coverage", "rpf")  # drawn for every reading or measure at once
+CHARTS = {"coverage": "coverage_by_tokens", "rpf": "recall_precision_f1", "counts": "coverage_counts",
+          "rerank_cost": "rerank_cost", "gain_sizes": "gain_sizes", "break_even": "break_even", "cost_saving": "cost_saving",
+          "query_types": "query_types", "sizes": "first_stage_sizes", "expansion": "expansion"}
 
 
 def _head(r: Results) -> str:
     return f"{r.dataset} · {r.scope} · {r.variant} · {r.df.qid.nunique()} questions"
 
 
+def _draw(r: Results, out, keys) -> None:
+    for key in keys:
+        chart = globals()[CHARTS[key]]
+        if key in ALL_READINGS:
+            chart(r, out, _head(r))
+        else:
+            for reading in config.EVAL.readings:
+                chart(r, out, _head(r), reading)
+
+
 def write(r: Results) -> str:
     out = FIGURES / r.embedder / f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}"
     out.mkdir(parents=True, exist_ok=True)
-    for name in CHARTS.values():
-        globals()[name](r, out, _head(r))
+    _draw(r, out, list(CHARTS))
     return str(out)
 
 
@@ -684,8 +764,7 @@ def show(r: Results, charts: list[str] | None = None) -> None:
     _SHOWING = True
     try:
         out = FIGURES / r.embedder / f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}"  # window titles only
-        for key in charts or list(CHARTS):
-            globals()[CHARTS[key]](r, out, _head(r))
+        _draw(r, out, charts or list(CHARTS))
         plt.show()
     finally:
         _SHOWING = False
