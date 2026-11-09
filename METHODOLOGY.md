@@ -90,7 +90,7 @@ Qwen3-Reranker scores each pair independently, so a pool scored to depth D answe
 |---|---|
 | reader tokens (the rendered context) | report §3–4, `coverage_tokens_*.png` |
 | reranker tokens, as an API bills them and as a self-hosted server with a prefix cache computes them | §5–6, `rerank_cost.png` |
-| total cost, at any LLM-to-reranker price ratio | §7, `cost_frontier.png` ($ per 1,000 questions at four LLM prices), `break_even.png`, `cost_saving.png` (every price); all three compare always reranking with never reranking |
+| total cost, at any LLM-to-reranker price ratio | §7, `break_even.png` (the break-even LLM price per coverage target), `cost_saving.png` (every LLM price); both compare always reranking with never reranking |
 | segments read (k) | `rpf_k.png`, §12 |
 | vector search limit L, seeds kept after reranking k, segments read after expansion m | §13, `coverage_counts.png` |
 | what a budget implies for EventMemory's settings (`max_num_segments`, `vector_search_limit`) | §14 |
