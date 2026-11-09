@@ -15,7 +15,7 @@ def test_simulate_first_stage_and_references_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(simulate, "SIM", tmp_path)
     df = simulate.run("gemma300m", "conditionalqa", "corpus", "scenario_question", "tiny", "rec64", [])
     kinds = set(df.kind)
-    assert {"first_stage", "oracle"} <= kinds and set(df.expand) == {0, 3, 15}
+    assert {"first_stage", "oracle"} <= kinds and set(df.expand) == {0, 3}
     one = df[df.ranker == "first_stage"]
     assert len(one) == 8 and one.cluster.notna().all()
     # within its pool (8,192 head tokens) the gold-first reference never does worse than the first

@@ -594,7 +594,7 @@ def expansion_rows(r: Results) -> list[tuple[str, int, list[tuple[str, str, str]
     """Per (model, read size): the four approaches as (label, chunking, ranker) when present.
     Seeds are EventMemory's default 500-character segments when expanded, else the smallest
     chunking with expansions; the plain comparison is the chunking of the window's nominal
-    size (4x for expand 3, 16x for expand 15)."""
+    size (4x for expand 3)."""
     expanded = sorted({c for c in r.df.loc[r.df.expand > 0, "chunking"]}, key=lambda c: int(c[3:]))
     if not expanded:
         return []
@@ -602,7 +602,7 @@ def expansion_rows(r: Results) -> list[tuple[str, int, list[tuple[str, str, str]
     fam, base = seed[:3], int(seed[3:])
     out = []
     for m in r.models:
-        for e, plain in ((3, f"{fam}{base * 4}"), (15, f"{fam}{base * 16}")):
+        for e, plain in ((3, f"{fam}{base * 4}"),):
             if not (r.df.expand == e).any():
                 continue
             depth = r.common_depth(seed, [m])

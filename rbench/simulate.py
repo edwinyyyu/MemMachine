@@ -33,7 +33,7 @@ from rbench.rerankers import ScoreCache, instruction_text, pair_overhead, prompt
 from rbench.samples import sample
 from rbench.schema import corpus, queries
 
-EXPANSIONS = (3, 15)  # EventMemory expand_context values: windows of 4 and 16 chunks (expansion.split)
+EXPANSIONS = (3,)  # EventMemory expand_context values: windows of 4 chunks (expansion.split)
 MAX_WINDOW_TOKENS = 2048  # expansions whose windows would exceed this (nominally) are not replayed
 COLUMNS = ["pairs", "rr_tokens", "rr_prefix_tokens", "oracle_pairs", *metrics.FIELDS]
 

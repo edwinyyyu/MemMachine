@@ -10,6 +10,6 @@ def test_clusters_follow_the_registry():
 
 
 def test_expansions_are_replayed_only_up_to_the_window_cap():
-    assert expansions_for("rec64") == (3, 15)
+    assert expansions_for("rec64") == (3,)
     assert expansions_for("rec256") == (3,)
     assert expansions_for("rec1024") == ()
