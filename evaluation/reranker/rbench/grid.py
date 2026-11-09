@@ -78,6 +78,11 @@ STAGES: dict[str, list[Run]] = {
     # Free and fast: the local 0.6B on 8 LongMemEval-S histories, to test the pipeline itself.
     "lme-test": [Run("longmemeval_s", "history", "question", ("seg500", "cut500"), ("q06-local",), sample="tiny",
                      pool_seeds=30, expand=e) for e in (0, 3)],
+    # Free: the reranker's input format on the local 0.6B (the user's rule: whichever of the model
+    # card's prompt and raw pairs does better on a small sample becomes the format). LongMemEval-S,
+    # whose histories embed locally in minutes; the questions are LongMemEval-M's.
+    "format-test": [Run("longmemeval_s", "history", "question", ("seg500",), ("q06-local", "q06-local-raw"),
+                        sample="proto", pool_seeds=50, expand=0)],
     # Paid, cheap: every planned configuration on 100 questions first.
     "lme-pilot": [replace(lme(("seg500",), ("q8",), e), sample="proto") for e in (0, 3)],
     "lme-core": [lme(("seg500",), ("q8",), e) for e in (0, 3)],

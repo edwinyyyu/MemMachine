@@ -64,6 +64,12 @@ class Template:
 
 
 QWEN3_CARD = Template(PREFIX, FORMAT, SUFFIX, INSTRUCTION, 8192, QWEN)  # the Qwen3-Reranker model card's format
+# Raw pairs: what a sentence-transformers CrossEncoder (MemMachine's CrossEncoderReranker) sends,
+# tokenizer(query, document), which for Qwen3's tokenizer is the two texts concatenated with no
+# separator or special tokens. Scored as the card's format is (yes minus no at the last token),
+# which is what the sequence-classification conversions of Qwen3-Reranker compute. Local only:
+# DeepInfra applies the card's format itself.
+RAW_PAIRS = Template("", "{query}{document}", "", "", 8192, QWEN)
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,9 @@ class Reranker:
 RERANKERS = {
     "q06-local": Reranker("q06-local", "Qwen/Qwen3-Reranker-0.6B", "local", None, "Qwen3-Reranker-0.6B (local)", "#e87ba4",
                           "3", priced_as="q06", local_tok_per_s=2500),
+    "q06-local-raw": Reranker("q06-local-raw", "Qwen/Qwen3-Reranker-0.6B", "local", None,
+                              "Qwen3-Reranker-0.6B (local, raw pairs)", "#6250d6", "4", template=RAW_PAIRS, priced_as="q06",
+                              local_tok_per_s=2500),
     "q06": Reranker("q06", "Qwen/Qwen3-Reranker-0.6B", "deepinfra", 0.010, "Qwen3-Reranker-0.6B", "#eb6834", "3",
                     local_tok_per_s=2500),
     "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B", "#1baf7a", "1"),
