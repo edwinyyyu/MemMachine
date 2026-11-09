@@ -111,9 +111,11 @@ def _chooser(r: Results) -> str:
 def equal_reader_tokens(r: Results, event: str) -> list[str]:
     out = ["## 3. Equal reader tokens, at equal vector search limits\n",
            "At each vector search limit L, every row reads only the top L seeds of the same vector search: in vector "
-           "order (`first_stage@nL`), reranked (`rerank`: the seeds; `xrerank`: their windows, expand then rerank), or "
-           "evidence first (`oracle`: a perfect reranker, the most any reranker can get from those seeds). `+xE`: read "
-           "with EventMemory windows of expand_context E. Δ: minus the first stage at the same L and expansion [95%].\n",
+           "order (`first_stage@nL`) or reranked (`rerank`: the seeds; `xrerank`: their windows, expand then rerank). "
+           "`+xE`: read with EventMemory windows of expand_context E. Δ: minus the first stage at the same L and expansion "
+           "[95%]. In the every-gold table only, `oracle` rows (seeds alone) are a perfect reranker: it reads only the "
+           "evidence seeds, so no reranker reads all the evidence in full with fewer tokens; elsewhere it is no bound and "
+           "is not shown.\n",
            "| chunking | ranker | pairs | " + " | ".join(map(str, BUDGETS)) + " | "
            + " | ".join(f"Δ@{b}" for b in DELTA_BUDGETS) + " |", "|---|---|---|" + "---|" * (len(BUDGETS) + 3)]
     for c in r.chunkings:
@@ -122,7 +124,8 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
                 tail = f"+x{e}" if e else ""
                 base = r.rows(c, f"first_stage@{limit}{tail}")
                 names = ([f"first_stage@{limit}{tail}"] + [f"rerank:{m}@{limit}{tail}" for m in r.models_at(c)]
-                         + ([f"xrerank:{m}@{limit}{tail}" for m in r.models_at(c)] if e else []) + [f"oracle@{limit}{tail}"])
+                         + ([f"xrerank:{m}@{limit}{tail}" for m in r.models_at(c)] if e else [])
+                         + ([f"oracle@{limit}"] if event == "every" and not e else []))
                 for name in names:
                     rows = r.rows(c, name)
                     if rows.empty or base.empty:

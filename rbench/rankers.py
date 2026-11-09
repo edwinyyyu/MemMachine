@@ -8,9 +8,12 @@
                 them: EventMemory reranks every seed it retrieves, so the depth is the vector
                 search limit and reading ends with the reranked chunks
   oracle        as rerank, gold first: the chunks of the cheapest complete answer, then
-                other gold chunks, then the rest of the pool. A reference for how much
-                reordering the pool can buy, not a strict bound: it is optimal for "every
-                gold" when that answer is in the pool, and near it for "first gold".
+                other gold chunks, then the rest of the pool, in vector order. With seeds
+                alone it reads only the evidence first, so for "every gold read in full" no
+                reranker over the same pool reads it with fewer tokens: a bound there, and
+                only there. It is no bound for first gold (a reranker can read the cheapest
+                evidence turn first), for touched readings, for recall and precision, or with
+                windows (a reranker can cover the evidence with fewer, non-overlapping windows).
 
 With context expansion (expand = e > 0, see expansion.py) the head's items are seeds and
 each is read with its window:

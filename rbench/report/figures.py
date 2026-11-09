@@ -242,18 +242,20 @@ def _save(fig, path, title: str, handles=None, labels=None, ncol: int | None = N
     plt.close(fig)
 
 
-def _rankers(r: Results, c: str, limit: str) -> list[tuple[str, str, str, str]]:
+def _rankers(r: Results, c: str, limit: str, bound: bool = False) -> list[tuple[str, str, str, str]]:
     """(legend key, ranker, color, line style) at one vector search limit: the first stage in
-    vector order, each model's reranking and the perfect reranker, all over the same top seeds;
-    solid reads the seeds, dashed their EventMemory windows (expand, then rerank)."""
+    vector order and each model's reranking, over the same top seeds; solid reads the seeds,
+    dashed their EventMemory windows (expand, then rerank). bound adds the perfect reranker,
+    which is a bound only for "all evidence read in full" with seeds alone (see rankers.py):
+    pass it only there."""
     e = SHOWN_EXPANSION
     out = [("first_stage", f"first_stage@{limit}", SERIES["first_stage"], "-")]
     out += [(m, f"rerank:{m}@{limit}", SERIES[m], "-") for m in r.models_at(c)]
-    out.append(("oracle", f"oracle@{limit}", ORACLE, "-"))
+    if bound:
+        out.append(("oracle", f"oracle@{limit}", ORACLE, "-"))
     if e in r.expansions:
         out.append((f"first_stage+x{e}", f"first_stage@{limit}+x{e}", SERIES["first_stage"], DASH))
         out += [(f"{m}+x{e}", f"xrerank:{m}@{limit}+x{e}", SERIES[m], DASH) for m in r.models_at(c)]
-        out.append((f"oracle+x{e}", f"oracle@{limit}+x{e}", ORACLE, DASH))
     return [x for x in out if not r.rows(c, x[1]).empty]
 
 
@@ -271,7 +273,8 @@ def _ranker_groups(r: Results, keys: set[str]) -> list[tuple[str, list, list[str
     e = SHOWN_EXPANSION
     bases = {k.split("+x")[0] for k in keys}
     color_keys = [k for k in ("first_stage", *r.models, "oracle") if k in bases]
-    names = {"first_stage": "first stage (vector search order)", "oracle": "perfect reranker (evidence first)"}
+    names = {"first_stage": "first stage (vector search order)",
+             "oracle": "perfect reranker, seeds only: a bound for the solid lines (windows can reach evidence it cannot)"}
     labels = [names.get(k, LABEL.get(k, k)) for k in color_keys]
     groups = [("order (color, marker)", [_key(SERIES.get(k, ORACLE), marker=MARKERS.get(k, "o")) for k in color_keys], labels)]
     if any("+x" in k for k in keys):
@@ -281,8 +284,9 @@ def _ranker_groups(r: Results, keys: set[str]) -> list[tuple[str, list, list[str
 
 
 SAME_LIMIT = ("Each panel is one vector search limit L: every line reads only the top L seeds of the same vector search, "
-              "in vector order (first stage), reranked, or evidence first (a perfect reranker: the most any reranker can "
-              "get from those seeds). Dashed: seeds read with their windows.")
+              "in vector order (first stage) or reranked. Dashed: seeds read with their windows.")
+BOUND = (" Gray: a perfect reranker over the same seeds, which reads only the evidence seeds: no reranker can read all "
+         "the evidence in full with fewer tokens (drawn only here; with windows, or for other measures, it is no bound).")
 TOKENS_EQUAL = "Held equal: reader tokens, and the vector search limit (panel). Not equal: reranker tokens. " + SAME_LIMIT
 
 
@@ -302,7 +306,7 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                 if limit not in r.limits(c):
                     ax.set_visible(False)
                     continue
-                for key, name, color, ls in _rankers(r, c, limit):
+                for key, name, color, ls in _rankers(r, c, limit, bound=event == "every"):
                     _steps(ax, r.rows(c, name)[event].to_numpy(), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
                            linestyle=ls, linewidth=THIN if key.startswith("oracle") else LINE)
                     keys.add(key)
@@ -314,7 +318,7 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                 if j == 0:
                     ax.set_ylabel(f"share of questions: {EVENT_TEXT[event]}")
         _save(fig, out / f"coverage_tokens_{event}.png", f"Coverage ({EVENT_TEXT[event]}) vs reader tokens — {head}",
-              groups=_ranker_groups(r, keys), note=TOKENS_EQUAL + " " + EVENT_NOTE)
+              groups=_ranker_groups(r, keys), note=TOKENS_EQUAL + (BOUND if event == "every" else "") + " " + EVENT_NOTE)
 
 
 def recall_precision_f1(r: Results, out, head: str) -> None:
@@ -651,7 +655,7 @@ def coverage_counts(r: Results, out, head: str) -> None:
         if not limits:
             continue
         limit = "n20" if "n20" in limits else limits[-1]
-        series = _rankers(r, c, limit)
+        series = _rankers(r, c, limit, bound=PRIMARY == "every")
         for j, (column, top, xlabel) in enumerate(((f"{PRIMARY}_ctx", min(50, int(limit[1:])), "seeds kept (k)"),
                                                     (f"{PRIMARY}_k", 200, "segments read (m = max_num_segments)"))):
             ax = axes[i][j]
@@ -678,7 +682,7 @@ def coverage_counts(r: Results, out, head: str) -> None:
     _save(fig, out / "coverage_counts.png", f"Coverage at equal counts instead of tokens — {head}",
           groups=_ranker_groups(r, keys),
           note="Held equal: seeds kept (left), segments read (middle), vector search limit L (each panel; right: "
-               "as it grows). Not equal: reader tokens and reranker tokens. " + SAME_LIMIT)
+               "as it grows). Not equal: reader tokens and reranker tokens. " + SAME_LIMIT + (BOUND if PRIMARY == "every" else ""))
 
 
 def _name_at(key: str, limit: str) -> str:
