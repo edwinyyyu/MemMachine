@@ -52,7 +52,7 @@ def haystack(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int
     seg, _, texts = hs.offline(dataset, q["qid"], size)
     picked = [i for i in range(len(seg)) if int(seg.session[i]) in keep]
     position = {i: k for k, i in enumerate(picked)}
-    gold = [[position[i] for i in ids] for ids in hs.gold_segments(dataset, q["qid"], seg)[0]]
+    gold = [[position[i] for i in ids] for ids in hs.gold_segments(dataset, q["qid"], seg)]
     return [texts[i] for i in picked], gold
 
 

@@ -147,7 +147,7 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
                 expand: int = 3, embedder: str = EMBEDDER) -> str:
     """The same trace for one question inside its own history, as EventMemory would serve it."""
     from rbench import histories as hs
-    from rbench.simulate_histories import gold_for, keys_for, read, session_positions
+    from rbench.simulate_histories import gold_for, keys_for, read
 
     size = int(chunking_name.removeprefix("seg"))
     rows = queries(dataset)
@@ -162,7 +162,7 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
     seg, head, sims, units_all, texts_all = asyncio.run(first_stage(embedder, dataset, size, qid, query, (expand,)))
     head = np.asarray(head)
     producer = {u: p for u, p in zip(seg.uuid, _producers(dataset, qid, seg), strict=True)}
-    g, sessions = gold_for(dataset, qid, seg)
+    g = gold_for(dataset, qid, seg)
     union = g.union
     w = [f"# Dry run: {dataset} · {qid} · {chunking_name} · {RERANKERS[model].hf_model}\n",
          f"## 1. The question ({q['features']['question_type']}, asked {q['features']['question_date']})\n",
@@ -170,7 +170,7 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
          f"The history: {len(seg):,} EventMemory segments of at most {size} characters, "
          f"{int(seg.event.max()) + 1:,} turns, {len(set(seg.session.tolist()))} sessions, in timestamp order.\n"]
 
-    turns, _ = hs.gold_segments(dataset, qid, seg)
+    turns = hs.gold_segments(dataset, qid, seg)
     w.append(f"## 2. The gold: {len(turns)} turn(s) marked has_answer, all needed\n")
     for k, ids in enumerate(turns):
         w.append(f"- Turn {k + 1} ({producer[seg.uuid[ids[0]]]}, session {int(seg.session[ids[0]])}): "
@@ -229,7 +229,7 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
           "rendered context (headers, JSON text, windows merged). A reranked order reads only its pool. *first* / "
           "*every*: reader tokens when some / every gold turn is complete; *touch*: when touched.\n",
           "| order | first | every | first touch | every touch | admitted | " + " | ".join(f"every@{b}" for b in BUDGETS)
-          + " | recall@1000 | session any/all (k) |", "|---|---|---|---|---|---|" + "---|" * len(BUDGETS) + "---|---|"]
+          + " | recall@1000 |", "|---|---|---|---|---|---|" + "---|" * len(BUDGETS) + "---|"]
     for label, r_ in configs.items():
         e = r_.expand
         logits = None if r_.model is None else scored[expand if r_.kind == "xrerank" else 0][0]
@@ -239,10 +239,9 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
         contexts = [units_all[e][i] for i in perm]
         admitted, cum, _ = read(contexts, seeds, seg, lazy=r_.kind == "first_stage" and r_.depth is None)
         f = dict(zip(metrics.FIELDS, metrics.evaluate(admitted, cum, chars, g), strict=True))
-        sess_any, sess_all = session_positions(admitted, sessions)
         w.append(f"| {label} | {f['first']:,.0f} | {f['every']:,.0f} | {f['first_touch']:,.0f} | {f['every_touch']:,.0f} | "
                  f"{len(admitted)} | " + " | ".join(str(int(f['every'] <= b)) for b in BUDGETS)
-                 + f" | {f['recall_t1000']:.2f} | {sess_any:.0f}/{sess_all:.0f} |")
+                 + f" | {f['recall_t1000']:.2f} |")
     w += ["", "## 6. From one question to the reported numbers\n",
           "- Every per-question value above is averaged over the questions with equal weight.",
           "- Reader budget B is continuous: each question's costs give its coverage at every B.",

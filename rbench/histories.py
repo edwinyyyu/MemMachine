@@ -173,9 +173,7 @@ def embedding_tokens(dataset: str, qid: str, size: int) -> int:
     return int(count(list(texts), GEMMA).sum()) + 2 * len(texts)
 
 
-def gold_segments(dataset: str, qid: str, seg: Segments) -> tuple[list[list[int]], list[list[int]]]:
-    """Segment ids of each gold turn, and of each evidence session."""
+def gold_segments(dataset: str, qid: str, seg: Segments) -> list[list[int]]:
+    """Segment ids of each gold turn."""
     q = next(r for r in queries(dataset) if r["qid"] == qid)
-    turns = [[int(i) for i in np.flatnonzero((seg.session == s) & (seg.turn == t))] for s, t in q["gold_turns"][0]]
-    sessions = [[int(i) for i in np.flatnonzero(seg.session == s)] for s in q["gold_sessions"]]
-    return turns, sessions
+    return [[int(i) for i in np.flatnonzero((seg.session == s) & (seg.turn == t))] for s, t in q["gold_turns"][0]]

@@ -21,7 +21,7 @@ LongMemEval-M is evaluated first. The other datasets prepared earlier are inacti
 
 **No retrieved item is ever counted as a "hit".** Every measure is a per-query value computed from the gold. Reported numbers are means over test queries, each query weighted equally (a macro-average); nothing is pooled across queries. The full definitions are in the glossary at the top of `rbench/metrics.py`.
 
-**Gold.** LongMemEval marks each turn that holds the answer (`has_answer`). A question's marked turns together are its one answer, and all of them are needed, so every-gold coverage is the headline measure (break-even, single-measure charts). A second, session-level view treats each evidence session as one unit. Its k counts admitted segments, not sessions, so it resembles LongMemEval's recall@k but is not the published number.
+**Gold.** LongMemEval marks each turn that holds the answer (`has_answer`). A question's marked turns together are its one answer, and all of them are needed, so every-gold coverage is the headline measure (break-even, single-measure charts).
 
 **Three readings of a gold turn.** Each is a separate metric, reported side by side and never combined:
 
@@ -39,7 +39,6 @@ LongMemEval-M is evaluated first. The other datasets prepared earlier are inacti
 - F1: computed per query, then averaged;
 - the same within the first k segments;
 - coverage at equal counts instead of tokens: at the same vector search limit L (seeds retrieved), seeds kept after reranking k (contexts read), and segments read m (EventMemory's `max_num_segments`);
-- LongMemEval-style session recall@k (any or all evidence sessions touched within k segments; not reported at a k some question's reading stopped short of).
 
 **Reader tokens are the tokens of the string EventMemory would hand the LLM** (`reading.py`):
 - segments are admitted in EventMemory's order under a growing segment limit;

@@ -30,8 +30,8 @@ def test_segments_are_in_eventmemory_order_and_gold_maps_to_segments():
         assert np.all(np.diff(seg.event) >= 0) and all(t.strip() for t in seg.texts)
         firsts = np.flatnonzero(np.r_[True, np.diff(seg.event) > 0])
         assert len({segments[i].timestamp for i in firsts}) == len(firsts)  # every turn has its own timestamp
-        turns, sessions = hs.gold_segments("longmemeval_s", q["qid"], seg)
-        assert len(turns) == len(q["gold_turns"][0]) and all(turns) and all(sessions)
+        turns = hs.gold_segments("longmemeval_s", q["qid"], seg)
+        assert len(turns) == len(q["gold_turns"][0]) and all(turns)
         # the increments never show: rendered and embedded timestamps are the session's own
         h = history("longmemeval_s", q["qid"])["sessions"]
         for i in firsts[:: max(1, len(firsts) // 50)]:
@@ -68,7 +68,7 @@ def test_simulated_rows_are_consistent():
     d = pd.read_parquet(SIMULATED)
     assert (d.first_touch <= d["first"]).all() and (d.every_touch <= d.every).all()  # touched never later than complete
     assert (d["first"] <= d.every).all()
-    assert {"sess_any_k", "sess_all_k", "admitted", "question_type"} <= set(d.columns)
+    assert {"admitted", "question_type"} <= set(d.columns) and not any(c.startswith("sess_") for c in d.columns)
     assert set(d.expand) == {0, 1, 2, 3, 6}
     # a reordered configuration reads only its pool: at most its seeds' windows (1 + expand
     # segments each), and with no expansion exactly its seeds unless reading hit the 16k cap

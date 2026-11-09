@@ -18,8 +18,7 @@ Per query, inside its own history's EventMemory partition (memory.py, histories.
      of the context string EventMemory would render (reading.py): headers with timestamps,
      JSON text, components; overlaps counted once.
   5. metrics.evaluate gives the coverage events (complete and touched), recall and precision
-     against the gold turns; the session-level view adds LongMemEval-style recall@k (an
-     evidence session counts once any of its segments is admitted).
+     against the gold turns.
 
 Expansions: rerank-then-expand and the expanded first stage need no new scores, so they are
 replayed at every value in EXPANSIONS; expand-then-rerank needs the windows scored and appears
@@ -27,7 +26,6 @@ only where a run scored them (grid.py scores expand 3).
 
 Output: results/sim/<embedder>/<dataset>/history/question/<sample>/seg<size>__<instruction>__em.parquet,
 the same columns as simulate.py plus:
-  sess_any_k, sess_all_k   admitted segments until some / every evidence session is touched
   admitted                 segments admitted before reading stopped (past MAX_COST, or at the
                            end of the reranked pool)
   <event>_ctx              contexts (seeds) read when the event happens: coverage after
@@ -57,7 +55,7 @@ EXPANSIONS = (1, 2, 3, 6)  # expand_context values replayed (EventMemory's defau
 MAX_COST = 16000  # reading stops past the largest reader budget measured
 FIRST_STAGE_LIMIT = 400  # the first stage's vector search limit: enough seeds to fill MAX_COST
 EVENTS = ("first", "every", "first_touch", "every_touch")
-EXTRA = (["sess_any_k", "sess_all_k", "admitted"] + [f"{e}_ctx" for e in EVENTS]
+EXTRA = (["admitted"] + [f"{e}_ctx" for e in EVENTS]
          + [f"segs_t{b}" for b in metrics.BUDGETS] + [f"ctx_t{b}" for b in metrics.BUDGETS])
 
 
@@ -65,11 +63,11 @@ def path(embedder: str, dataset: str, sample_name: str, size: int, instruction: 
     return SIM / embedder / dataset / "history" / "question" / sample_name / f"seg{size}__{instruction}__{RENDER}.parquet"
 
 
-def gold_for(dataset: str, qid: str, seg: hs.Segments) -> tuple[metrics.Gold, list[list[int]]]:
-    turns, sessions = hs.gold_segments(dataset, qid, seg)
+def gold_for(dataset: str, qid: str, seg: hs.Segments) -> metrics.Gold:
+    turns = hs.gold_segments(dataset, qid, seg)
     chars = {i: len(seg.texts[i]) for t in turns for i in t}
     spans = tuple(tuple((i, chars[i]) for i in t) for t in turns)
-    return metrics.Gold((spans,), chars, tuple(sorted(chars))), sessions
+    return metrics.Gold((spans,), chars, tuple(sorted(chars)))
 
 
 def keys_for(query: str, prompt: str, texts: list[str]) -> list[str]:
@@ -98,12 +96,6 @@ def counts(values: list[float], cum: np.ndarray, ctx: np.ndarray) -> list[float]
     reach = np.maximum.accumulate(cum) if len(cum) else cum
     segs = [int(np.searchsorted(reach, b, "right")) for b in metrics.BUDGETS]
     return at + segs + [float(seen[n - 1]) if n else 0.0 for n in segs]
-
-
-def session_positions(admitted: np.ndarray, sessions: list[list[int]]) -> tuple[float, float]:
-    position = {int(s): i for i, s in enumerate(admitted)}
-    firsts = [min((position[s] for s in sess if s in position), default=np.inf) for sess in sessions]
-    return (min(firsts) + 1, max(firsts) + 1) if firsts else (np.inf, np.inf)
 
 
 def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str], instruction: str = "default",
@@ -148,7 +140,7 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
         q = rows[qi]
         query = q["variants"]["question"]
         seg, head, sims, units, texts = await first_stage(embedder, dataset, size, q["qid"], query, expansions)
-        g, sessions = gold_for(dataset, q["qid"], seg)
+        g = gold_for(dataset, q["qid"], seg)
         overhead = pair_overhead(query, itext) if models else 0
         chars = np.asarray([len(t) for t in seg.texts])
         keys = {e: keys_for(query, prompt, texts[e]) for e in units}
@@ -173,9 +165,8 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
             contexts = [units[r.expand][i] for i in perm]
             admitted, cum, ctx = read(contexts, seeds, seg, lazy=r.kind == "first_stage" and r.depth is None)
             values = metrics.evaluate(admitted, cum, chars, g)
-            sess_any, sess_all = session_positions(admitted, sessions)
             prefix = cost - max(0, n - 1) * overhead if r.model is not None else 0.0
-            records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values, sess_any, sess_all,
+            records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values,
                                   len(admitted), *counts(values, cum, ctx)])
     frames = []
     for r in all_rankers:

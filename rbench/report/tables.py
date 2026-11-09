@@ -3,7 +3,7 @@
 Sections, each answering one question (README lists which question maps where):
   1 First stage alone: coverage by reader budget per chunking (the embedding/chunking benchmark)
   2 Headroom: how often the gold is inside the rerank pool at all
-  3 Equal reader tokens: first stage vs each model (common depth)
+  3 Equal reader tokens: first stage vs each model, at equal vector search limits
   4 Token savings: first-stage budget needed to match the reranked coverage
   5 Overfetch: coverage as rerank depth grows, with its reranker tokens
   6 Equal reranker tokens: the best chunking and depth within each reranker budget
@@ -13,10 +13,14 @@ Sections, each answering one question (README lists which question maps where):
  10 Help and harm: how often reranking makes the gold cheaper or dearer
  11 Expansion: plain chunks vs small seeds expanded to the same read size, reranked before
     or after expansion (separates the embedded, reranked and read units)
+ 13 Equal counts: vector search limit, seeds kept, segments read
+ 14 EventMemory settings at each reader budget
+ 15 Reranker latency (a by-product)
+(12, LongMemEval-style session recall, was removed; numbers are kept so references stay valid.)
 Coverage is over the evaluated (test) questions. Choices among configurations are made on dev
 when the dataset has a dev split, else on the same questions (LongMemEval has none, by
 decision), and each such section says which. Intervals: stats.interval.
-History datasets add the expanded configurations to sections 3 and 6-7 and 12: the first stage
+History datasets add the expanded configurations to sections 3 and 6-7: the first stage
 and rerank-then-expand at every replayed expand_context, expand-then-rerank where scored.
 """
 
@@ -338,40 +342,6 @@ bootstraps over the dataset's clusters (questions for LongMemEval; documents, di
 """
 
 
-def _recall_cell(rows, column: str, k: int) -> str:
-    """Share of questions whose event happened within k admitted segments; '–' when some
-    question stopped reading before k without it (its value at k is unknown)."""
-    known = (rows[column] <= k) | (rows.admitted >= k)
-    return f"{(rows[column] <= k).mean():.3f}" if known.all() else "–"
-
-
-def session_recall(r: Results) -> list[str]:
-    """LongMemEval-style recall at k: an evidence session counts once any of its segments is
-    admitted (touched), as LongMemEval's own retrieval metrics count retrieved units. A cell
-    is '–' when some question's reading stopped (budget or pool) before k segments without
-    reaching the event, since its value at k is then unknown."""
-    if "sess_any_k" not in r.df or r.df.sess_any_k.isna().all():
-        return []
-    ks = (5, 10, 20, 50, 100)
-    out = ["## 12. LongMemEval-style session recall@k\n",
-           "k counts admitted segments, not sessions, so this is not LongMemEval's published recall@k (k sessions or "
-           "rounds). recall_any@k: some evidence session touched within k; recall_all@k: every evidence session touched "
-           "within k. '–': some question stopped reading (16k reader tokens, or the end of a reranked pool) before k.\n",
-           "| chunking | ranker | " + " | ".join(f"any@{k}" for k in ks) + " | " + " | ".join(f"all@{k}" for k in ks) + " |",
-           "|---|---|" + "---|" * (2 * len(ks))]
-    for c in r.chunkings:
-        depth = r.common_depth(c)
-        names = ["first_stage"] + ([f"rerank:{m}@{depth}" for m in r.models_at(c)] if depth else [])
-        names += _expanded(r, depth, r.models_at(c))
-        for name in names:
-            rows = r.rows(c, name)
-            if rows.empty:
-                continue
-            out.append(f"| {c} | {name} | " + " | ".join(_recall_cell(rows, "sess_any_k", k) for k in ks) + " | "
-                       + " | ".join(_recall_cell(rows, "sess_all_k", k) for k in ks) + " |")
-    return out + [""]
-
-
 COUNT_LIMITS = (10, 20, 30, 50)  # vector search limits shown (EventMemory's default is 20)
 KEPT, SEGMENTS = (5, 10), (10, 20, 50)
 
@@ -475,7 +445,7 @@ def write(r: Results, event: str = "first") -> str:
     body = (first_stage(r, event) + headroom(r, event) + equal_reader_tokens(r, event) + token_savings(r, event)
             + overfetch(r, event) + equal_reranker_tokens(r, event) + (worth_it(r, event) if event == "every" else [])
             + chunkers(r, event) + query_types(r, event) + help_harm(r, event) + expansion(r, event)
-            + (session_recall(r) if event == "every" else []) + equal_counts(r, event) + settings(r, event)
+            + equal_counts(r, event) + settings(r, event)
             + (latency(r) if event == "every" else []))
     path = SUMMARY / r.embedder / f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}__{event}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
