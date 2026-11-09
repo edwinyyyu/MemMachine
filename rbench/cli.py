@@ -15,6 +15,8 @@
                                      any combination on request (same caching and spend cap)
   smoke [--models q06,q4,q8]         preflight: what DeepInfra returns and bills
   fidelity <dataset> <scope> <variant> <chunking> <sample>   preflight: local vs DeepInfra 0.6B
+  show <dataset> [--sample S] [--chart coverage,rpf,...] [--scope S] [--variant V]
+                                     open a run's charts in zoomable windows, from its saved results
   compare-embedders [--server S] [--questions N]   first stage under each embedding prompt setup (no reranker)
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
                                      (default: LongMemEval-M's EventMemory embedding text at seg500)
@@ -82,6 +84,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--expand", type=int, default=0, help="history datasets: score each seed's window (expand_context)")
     p.add_argument("--pool-seeds", type=int, default=50, help="history datasets: seeds scored per question")
     p.add_argument("--max-usd", type=float)
+    p = sub.add_parser("show")
+    p.add_argument("dataset")
+    p.add_argument("--sample", default="tiny")
+    p.add_argument("--scope", default="history")
+    p.add_argument("--variant", default="question")
+    p.add_argument("--chart", default="", help="comma-separated: coverage, rpf, rerank_cost, break_even, cost_saving, "
+                                                "query_types, sizes, expansion, counts (default: all)")
+    p.add_argument("--embedder", default=EMBEDDER)
     p = sub.add_parser("compare-embedders")
     p.add_argument("--server", default="gemma300m", help="gemma300m (local llama-server) or gemma300m-di")
     p.add_argument("--dataset", default="longmemeval_m")
@@ -162,6 +172,15 @@ def main(argv: list[str] | None = None) -> None:
         if args.only in (None, "report"):
             for path in pipeline.simulate_and_report(runs, args.embedder):
                 print(path)
+    elif args.command == "show":
+        from rbench.report import figures
+        from rbench.report.data import load
+
+        charts = [c for c in args.chart.split(",") if c]
+        unknown = set(charts) - set(figures.CHARTS)
+        if unknown:
+            raise SystemExit(f"unknown chart(s) {sorted(unknown)}; choose from {sorted(figures.CHARTS)}")
+        figures.show(load(args.embedder, args.dataset, args.scope, args.variant, args.sample), charts or None)
     elif args.command == "compare-embedders":
         from rbench import compare_embedders
 

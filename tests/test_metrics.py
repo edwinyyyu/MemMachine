@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from rbench.metrics import BUDGETS, FIELDS, KS, Gold, evaluate
+from rbench.metrics import BUDGETS, CURVE_BUDGETS, CURVE_KS, FIELDS, KS, Gold, evaluate
 
 TOKENS = np.array([100, 100, 100, 100])
 CHARS = np.array([400, 400, 400, 400])
@@ -22,7 +22,7 @@ def test_single_span_in_one_chunk():
     g = Gold(((((2, 50),),),))  # one alternative, one span: 50 gold characters in chunk 2
     f = fields(_eval(np.array([0, 2, 1, 3]), TOKENS, CHARS, g))
     assert f["first"] == 200 and f["every"] == 200 and f["rank"] == 2 and f["first_k"] == 2
-    assert f["recall_t128"] == 0 and f["recall_t256"] == 1.0
+    assert f["recall_k1"] == 0 and f["recall_t250"] == 1.0  # gold is the second chunk read (200 tokens)
     assert math.isclose(f["precision_k2"], 50 / 800)
 
 
@@ -48,7 +48,8 @@ def test_gold_outside_the_head_is_inf():
 
 
 def test_field_lists_match():
-    assert len(FIELDS) == 9 + 2 * len(BUDGETS) + 2 * len(KS)
+    assert len(FIELDS) == 9 + 2 * len(CURVE_BUDGETS) + 2 * len(CURVE_KS)
+    assert set(BUDGETS) <= set(CURVE_BUDGETS) and set(KS) <= set(CURVE_KS)  # table columns stay available
 
 
 def test_precision_counts_overlapping_gold_once_and_all_spans_in_a_chunk():
@@ -91,4 +92,28 @@ def test_a_dip_in_rendered_cost_does_not_admit_more_than_the_first_overflow():
     g = Gold(((((2, 50),),),))
     f = fields(evaluate(np.array([0, 1, 2, 3]), np.array([200.0, 260.0, 240.0, 340.0]), CHARS, g))
     assert f["first"] == 260  # chunk 2 is read only once 260 tokens fit
-    assert f["recall_t256"] == 0  # the 240 after the dip is not reachable within 256
+    assert f["recall_t250"] == 0  # the 240 after the dip is not reachable within 250
+
+
+def test_recall_matches_the_set_definition_on_random_cases():
+    """recall_k is max over answers of (gold characters of chunks read, per span) / answer total."""
+    from rbench.metrics import CURVE_KS
+
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        n = 12
+        alternatives = tuple(tuple(tuple((int(c), int(rng.integers(1, 40))) for c in rng.choice(n, rng.integers(1, 3), replace=False))
+                                   for _ in range(rng.integers(1, 4))) for _ in range(rng.integers(1, 3)))
+        union: dict[int, int] = {}
+        for alt in alternatives:
+            for span in alt:
+                for c, k in span:
+                    union[c] = max(union.get(c, 0), k)
+        g = Gold(alternatives, chunk_union=union)
+        order = rng.permutation(n)
+        f = fields(_eval(order, np.full(n, 10.0), np.full(n, 100), g))
+        for k in CURVE_KS:
+            seen = {int(c) for c in order[:k]}
+            want = max(sum(m for span in alt for c, m in span if c in seen) / sum(m for span in alt for _, m in span)
+                       for alt in alternatives)
+            assert math.isclose(f[f"recall_k{k}"], want)

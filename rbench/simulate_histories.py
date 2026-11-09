@@ -1,7 +1,11 @@
 """Replay reading for partitioned (chat-history) datasets: one tidy row per (query, ranker).
 
-Per query, inside its own history (histories.py):
-  1. The first stage's head of seeds (exact search), similarity order.
+Per query, inside its own history's EventMemory partition (memory.py, histories.py):
+  1. The first stage: EventMemory.query without a reranker, at a vector search limit deep
+     enough to fill the largest reader budget (FIRST_STAGE_LIMIT), at each expand_context.
+     Its seeds in similarity order, and each seed's context (the seed, or its window) exactly
+     as EventMemory returns it. Reranker inputs are those contexts rendered as EventMemory's
+     query renders them for its reranker.
   2. A ranker orders the seeds (rankers.py). Depths are counts of seeds, EventMemory's
      vector_search_limit, for every ranker, so reranking seeds and reranking their windows are
      compared at the same overfetch. A reranked configuration reads only its reranked seeds
@@ -10,7 +14,7 @@ Per query, inside its own history (histories.py):
   3. Each seed becomes a context: the seed alone, or its EventMemory window (expand e).
      Rerank-then-expand scores seeds; expand-then-rerank (xrerank) scores windows.
   4. Segments are admitted as EventMemory admits them under a growing segment limit
-     (eventmemory.admission_order_ids), and the reader cost after each one is the token count
+     (reading.admission), and the reader cost after each one is the token count
      of the context string EventMemory would render (reading.py): headers with timestamps,
      JSON text, components; overlaps counted once.
   5. metrics.evaluate gives the coverage events (complete and touched), recall and precision
@@ -37,19 +41,21 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import asyncio
+
 from rbench import histories as hs
 from rbench import metrics, rankers
-from rbench.eventmemory import admission
+from rbench.memory import RENDER, RERANK_FORMAT, CachedReranker, Memory
 from rbench.paths import SIM
-from rbench.reading import reading
+from rbench.reading import admission, reading
 from rbench.rerankers import ScoreCache, instruction_text, pair_overhead, prompt_key
 from rbench.samples import sample
 from rbench.schema import queries
 from rbench.simulate import COLUMNS, scored_prefix
 
 EXPANSIONS = (1, 2, 3, 6)  # expand_context values replayed (EventMemory's default is 0)
-MAX_COST = 16384  # reading stops past the largest reader budget measured
-RENDER = "em"
+MAX_COST = 16000  # reading stops past the largest reader budget measured
+FIRST_STAGE_LIMIT = 400  # the first stage's vector search limit: enough seeds to fill MAX_COST
 EVENTS = ("first", "every", "first_touch", "every_touch")
 EXTRA = (["sess_any_k", "sess_all_k", "admitted"] + [f"{e}_ctx" for e in EVENTS]
          + [f"segs_t{b}" for b in metrics.BUDGETS] + [f"ctx_t{b}" for b in metrics.BUDGETS])
@@ -102,8 +108,35 @@ def session_positions(admitted: np.ndarray, sessions: list[list[int]]) -> tuple[
 
 def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str], instruction: str = "default",
         expansions: tuple[int, ...] = EXPANSIONS) -> pd.DataFrame:
+    return asyncio.run(_run(embedder, dataset, size, sample_name, models, instruction, expansions))
+
+
+async def first_stage(embedder: str, dataset: str, size: int, qid: str, query: str, expansions: tuple[int, ...]):
+    """(segments, seed ids in similarity order, their similarities, {expand: each seed's
+    context as segment ids}, {expand: each context rendered for the reranker}) from
+    EventMemory.query without a reranker."""
+    from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
+
+    async with Memory(embedder, dataset, size) as m:
+        seg = await hs.table(m, dataset, qid)
+        partition = await (await m.event_memory()).open_or_create_partition(qid)
+        results = {e: await partition.query(query, vector_search_limit=FIRST_STAGE_LIMIT, expand_context=e)
+                   for e in (0, *expansions)}
+    index = {u: i for i, u in enumerate(seg.uuid)}
+    first = results[0].scored_segment_contexts
+    seeds = [str(c.seed_segment_uuid) for c in first]
+    units, texts = {}, {}
+    for e, result in results.items():
+        by_seed = {str(c.seed_segment_uuid): c.segments for c in result.scored_segment_contexts}
+        assert set(by_seed) == set(seeds), "every expansion retrieves the same seeds"
+        units[e] = [[index[str(x.uuid)] for x in by_seed[u]] for u in seeds]
+        texts[e] = [EventMemory.string_from_segment_context(by_seed[u], format_options=RERANK_FORMAT) for u in seeds]
+    return seg, [index[u] for u in seeds], np.asarray([c.score for c in first]), units, texts
+
+
+async def _run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str], instruction: str,
+               expansions: tuple[int, ...]) -> pd.DataFrame:
     rows = queries(dataset)
-    pools = hs.load_pools(embedder, dataset, size, sample_name)
     itext = instruction_text(instruction, dataset)
     prompt = prompt_key(itext)
     caches = {m: ScoreCache(m) for m in models}
@@ -113,16 +146,12 @@ def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[s
     picked = sample(dataset, sample_name)
     for qi in picked:
         q = rows[qi]
-        seg, producers = hs.build_segments(dataset, q["qid"], size)
-        head, sims = pools.head(qi, seg)
-        head = [int(x) for x in head]
-        g, sessions = gold_for(dataset, q["qid"], seg)
         query = q["variants"]["question"]
+        seg, head, sims, units, texts = await first_stage(embedder, dataset, size, q["qid"], query, expansions)
+        g, sessions = gold_for(dataset, q["qid"], seg)
         overhead = pair_overhead(query, itext) if models else 0
         chars = np.asarray([len(t) for t in seg.texts])
-        n_seg = len(seg)
-        units = {0: [[s] for s in head], **{e: [hs.window(s, n_seg, e) for s in head] for e in expansions}}
-        keys = {e: keys_for(query, prompt, [hs.unit_text(seg, producers, u) for u in units[e]]) for e in units}
+        keys = {e: keys_for(query, prompt, texts[e]) for e in units}
         scores = {(m, e): scored_prefix(caches[m], m, keys[e]) for m in models for e in units}
         seed_tokens = seg.tokens[head]
         priority = {e: np.asarray([2 if any(i in g.union for i in u) else 0 for u in units[e]]) for e in units}
@@ -154,11 +183,13 @@ def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[s
             continue
         meta = {"qid": [rows[i]["qid"] for i in picked], "split": [rows[i]["split"] for i in picked],
                 "cluster": [rows[i]["qid"] for i in picked], "chunking": f"seg{size}", "ranker": r.id, "kind": r.kind,
-                "model": r.model, "depth": r.depth.label if r.depth else None, "weight": r.weight, "expand": r.expand,
+                "model": r.model, "depth": r.depth.label if r.depth else None, "expand": r.expand,
                 "question_type": [rows[i]["features"]["question_type"] for i in picked]}
         frames.append(pd.concat([pd.DataFrame(meta), pd.DataFrame(records[r.id], columns=[*COLUMNS, *EXTRA])], axis=1))
     report_dropped(dataset, size, dropped, set(records))
     out = pd.concat(frames, ignore_index=True)
+    curves = [c for c in out.columns if c.startswith(("recall_", "precision_"))]
+    out[curves] = out[curves].astype("float32")  # ~230 curve columns per row; float32 halves the files
     target = path(embedder, dataset, sample_name, size, instruction)
     target.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(target, index=False)
@@ -185,29 +216,25 @@ def report_dropped(dataset: str, size: int, dropped: dict[str, str], kept: set[s
 
 def scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
                  pool_seeds: int, instruction: str = "default"):
-    """Pairs to score for a run, as rerankers.Work: units of each query's first pool_seeds seeds
-    (the deepest vector search limit the run replays), unique by key, not yet in the model's
-    cache."""
+    """Pairs to score for a run, as rerankers.Work: what EventMemory.query sends its reranker
+    for each question at vector search limit pool_seeds (the deepest the run replays), found by
+    querying with the reranker in record mode; unique by key, not yet in the model's cache."""
+    return asyncio.run(_scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds, instruction))
+
+
+async def _scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
+                        pool_seeds: int, instruction: str):
     rows = queries(dataset)
-    pools = hs.load_pools(embedder, dataset, size, sample_name)
-    prompt = prompt_key(instruction_text(instruction, dataset))
-    cache = ScoreCache(model)
-    work, seen = [], set()
+    reranker = CachedReranker(model, instruction_text(instruction, dataset), mode="record")
     for qi in sample(dataset, sample_name):
         q = rows[qi]
-        seg, producers = hs.build_segments(dataset, q["qid"], size)
-        head, _ = pools.head(qi, seg)
-        head = [int(x) for x in head][:pool_seeds]
-        units = [[s] for s in head] if expand == 0 else [hs.window(s, len(seg), expand) for s in head]
-        texts = [hs.unit_text(seg, producers, u) for u in units]
-        query = q["variants"]["question"]
-        keys = keys_for(query, prompt, texts)
-        have = cache.get(keys)
-        items = []
-        for k, t in zip(keys, texts, strict=True):
-            if k not in have and k not in seen:  # scored already, or queued for another query
-                seen.add(k)
-                items.append((k, t))
+        async with Memory(embedder, dataset, size) as m:
+            partition = await (await m.event_memory(reranker)).open_or_create_partition(q["qid"])
+            await partition.query(q["variants"]["question"], vector_search_limit=pool_seeds, expand_context=expand)
+    work, seen = [], set()
+    for query, items in reranker.work.items():
+        items = [(k, t) for k, t in items if k not in seen]  # queued for another question already
+        seen.update(k for k, _ in items)
         if items:
             work.append((query, items))
     return work

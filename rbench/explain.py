@@ -24,7 +24,16 @@ from rbench.schema import corpus, queries
 from rbench.simulate import gold_priority
 
 SHOW = 10
-BUDGETS = (256, 512, 1024, 2048)
+BUDGETS = (500, 1000, 2000, 4000)
+
+
+def _producers(dataset: str, qid: str, seg) -> list[str]:
+    """Each segment's producer (User or Assistant), from the history file."""
+    from rbench.datasets.longmemeval import history
+    from rbench.histories import PRODUCERS
+
+    sessions = history(dataset, qid)["sessions"]
+    return [PRODUCERS[sessions[int(s)]["turns"][int(t)]["role"]] for s, t in zip(seg.session, seg.turn, strict=True)]
 
 
 def _preview(text: str, n: int = 90) -> str:
@@ -105,7 +114,7 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
     configs = {
         "first stage only": Ranker("first_stage"),
         f"reranked (depth {n})": Ranker("rerank", model, d),
-        f"gold-first reference (depth {n})": Ranker("oracle", depth=d),
+        f"perfect reranker (depth {n}, evidence first)": Ranker("oracle", depth=d),
     }
     priority = gold_priority([{int(c)} for c in head], union, set(g.cheapest))
     w += ["## 5. Reading in each order, and every measurement\n",
@@ -113,11 +122,11 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
           "all spans of one answer are. Coverage@B is 1 if that cost is ≤ B. Recall@B = share of the answer's gold "
           "characters inside the chunks read within B; precision@B = share of characters read that are gold.\n",
           "| order | first | every | first_k | " + " | ".join(f"cov@{b} first/every" for b in BUDGETS)
-          + " | recall@1024 | precision@1024 | F1@1024 |", "|---|---|---|---|" + "---|" * len(BUDGETS) + "---|---|---|"]
+          + " | recall@1000 | precision@1000 | F1@1000 |", "|---|---|---|---|" + "---|" * len(BUDGETS) + "---|---|---|"]
     for label, r in configs.items():
         perm = r.order(n if r.depth else 0, sims, logits if r.model else None, priority)
         f = dict(zip(metrics.FIELDS, metrics.evaluate(head[perm], np.cumsum(table.tokens[head[perm]]), chars, g), strict=True))
-        rec, pre = f["recall_t1024"], f["precision_t1024"]
+        rec, pre = f["recall_t1000"], f["precision_t1000"]
         f1 = 2 * rec * pre / (rec + pre) if rec + pre else 0.0
         w.append(f"| {label} | {f['first']:,.0f} | {f['every']:,.0f} | {f['first_k']:.0f} | "
                  + " | ".join(f"{int(f['first'] <= b)}/{int(f['every'] <= b)}" for b in BUDGETS)
@@ -145,7 +154,14 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
     qi = next(i for i, q in enumerate(rows) if q["qid"] == qid)
     q = rows[qi]
     query = q["variants"]["question"]
-    seg, producers = hs.build_segments(dataset, qid, size)
+    import asyncio
+
+    from rbench.simulate_histories import first_stage
+
+    hs.ingest(embedder, dataset, size, [qid])  # encoded once (embedded when not yet)
+    seg, head, sims, units_all, texts_all = asyncio.run(first_stage(embedder, dataset, size, qid, query, (expand,)))
+    head = np.asarray(head)
+    producer = {u: p for u, p in zip(seg.uuid, _producers(dataset, qid, seg), strict=True)}
     g, sessions = gold_for(dataset, qid, seg)
     union = g.union
     w = [f"# Dry run: {dataset} · {qid} · {chunking_name} · {RERANKERS[model].hf_model}\n",
@@ -157,30 +173,25 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
     turns, _ = hs.gold_segments(dataset, qid, seg)
     w.append(f"## 2. The gold: {len(turns)} turn(s) marked has_answer, all needed\n")
     for k, ids in enumerate(turns):
-        first = seg.segment(ids[0], producers)
-        w.append(f"- Turn {k + 1} ({first.producer}, {first.timestamp:%Y-%m-%d %H:%M}): “{_preview(''.join(seg.texts[i] for i in ids), 160)}” "
+        w.append(f"- Turn {k + 1} ({producer[seg.uuid[ids[0]]]}, session {int(seg.session[ids[0]])}): "
+                 f"“{_preview(''.join(seg.texts[i] for i in ids), 160)}” "
                  f"— segment(s) {ids} ({int(seg.tokens[ids].sum())} tokens). Complete once all are read; touched once any is.")
     w.append("")
 
-    vectors = hs.embed_history(embedder, dataset, qid, size).astype(np.float32)  # the run's vectors when prepared
-    sims_all = vectors @ hs.query_vectors(embedder, dataset)[qi].astype(np.float32)
-    head = retrieval.head(sims_all, seg.tokens)
-    sims = sims_all[head]
-    w += [f"## 3. First stage: {embedder}, exact search over this history; head of {len(head)} seeds\n",
-          "| rank | segment | when | producer | tokens | cosine | gold | text |", "|---|---|---|---|---|---|---|---|"]
+    w += [f"## 3. First stage: EventMemory.query over this history ({embedder}, exact search), {len(head)} seeds\n",
+          "| rank | segment | session | producer | tokens | cosine | gold | text |", "|---|---|---|---|---|---|---|---|"]
     for i, (c, sim) in enumerate(zip(head[:SHOW], sims[:SHOW], strict=True)):
-        x = seg.segment(int(c), producers)
-        w.append(f"| {i + 1} | {c} | {x.timestamp:%Y-%m-%d %H:%M} | {x.producer} | {seg.tokens[c]} | {sim:.3f} | "
-                 f"{'yes' if int(c) in union else ''} | {_preview(x.text)} |")
+        w.append(f"| {i + 1} | {c} | {int(seg.session[c])} | {producer[seg.uuid[c]]} | {seg.tokens[c]} | {sim:.3f} | "
+                 f"{'yes' if int(c) in union else ''} | {_preview(seg.texts[c])} |")
     w.append("")
 
     itext = instruction_text("default", dataset)
     prompt = prompt_key(itext)
     n = min(pool_seeds, len(head))
-    units = {0: [[int(s)] for s in head[:n]], expand: [hs.window(int(s), len(seg), expand) for s in head[:n]]}
+    units = {e: units_all[e][:n] for e in (0, expand)}
     cache, scored = ScoreCache(model), {}
-    for e, us in units.items():
-        texts = [hs.unit_text(seg, producers, u) for u in us]
+    for e in units:
+        texts = texts_all[e][:n]
         keys = keys_for(query, prompt, texts)
         have = cache.get(keys)
         missing = [(k, t) for k, t in zip(keys, texts, strict=True) if k not in have]
@@ -211,27 +222,27 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
                f"rerank seeds (depth {n})": Ranker("rerank", model, d),
                f"rerank seeds, then expand {expand}": Ranker("rerank", model, d, expand=expand),
                f"expand {expand}, then rerank windows": Ranker("xrerank", model, d, expand=expand),
-               f"gold-first reference (depth {n})": Ranker("oracle", depth=d)}
+               f"perfect reranker (depth {n}, evidence first)": Ranker("oracle", depth=d)}
     chars = np.asarray([len(t) for t in seg.texts])
     w += ["## 5. Reading each order as EventMemory renders it, and every measurement\n",
           "Segments are admitted as EventMemory's segment limit grows; the reader cost is the token count of the "
           "rendered context (headers, JSON text, windows merged). A reranked order reads only its pool. *first* / "
           "*every*: reader tokens when some / every gold turn is complete; *touch*: when touched.\n",
           "| order | first | every | first touch | every touch | admitted | " + " | ".join(f"every@{b}" for b in BUDGETS)
-          + " | recall@1024 | session any/all (k) |", "|---|---|---|---|---|---|" + "---|" * len(BUDGETS) + "---|---|"]
+          + " | recall@1000 | session any/all (k) |", "|---|---|---|---|---|---|" + "---|" * len(BUDGETS) + "---|---|"]
     for label, r_ in configs.items():
         e = r_.expand
         logits = None if r_.model is None else scored[expand if r_.kind == "xrerank" else 0][0]
         priority = np.asarray([2 if any(x in union for x in u) else 0 for u in (units[e] if r_.depth else [[0]])])
         perm = r_.order(n if r_.depth else 0, sims, logits, priority)
         seeds = [int(head[i]) for i in perm]
-        contexts = [[s] if e == 0 else hs.window(s, len(seg), e) for s in seeds]
+        contexts = [units_all[e][i] for i in perm]
         admitted, cum, _ = read(contexts, seeds, seg, lazy=r_.kind == "first_stage" and r_.depth is None)
         f = dict(zip(metrics.FIELDS, metrics.evaluate(admitted, cum, chars, g), strict=True))
         sess_any, sess_all = session_positions(admitted, sessions)
         w.append(f"| {label} | {f['first']:,.0f} | {f['every']:,.0f} | {f['first_touch']:,.0f} | {f['every_touch']:,.0f} | "
                  f"{len(admitted)} | " + " | ".join(str(int(f['every'] <= b)) for b in BUDGETS)
-                 + f" | {f['recall_t1024']:.2f} | {sess_any:.0f}/{sess_all:.0f} |")
+                 + f" | {f['recall_t1000']:.2f} | {sess_any:.0f}/{sess_all:.0f} |")
     w += ["", "## 6. From one question to the reported numbers\n",
           "- Every per-question value above is averaged over the questions with equal weight.",
           "- Reader budget B is continuous: each question's costs give its coverage at every B.",

@@ -16,6 +16,8 @@ dependencies = [
     "ijson>=3.6.0",
     "babel>=2.18.0",
     "langchain-text-splitters>=1.1.3",
+    "memmachine-server",
+    "memmachine-common",
 ]
 
 [dependency-groups]
@@ -29,3 +31,7 @@ line-length = 160
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
 ignore = ["B905"]  # zip() without strict=: lengths are checked where it matters
+
+[tool.uv.sources]
+memmachine-server = { git = "https://github.com/MemMachine/MemMachine", subdirectory = "packages/server", rev = "043fb75380b07f787d7571b910cded6ce181fd74" }
+memmachine-common = { git = "https://github.com/MemMachine/MemMachine", subdirectory = "packages/common", rev = "043fb75380b07f787d7571b910cded6ce181fd74" }

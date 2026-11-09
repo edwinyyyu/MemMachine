@@ -53,12 +53,17 @@ import numpy as np
 from rbench.chunking import ChunkTable
 from rbench.schema import corpus, queries
 
-BUDGETS = (128, 256, 512, 1024, 2048, 4096, 8192, 16384)
+BUDGETS = (250, 500, 1000, 2000, 4000, 8000, 16000)  # table columns (500-4,000 is the realistic range)
 KS = (1, 2, 3, 5, 10, 20, 30, 50)
+# Recall and precision are stored on regular grids for charts: every 250 reader tokens and
+# every k up to 50. Every BUDGETS and KS value is included.
+CURVE_BUDGETS = tuple(range(250, 16000 + 1, 250))
+CURVE_KS = tuple(range(1, 51))
+assert set(BUDGETS) <= set(CURVE_BUDGETS) and set(KS) <= set(CURVE_KS)
 INF = math.inf
 FIELDS = (["first", "every", "rank", "first_k", "every_k", "first_touch", "every_touch", "first_touch_k", "every_touch_k"]
-          + [f"recall_t{b}" for b in BUDGETS]
-          + [f"precision_t{b}" for b in BUDGETS] + [f"recall_k{k}" for k in KS] + [f"precision_k{k}" for k in KS])
+          + [f"recall_t{b}" for b in CURVE_BUDGETS] + [f"precision_t{b}" for b in CURVE_BUDGETS]
+          + [f"recall_k{k}" for k in CURVE_KS] + [f"precision_k{k}" for k in CURVE_KS])
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,7 @@ class Gold:
     alternatives: alternatives -> spans -> ((chunk id, gold characters of that span in it), ...)
     chunk_union:  gold characters per chunk over all spans of all alternatives, overlaps once
     cheapest:     chunk ids of the alternative needing the fewest reader tokens (for the
-                  gold-first reference ordering)
+                  perfect-reranker ordering)
     """
 
     alternatives: tuple[tuple[tuple[tuple[int, int], ...], ...], ...]
@@ -158,20 +163,31 @@ def evaluate(order: np.ndarray, cum: np.ndarray, chars: np.ndarray, g: Gold) -> 
     every_touch = min((max(alt) for alt in firsts if alt), default=INF)
     cost = lambda p: float(cum[int(p)]) if p < INF else INF  # noqa: E731
     rank = next((i + 1 for i, c in enumerate(order) if int(c) in union), INF)
-    totals = [sum(n for span in alt for _, n in span) for alt in g.alternatives]
     read_chars = np.cumsum(chars[order])
     gold_chars = np.cumsum([union.get(int(c), 0) for c in order])
+    # Each answer's gold characters read after each prefix; a chunk counts once, at its first
+    # position, and once per span of the answer it overlaps.
+    first_seen = np.zeros(len(order), dtype=bool)
+    first_seen[np.unique(np.asarray(order, dtype=np.int64), return_index=True)[1]] = True
+    answer_read = []
+    for alt in g.alternatives:
+        total = sum(n for span in alt for _, n in span)
+        if total:
+            per_chunk: dict[int, int] = {}
+            for span in alt:
+                for c, n in span:
+                    per_chunk[c] = per_chunk.get(c, 0) + n
+            got = np.asarray([per_chunk.get(int(c), 0) for c in order], dtype=np.float64) * first_seen
+            answer_read.append(np.cumsum(got) / total)
+    best_read = np.max(answer_read, axis=0) if answer_read and len(order) else np.zeros(len(order))
 
     def recall_precision(read: int) -> tuple[float, float]:
         if read == 0:
             return 0.0, 0.0
-        seen = {int(c) for c in order[:read]}
-        best = max((sum(n for span in alt for c, n in span if c in seen) / t for alt, t in zip(g.alternatives, totals) if t),
-                   default=0.0)
-        return best, float(gold_chars[read - 1] / max(1, read_chars[read - 1]))
+        return float(best_read[read - 1]), float(gold_chars[read - 1] / max(1, read_chars[read - 1]))
 
-    by_budget = [recall_precision(int(np.searchsorted(cum, b, "right"))) for b in BUDGETS]
-    by_k = [recall_precision(min(k, len(order))) for k in KS]
+    by_budget = [recall_precision(int(np.searchsorted(cum, b, "right"))) for b in CURVE_BUDGETS]
+    by_k = [recall_precision(min(k, len(order))) for k in CURVE_KS]
     return [cost(first_pos), cost(every_pos), rank, first_pos + 1, every_pos + 1,
             cost(first_touch), cost(every_touch), first_touch + 1, every_touch + 1,
             *(r for r, _ in by_budget), *(p for _, p in by_budget), *(r for r, _ in by_k), *(p for _, p in by_k)]

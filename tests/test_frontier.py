@@ -50,11 +50,16 @@ def test_break_even_is_measured_on_test_not_dev():
     assert np.isinf(point[i])
 
 
-def test_cost_ratio_falls_as_the_reader_gets_dearer():
-    r = frontier.cost_ratio(results(), "q8", np.array([1.0, 10.0, 1000.0]))
+def test_reranking_pays_only_above_the_break_even_price():
+    q = 0.05  # reranker $/M
+    point, *_ = frontier.break_even(results(), "q8", with_interval=False)
     i = int(np.argmin(np.abs(frontier.TARGETS - 0.9)))
-    assert r[i, 0] == 1.0  # cheap reader: reranking does not pay
-    assert r[i, 2] < r[i, 1] < 1.0
+    prices = [point[i] * q * 0.5, point[i] * q * 2, point[i] * q * 100]  # below, above, far above break-even
+    curves = frontier.cost_curves(results(), "q8", prices, q)
+    no, yes = zip(*(curves[p] for p in prices), strict=True)
+    assert yes[0][i] > no[0][i]  # below break-even: reranking costs more
+    assert yes[1][i] < no[1][i]  # above: it saves
+    assert yes[2][i] / no[2][i] < yes[1][i] / no[1][i]  # and saves a larger share as the reader gets dearer
 
 
 def test_reranker_chosen_even_when_first_stage_misses_on_dev():

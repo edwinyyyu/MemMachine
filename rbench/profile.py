@@ -97,7 +97,7 @@ def profile_histories(name: str, every: int = 10, size: int = 500) -> dict:
     types = collections.Counter(q["features"]["question_type"] for q in rows)
     segments, tokens, sessions = [], [], []
     for q in rows[::every]:
-        seg, _ = hs.build_segments(name, q["qid"], size)
+        seg = hs.offline(name, q["qid"], size)[0]
         segments.append(len(seg))
         tokens.append(int(seg.tokens.sum()))
         sessions.append(q["features"]["n_sessions"])

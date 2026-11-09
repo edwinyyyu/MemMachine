@@ -124,13 +124,12 @@ def embed_fidelity(dataset: str = "longmemeval_m", chunking_name: str = "seg500"
 
     rng = np.random.default_rng(0)
     if info(dataset).partitioned:
-        from rbench import eventmemory as em
         from rbench import histories as hs
 
         docs = []
         for q in queries(dataset)[:3]:
-            seg, producers = hs.build_segments(dataset, q["qid"], int(chunking_name.removeprefix("seg")))
-            docs += [em.derivative_text(seg.segment(int(i), producers)) for i in rng.choice(len(seg), n // 3, replace=False)]
+            _, _, texts = hs.offline(dataset, q["qid"], int(chunking_name.removeprefix("seg")))
+            docs += [texts[int(i)] for i in rng.choice(len(texts), n // 3, replace=False)]
     else:
         texts = chunking.load(dataset, chunking_name).texts(dataset)
         docs = [texts[i] for i in rng.choice(len(texts), min(n, len(texts)), replace=False)]

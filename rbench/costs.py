@@ -161,17 +161,24 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
     length, expand, model, instruction), and a group scores the union of its questions to its
     deepest pool (samples nest, so pilot questions are part of the core, and the core's pools
     are a prefix of the depth stage's). Where the group's pools exist, its pairs are counted
-    exactly, minus those already cached. Before that, a few sampled histories are probed: pair
-    tokens are measured on pool_seeds randomly drawn seeds (rendered exactly as scored) and
-    scaled to the questions. That is rough: retrieved seeds run longer than random ones at long
-    segment lengths, and the cache is ignored. Embedding tokens are charged once for each sampled history whose
-    vectors are not on disk (stale vectors are not detected here; prepare refuses them)."""
+    exactly (EventMemory queried with the reranker in record mode), minus those already cached.
+    Before the histories are encoded, a few are probed: pair tokens are measured on pool_seeds
+    randomly drawn seeds of MemMachine's segments (windows of neighbouring segments, rendered as
+    EventMemory renders them for its reranker) and scaled to the questions. That is rough:
+    retrieved seeds run longer than random ones at long segment lengths, and the cache is
+    ignored. Embedding tokens are charged once for each sampled history not yet encoded."""
     import random
     from collections import defaultdict
 
     from rbench import histories as hs
     from rbench import simulate_histories
     from rbench.embedding import EMBEDDERS
+    from rbench.memory import MEMORY, RERANK_FORMAT
+
+    from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: I001
+
+    def encoded(dataset: str, size: int, qid: str) -> bool:
+        return (MEMORY / embedder / dataset / f"seg{size}" / "done" / qid).exists()
     from rbench.samples import ORDER
     from rbench.samples import sample as sample_of
 
@@ -186,24 +193,26 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
         sample_name = max((r.sample for r in members), key=ORDER.index)  # the largest holds the others
         pool_seeds = max(r.pool_seeds for r in members)
         itext = instruction_text(instruction, dataset)
-        if hs.pool_path(embedder, dataset, size, sample_name).exists():
+        rows = queries(dataset)
+        if all(encoded(dataset, size, rows[i]["qid"]) for i in sample_of(dataset, sample_name)):
             work = simulate_histories.scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds,
                                                    instruction)
             tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], itext)))
-            basis[model].add("exact (pools built; cached pairs excluded)")
+            basis[model].add("exact (histories encoded; cached pairs excluded)")
         else:
             rows = queries(dataset)
             picked = sample_of(dataset, sample_name)
             probe = [rows[i] for i in picked[:: max(1, len(picked) // histories)][:histories]]
             pair_tok = []
             for q in probe:
-                seg, producers = hs.build_segments(dataset, q["qid"], size)
-                seeds = random.Random(q["qid"]).sample(range(len(seg)), min(pool_seeds, len(seg)))
-                units = [[s] for s in seeds] if expand == 0 else [hs.window(s, len(seg), expand) for s in seeds]
-                texts = [hs.unit_text(seg, producers, u) for u in units]
+                _, segments, _ = hs.offline(dataset, q["qid"], size)
+                seeds = random.Random(q["qid"]).sample(range(len(segments)), min(pool_seeds, len(segments)))
+                before, after = expand // 3, expand - expand // 3
+                texts = [EventMemory.string_from_segment_context(segments[max(0, s - before) : s + after + 1],
+                                                                 format_options=RERANK_FORMAT) for s in seeds]
                 pair_tok.append(sum(len(x) for x in pair_ids(q["variants"]["question"], texts, itext)))
             tokens = float(np.mean(pair_tok)) * len(picked)
-            basis[model].add("probe estimate (before pools: random seeds, while retrieved ones run longer at long "
+            basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")
         per_model[model] = per_model.get(model, 0.0) + tokens
 
@@ -214,13 +223,13 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
         for c in run.chunkings:
             size = int(c.removeprefix("seg"))
             to_embed |= {(run.dataset, size, rows[i]["qid"]) for i in sample_of(run.dataset, run.sample)
-                         if not hs.vector_path(embedder, run.dataset, size, rows[i]["qid"]).exists()}
+                         if not encoded(run.dataset, size, rows[i]["qid"])}
     per_history: dict[tuple[str, int], float] = {}
     for dataset, size in {(d, n) for d, n, _ in to_embed}:
         rows = queries(dataset)
         qids = sorted(q for d, n, q in to_embed if (d, n) == (dataset, size))
         probe = qids[:: max(1, len(qids) // histories)][:histories]
-        per_history[(dataset, size)] = float(np.mean([hs.embedding_tokens(embedder, dataset, q, size) for q in probe]))
+        per_history[(dataset, size)] = float(np.mean([hs.embedding_tokens(dataset, q, size) for q in probe]))
     for dataset, size, _ in to_embed:  # each sampled history without vectors is embedded once
         embed_tok += per_history[(dataset, size)]
     summary = {m: {"billed_M": t / 1e6, "deepinfra_usd": t / 1e6 * (RERANKERS[m].usd_per_mtok or 0.0),

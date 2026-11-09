@@ -7,9 +7,6 @@
   rerank        the head's first `depth` chunks sorted by reranker score, and nothing after
                 them: EventMemory reranks every seed it retrieves, so the depth is the vector
                 search limit and reading ends with the reranked chunks
-  fuse          as rerank, by w·z(reranker) + (1-w)·z(similarity), z-scored over the
-                reranked chunks: keeps some first-stage signal
-  rrf           as rerank, by reciprocal-rank fusion of the two orders (k = 60)
   oracle        as rerank, gold first: the chunks of the cheapest complete answer, then
                 other gold chunks, then the rest of the pool. A reference for how much
                 reordering the pool can buy, not a strict bound: it is optimal for "every
@@ -41,8 +38,6 @@ import numpy as np
 
 COUNT_DEPTHS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300)
 TOKEN_DEPTHS = (1024, 2048, 4096, 8192, 16384)
-FUSION_WEIGHTS = (0.5, 0.8)
-RRF_K = 60
 
 
 @dataclass(frozen=True)
@@ -67,10 +62,9 @@ HISTORY_DEPTHS = tuple(Depth("n", v) for v in COUNT_DEPTHS)
 
 @dataclass(frozen=True)
 class Ranker:
-    kind: str  # first_stage | rerank | fuse | rrf | oracle
+    kind: str  # first_stage | rerank | xrerank | oracle
     model: str | None = None
     depth: Depth | None = None
-    weight: float | None = None
     expand: int = 0
 
     @property
@@ -78,8 +72,7 @@ class Ranker:
         tail = f"+x{self.expand}" if self.expand else ""
         if self.kind == "first_stage":
             return "first_stage" + (f"@{self.depth.label}" if self.depth else "") + tail
-        head = {"rerank": f"rerank:{self.model}", "xrerank": f"xrerank:{self.model}", "fuse": f"fuse{self.weight}:{self.model}",
-                "rrf": f"rrf:{self.model}", "oracle": "oracle"}[self.kind]
+        head = {"rerank": f"rerank:{self.model}", "xrerank": f"xrerank:{self.model}", "oracle": "oracle"}[self.kind]
         return f"{head}@{self.depth.label}{tail}"
 
     def order(self, n: int, sims: np.ndarray, logits: np.ndarray | None, is_gold: np.ndarray) -> np.ndarray:
@@ -94,26 +87,15 @@ class Ranker:
             key = -np.asarray(is_gold[:n], dtype=float)
         elif self.kind in ("rerank", "xrerank"):
             key = -logits[:n]
-        elif self.kind == "fuse":
-            key = -(self.weight * zscore(logits[:n]) + (1 - self.weight) * zscore(sims[:n].astype(np.float64)))
-        elif self.kind == "rrf":
-            rank = np.empty(n)
-            rank[np.argsort(-logits[:n], kind="stable")] = np.arange(n)
-            key = -(1 / (RRF_K + 1 + rank) + 1 / (RRF_K + 1 + np.arange(n)))
         else:
             raise ValueError(self.kind)
         return np.argsort(key, kind="stable")
 
 
-def zscore(x: np.ndarray) -> np.ndarray:
-    sd = x.std()
-    return (x - x.mean()) / sd if sd > 0 else np.zeros_like(x)
-
-
 def for_models(models: list[str], expansions: tuple[int, ...] = (), depths: tuple[Depth, ...] = DEPTHS,
                limited_first_stage: bool = False) -> list[Ranker]:
-    """Every ranker replayed: the baseline, then per depth the oracle and each model's rerank,
-    fuse and rrf; then for each expansion the baseline, oracle, rerank-then-expand and
+    """Every ranker replayed: the baseline, then per depth the oracle and each model's rerank;
+    then for each expansion the baseline, oracle, rerank-then-expand and
     expand-then-rerank. limited_first_stage adds the first stage at each depth as its vector
     search limit."""
     out = [Ranker("first_stage")]
@@ -121,7 +103,7 @@ def for_models(models: list[str], expansions: tuple[int, ...] = (), depths: tupl
         out.append(Ranker("oracle", depth=d))
         out += [Ranker("first_stage", depth=d)] if limited_first_stage else []
         for m in models:
-            out += [Ranker("rerank", m, d), *(Ranker("fuse", m, d, w) for w in FUSION_WEIGHTS), Ranker("rrf", m, d)]
+            out.append(Ranker("rerank", m, d))
     for e in expansions:
         out.append(Ranker("first_stage", expand=e))
         for d in depths:

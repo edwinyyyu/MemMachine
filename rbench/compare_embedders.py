@@ -24,14 +24,12 @@ from __future__ import annotations
 
 import hashlib
 import random
-from datetime import timedelta
 
 import numpy as np
 
 from rbench import embedding as emb
-from rbench import eventmemory as em
 from rbench import histories as hs
-from rbench.datasets.longmemeval import history, session_datetime
+from rbench.datasets.longmemeval import history
 from rbench.paths import FIGURES, SUMMARY, VECTORS
 from rbench.report.stats import delta
 from rbench.samples import sample
@@ -45,24 +43,17 @@ LABEL = {"": "both prompts (model card)", "-q": "query prompt only (MemMachine s
 
 def haystack(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int]]]:
     """(embedding texts in EventMemory's order, segment ids of each gold turn) for one question's
-    reduced haystack."""
+    reduced haystack: its evidence sessions plus EXTRA others, as MemMachine segments and derives
+    the whole history (histories.offline)."""
     sessions = history(dataset, q["qid"])["sessions"]
     evidence = sorted({s for s, _ in q["gold_turns"][0]} | set(q["gold_sessions"]))
     others = [s for s in range(len(sessions)) if s not in evidence]
     keep = set(evidence) | set(random.Random(f"haystack:{q['qid']}").sample(others, min(EXTRA, len(others))))
-    gold = {(s, t) for s, t in q["gold_turns"][0]}
-    texts, gold_ids, event = [], {}, 0
-    for s in [s for s in hs.chronological(sessions) if s in keep]:
-        start = session_datetime(sessions[s]["date"])
-        for t, turn in enumerate(sessions[s]["turns"]):
-            for o, piece in enumerate(em.segment_text(turn["content"], size)):
-                segment = em.Segment(len(texts), event, 0, o, start + event * hs.TICK, hs.PRODUCERS[turn["role"]], piece)
-                if (s, t) in gold:
-                    gold_ids.setdefault((s, t), []).append(len(texts))
-                texts.append(em.derivative_text(segment))
-            event += 1
-    assert event * hs.TICK < timedelta(seconds=1)
-    return texts, list(gold_ids.values())
+    seg, _, texts = hs.offline(dataset, q["qid"], size)
+    picked = [i for i in range(len(seg)) if int(seg.session[i]) in keep]
+    position = {i: k for k, i in enumerate(picked)}
+    gold = [[position[i] for i in ids] for ids in hs.gold_segments(dataset, q["qid"], seg)[0]]
+    return [texts[i] for i in picked], gold
 
 
 def _vectors(embedder: str, dataset: str, qid: str, texts: list[str], size: int) -> np.ndarray:
@@ -89,7 +80,7 @@ def measure(server: str, dataset: str, size: int, picked: list[int]) -> dict[str
         for suffix in emb.SETUPS:
             embedder = f"{server}{suffix}"
             sims = _vectors(embedder, dataset, q["qid"], texts, size).astype(np.float32) @ \
-                hs.query_vectors(embedder, dataset)[qi].astype(np.float32)
+                emb.query_vectors(embedder, dataset, "question")[qi].astype(np.float32)
             rank = np.empty(len(sims), dtype=int)
             rank[np.argsort(-sims, kind="stable")] = np.arange(1, len(sims) + 1)
             complete = [max(rank[i] for i in turn) for turn in gold]  # a turn is read once its last segment is
@@ -146,23 +137,22 @@ def write(server: str = "gemma300m", dataset: str = "longmemeval_m", size: int =
 
 
 def _figure(results: dict[str, dict[str, np.ndarray]], dataset: str, size: int, n: int, server: str) -> None:
-    from rbench.report.figures import _log_x, _save, plt  # the report's palette and style
+    from rbench.report.figures import _figure, _k_x, _key, _plot, _save, _share_y  # the report's palette and style
 
     colors = {"": "#2a78d6", "-q": "#1baf7a", "-raw": "#eda100", "-d": "#8f8e89"}
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.4), squeeze=False, sharey=True)
-    handles = {}
+    markers = {"": "x", "-q": "1", "-raw": "2", "-d": "+"}
+    fig, axes = _figure(1, 2, panel=(4.6, 3.4), sharey=True)
     for j, event in enumerate(("every", "first")):
         ax = axes[0][j]
         for suffix, m in results.items():
-            (handles[suffix],) = ax.plot(KS, [m[f"{event}@{k}"].mean() for k in KS], color=colors[suffix], marker="o",
-                                         markersize=4)
-        _log_x(ax, 2, list(KS))
+            _plot(ax, KS, [m[f"{event}@{k}"].mean() for k in KS], color=colors[suffix], marker=markers[suffix])
+        _k_x(ax, max(KS))
+        _share_y(ax)
         ax.set_title(f"{event}-gold within the top k segments", loc="left")
-        ax.set_xlabel("k segments")
+        ax.set_xlabel("k segments; dots: measured points")
         if j == 0:
             ax.set_ylabel("share of questions")
-    fig.tight_layout(rect=(0, 0, 1, 0.82))
     out = FIGURES / server
     out.mkdir(parents=True, exist_ok=True)
     _save(fig, out / f"embedders__{dataset}__seg{size}__{n}q.png", f"First stage by embedding prompt setup — {dataset}, {n} questions",
-          [handles[k] for k in emb.SETUPS], [LABEL[k] for k in emb.SETUPS], ncol=2)
+          [_key(colors[k], marker=markers[k]) for k in emb.SETUPS], [LABEL[k] for k in emb.SETUPS], ncol=2)

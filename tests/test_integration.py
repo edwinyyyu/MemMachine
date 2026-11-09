@@ -25,4 +25,4 @@ def test_simulate_first_stage_and_references_end_to_end(tmp_path, monkeypatch):
     inside = base <= 8192
     assert np.all(ref[inside] <= base[inside])
     # expanded reading yields defined recall for every query
-    assert np.isfinite(df[df.ranker == "first_stage+x3"]["recall_t1024"]).all()
+    assert np.isfinite(df[df.ranker == "first_stage+x3"]["recall_t1000"]).all()

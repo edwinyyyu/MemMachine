@@ -22,12 +22,6 @@ def test_oracle_puts_gold_first_within_depth():
     assert Ranker("oracle", depth=Depth("n", 3)).order(3, SIMS, None, GOLD).tolist() == [2, 0, 1]
 
 
-def test_fuse_with_full_weight_equals_rerank():
-    a = Ranker("fuse", "m", Depth("n", 5), 1.0).order(5, SIMS, LOGITS, GOLD)
-    b = Ranker("rerank", "m", Depth("n", 5)).order(5, SIMS, LOGITS, GOLD)
-    assert a.tolist() == b.tolist()
-
-
 def test_token_depth_counts_whole_chunks_within_budget():
     tokens = np.array([100, 100, 100])
     assert Depth("t", 250).chunks(tokens) == 2

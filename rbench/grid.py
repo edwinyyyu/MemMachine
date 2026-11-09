@@ -1,8 +1,7 @@
 """The experiment grid. `python -m rbench estimate <stage>` prices a stage; `run` executes it.
 
 LongMemEval-M first (2026-11-06): Qwen3-Reranker-8B on all 470 answerable questions, each
-searching its own history, with EventMemory's segmentation, embedding text, expansion and
-rendering (eventmemory.py, histories.py).
+searching its own history through MemMachine's EventMemory itself (memory.py, histories.py).
 
 Varied:
   segment size     500 characters (EventMemory's default) in the core; 250, 1,000 and 2,000

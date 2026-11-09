@@ -22,8 +22,9 @@ and every bootstrap resample makes its own choice, so the interval includes the 
 variability. The point estimate still takes a minimum over many more reranked than
 unreranked configurations, so it leans optimistic for the reranker.
 
-ratio(tau, x) is the cost of the cheapest configuration at ratio x (the reranker allowed) over
-the chosen no-reranker one; 1 means the reranker does not pay.
+cost_curves gives, per LLM price and target, the total cost with the reranker (its cheapest
+configuration) and without it (the cheapest first-stage configuration): the reranker saves
+money where the first is lower, which happens exactly above the break-even price.
 
 Reranker tokens are counted two ways: as an API bills them (every pair whole) and as a
 server with a prefix cache computes them (shared prompt and query once per query).
@@ -39,8 +40,8 @@ import numpy as np
 from rbench.report.data import Results
 from rbench.report.stats import RESAMPLES
 
-BUDGET_GRID = np.unique(np.round(np.logspace(np.log2(64), np.log2(16384), 97, base=2)))
-TARGETS = np.round(np.arange(0.50, 0.991, 0.01), 2)
+BUDGET_GRID = np.unique(np.round(np.geomspace(50, 16000, 121)))  # 1/14-octave steps
+TARGETS = np.round(np.arange(0.10, 0.991, 0.01), 2)  # every-gold coverage at realistic budgets can be well under 0.5
 EVENT = "every"
 RERANKED = ("rerank", "xrerank")
 
@@ -150,27 +151,29 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
     return point, lo, hi, [a for a, _ in names], [b for _, b in names]
 
 
-def cost_ratio(results: Results, model: str, ratios: np.ndarray, token_field: str = "rr_tokens",
-               event: str = EVENT) -> np.ndarray:
-    """[target, ratio] -> cost (on test) of the cheapest configuration, the reranker allowed,
-    over the chosen no-reranker one (nan where the first stage cannot reach the target).
-    Chosen on dev when there is one, else on the same questions."""
+def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price: float, token_field: str = "rr_tokens",
+                event: str = EVENT) -> dict[float, tuple[np.ndarray, np.ndarray]]:
+    """Total cost in $ per 1,000 questions to reach each coverage target, without and with the
+    reranker: {llm price -> (no reranker [target], reranker [target])}, prices in $ per million
+    tokens. Each side is its cheapest configuration at that price (segment length, expansion and,
+    for the reranker, depth), chosen on dev when there is one, else on the same questions, and
+    measured on test; nan where no configuration of that side reaches the target."""
     pick = "dev" if results.has_dev else "test"
     base, rr = configurations(results, None, event=event), configurations(results, model, token_field, event)
-    out = np.full((len(TARGETS), len(ratios)), np.nan)
-    budgets = {id(c): (min_budgets(c.costs[pick]), min_budgets(c.costs["test"]), c.tokens[pick].mean(), c.tokens["test"].mean())
-               for c in base + rr}
-    for i in range(len(TARGETS)):
-        c0 = min(base, key=lambda c: budgets[id(c)][0][i])
-        b0_pick, b0_test = budgets[id(c0)][0][i], budgets[id(c0)][1][i]
-        if not np.isfinite(b0_test):
-            continue  # nothing to compare against
-        for j, x in enumerate(ratios):
-            best, best_cost = c0, x * b0_pick  # inf when the first stage misses the target
-            for c in rr:
-                b = budgets[id(c)][0][i]
-                if np.isfinite(b) and x * b + budgets[id(c)][2] < best_cost:
-                    best, best_cost = c, x * b + budgets[id(c)][2]
-            b_test, r_test = budgets[id(best)][1][i], (budgets[id(best)][3] if best is not c0 else 0.0)
-            out[i, j] = (x * b_test + r_test) / (x * b0_test) if np.isfinite(b_test) else np.nan
+    b0 = {s: np.asarray([min_budgets(c.costs[s]) for c in base]) for s in ("dev", "test") if len(base[0].costs[s])}
+    b1 = {s: np.asarray([min_budgets(c.costs[s]) for c in rr]) for s in b0} if rr else {}
+    tok = {s: np.asarray([c.tokens[s].mean() for c in rr]) for s in b0} if rr else {}
+    out = {}
+    for p in llm_prices:
+        no, yes = np.full(len(TARGETS), np.nan), np.full(len(TARGETS), np.nan)
+        for i in range(len(TARGETS)):
+            k0 = int(np.argmin(b0[pick][:, i]))
+            if np.isfinite(b0["test"][k0, i]):
+                no[i] = p * b0["test"][k0, i] / 1e3  # $/M tokens x tokens / 1e6 x 1,000 questions
+            if rr:
+                total = p * b1[pick][:, i] + rr_price * tok[pick]
+                k1 = int(np.argmin(np.where(np.isfinite(total), total, np.inf)))
+                if np.isfinite(total[k1]) and np.isfinite(b1["test"][k1, i]):
+                    yes[i] = (p * b1["test"][k1, i] + rr_price * tok["test"][k1]) / 1e3
+        out[p] = (no, yes)
     return out

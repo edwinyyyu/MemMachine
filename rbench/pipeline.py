@@ -31,12 +31,16 @@ _PREPARED: set[tuple] = set()  # (embedder, dataset, chunking, sample) done in t
 
 
 def prepare(run: Run, embedder: str = EMBEDDER) -> None:
-    if info(run.dataset).partitioned:  # one history at a time: segments, vectors (kept), then pools
+    if info(run.dataset).partitioned:  # each history encoded into its EventMemory partition once (kept)
+        from rbench.samples import sample
+        from rbench.schema import queries
+
+        rows = queries(run.dataset)
         for c in run.chunkings:
             if (embedder, run.dataset, c, run.sample) in _PREPARED:
                 continue  # the same stage's other scoring position
             _PREPARED.add((embedder, run.dataset, c, run.sample))
-            hs.build_pools(embedder, run.dataset, _size(c), run.sample)  # embeds what is missing, one pass
+            hs.ingest(embedder, run.dataset, _size(c), [rows[i]["qid"] for i in sample(run.dataset, run.sample)])
         return
     for c in run.chunkings:
         chunking.build(run.dataset, c)

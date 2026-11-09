@@ -19,14 +19,13 @@ The first-stage results come from the same runs, so the benchmark doubles as an 
 | stage | module | output (cached; reruns skip finished work) |
 |---|---|---|
 | prepare | `rbench/datasets/longmemeval.py` | `data/prepared/longmemeval_m/` — one file per history; gold turns and sessions |
-| segment | `rbench/histories.py`, `rbench/eventmemory.py` | EventMemory's production segmenter per turn, in EventMemory's timestamp order; `data/chunks/…/seg<N>/<qid>.npz` |
-| embed | `rbench/histories.py`, `rbench/embedding.py` | EventMemory's embedding text; one float16 file per history, kept |
-| retrieve | `rbench/histories.py` | exact search per history (no database or index needed) |
-| rerank | `rbench/rerankers.py`, `rbench/simulate_histories.py` | seeds or windows rendered as EventMemory renders them; every pair cached by content |
+| ingest | `rbench/histories.py`, `rbench/memory.py` | each history encoded into its own EventMemory partition: MemMachine segments, derives and embeds it; stores kept under `data/memory/<embedder>/<dataset>/seg<N>/` |
+| query | `rbench/simulate_histories.py` | `EventMemory.query` per question and `expand_context` (exact search, MemMachine's own expansion) |
+| rerank | `rbench/rerankers.py`, `rbench/memory.py` | what `EventMemory.query` sends its reranker, collected by querying with a recording reranker; every pair cached by content |
 | simulate | `rbench/simulate_histories.py`, `rbench/reading.py`, `rbench/metrics.py` | one row per question × ranker × depth × expansion; a reranked row reads only its pool; reader cost = tokens of EventMemory's rendered context |
 | report | `rbench/report/` | `results/summary/…md`, `results/figures/…png` |
 
-`rbench/eventmemory.py` is a tested copy of MemMachine's EventMemory functions (`tests/test_eventmemory.py` compares it with MemMachine's own outputs).
+The benchmark runs MemMachine's EventMemory itself, a dependency pinned to its `feat/horizontal-scaling` branch (`043fb7538`, pyproject.toml). `rbench/memory.py` supplies only what a deployment supplies, as implementations of MemMachine's interfaces: an exact vector search engine, the embedder (MemMachine's `OpenAIEmbedder`, against the local server or DeepInfra) and a Qwen3 reranker that reads the score cache. `tests/test_memory.py` checks that replaying reranked configurations from cached scores gives exactly the order of `EventMemory.query` at every vector search limit, and that the admission replay and reader-cost model match `build_query_result_context` and `string_from_query_result`.
 
 ## Running
 
@@ -36,6 +35,7 @@ uv sync
 .venv/bin/python -m rbench prepare longmemeval_m longmemeval_s   # download and split into histories
 .venv/bin/python -m rbench run lme-test                          # free: local, 8 LongMemEval-S histories
 .venv/bin/python -m rbench estimate lme-core lme-sizes lme-depth --embedder gemma300m-di-raw
+.venv/bin/python -m rbench show longmemeval_s --sample tiny --chart coverage,rpf   # zoomable chart windows from saved results
 ```
 
 Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` caps total DeepInfra reranker spend across all models and runs, read from the call logs: it stops before a request group would pass the cap, and never changes what runs. Embedding spend is not capped (see the table). Interrupted runs lose almost nothing: reranker scores are saved per request and embeddings per 1,024 segments, and a rerun skips finished work. Preflight first (METHODOLOGY.md §8):
@@ -57,7 +57,7 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` c
 | lme-depth | 500-character segments, top 200 seeds | ~$2.70 (about $2 beyond core) | — (core's vectors) |
 | **total** | | **~$5.50–6.50** | **~$5.50** |
 
-Before pools exist, `estimate` probes random seeds; retrieved seeds run longer at long segment lengths, so lme-sizes may cost more than shown. Once pools exist, `estimate` counts the exact pairs still to score.
+Before the histories are encoded, `estimate` probes random seeds; retrieved seeds run longer at long segment lengths, so lme-sizes may cost more than shown. Once they are encoded, `estimate` counts the exact pairs still to score.
 
 Disk: keeping every history's vectors takes ~12 GB at 500 characters (float16); the four lengths together are estimated at 40–50 GB.
 
@@ -67,7 +67,6 @@ Disk: keeping every history's vectors takes ~12 GB at 500 characters (float16); 
 rbench/            the package; each module's docstring explains its part of the method
   datasets/        preparers and the registry (active: LongMemEval-M; others kept in INACTIVE)
   report/          tables, figures, break-even frontier, bootstrap statistics
-scripts/           eventmemory_fixtures.py (run with MemMachine installed)
 tests/             unit and integration tests
 data/              downloads and caches (not shipped)
 results/           simulated rows, summaries, figures

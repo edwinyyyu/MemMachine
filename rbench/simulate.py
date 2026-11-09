@@ -11,11 +11,11 @@ windows' text, which a separate scoring run produces (grid.Run.expand).
 
 Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>__<instruction>__<render>.parquet
   qid, split, cluster, chunking            the query; `cluster` is what intervals resample
-  ranker, kind, model, depth, weight, expand   the configuration (rankers.Ranker)
+  ranker, kind, model, depth, expand   the configuration (rankers.Ranker)
   pairs, rr_tokens, rr_prefix_tokens       reranker cost: pairs scored, Qwen3 tokens as an API
                                            bills them (every pair whole), and as a server with a
                                            prefix cache computes them (prompt and query once)
-  oracle_pairs                             the depth the gold-first reference reorders
+  oracle_pairs                             the depth the perfect reranker reorders
   metrics.FIELDS                           coverage costs (union reader tokens), ranks, recall,
                                            precision
 """
@@ -66,7 +66,7 @@ def check_inputs(dataset: str, table: chunking.ChunkTable, pools: retrieval.Pool
 
 
 def gold_priority(chunk_sets: list[set[int]], union: dict[int, int], cheapest: set[int]) -> np.ndarray:
-    """The gold-first reference's sort key per head item: 2 if it holds a chunk of the cheapest
+    """The perfect reranker's sort key per head item: 2 if it holds a chunk of the cheapest
     complete answer, 1 if it holds other gold, else 0."""
     return np.asarray([2 if cs & cheapest else 1 if any(c in union for c in cs) else 0 for cs in chunk_sets])
 
@@ -138,10 +138,12 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
             continue
         meta = {"qid": [rows[i]["qid"] for i in picked], "split": [rows[i]["split"] for i in picked],
                 "cluster": [cluster_of(dataset, rows[i]) for i in picked], "chunking": chunking_name, "ranker": r.id,
-                "kind": r.kind, "model": r.model, "depth": r.depth.label if r.depth else None, "weight": r.weight,
+                "kind": r.kind, "model": r.model, "depth": r.depth.label if r.depth else None,
                 "expand": r.expand}
         frames.append(pd.concat([pd.DataFrame(meta), pd.DataFrame(records[r.id], columns=COLUMNS)], axis=1))
     out = pd.concat(frames, ignore_index=True)
+    curves = [c for c in out.columns if c.startswith(("recall_", "precision_"))]
+    out[curves] = out[curves].astype("float32")  # ~230 curve columns per row; float32 halves the files
     target = path(embedder, dataset, scope, variant, sample_name, chunking_name, instruction, render_mode)
     target.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(target, index=False)

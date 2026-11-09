@@ -1,7 +1,14 @@
-"""Reader cost of EventMemory's query result: tokens of the string the LLM receives.
+"""Reader cost of EventMemory's query result: tokens of the string the LLM receives, as the
+segment limit (max_num_segments) grows.
+
+Admission (`admission`) replays EventMemory.build_query_result_context for every limit at
+once: contexts in score order, each one's new segments nearest its seed first (forward before
+backward), so the admitted set at limit L is the first L of the order. Calling MemMachine's
+function at every limit of every configuration would be quadratic; tests/test_memory.py checks
+the replay against it.
 
 As a query result's segment limit grows by one, EventMemory admits one more segment
-(eventmemory.admission_order) and renders the admitted set (string_from_segment_contexts):
+(`admission` below) and renders the admitted set (string_from_segment_contexts):
 contexts restricted to admitted segments are joined into components when they share one,
 components are ordered chronologically and separated by a blank line, and each run of one
 event block's consecutive segments gets one '[timestamp] producer: ' header and its text as
@@ -29,6 +36,27 @@ from functools import cache
 import numpy as np
 
 from rbench.text import GEMMA, count
+
+
+def seed_proximity(position: int, seed_position: int) -> float:
+    """EventMemory._seed_proximity: lower is closer; forward context is preferred over backward."""
+    offset = position - seed_position
+    return (offset - 0.5) / 2 if offset >= 0 else -offset
+
+
+def admission(contexts: Sequence[Sequence[int]], seeds: Sequence[int]) -> list[tuple[int, int]]:
+    """Segments in the order build_query_result_context admits them as its limit grows by one,
+    each with the index of the context that admitted it (contexts as id lists in the
+    partition's order, in score order; a context that fits whole is admitted whole either way,
+    so the within-context order only matters for the last one)."""
+    out, seen = [], set()
+    for k, (context, seed) in enumerate(zip(contexts, seeds, strict=True)):
+        seed_position = context.index(seed)
+        for i in sorted(range(len(context)), key=lambda i: seed_proximity(i, seed_position)):
+            if context[i] not in seen:
+                seen.add(context[i])
+                out.append((context[i], k))
+    return out
 
 
 @cache
