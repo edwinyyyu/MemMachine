@@ -1,0 +1,280 @@
+"""Qwen3 rerankers: input format, backends, the score cache, and the spend cap.
+
+Input format, as the model card builds it: the string
+"<Instruct>: {instruction}\\n<Query>: {query}\\n<Document>: {document}" is tokenized in one
+piece and cut from the end to fit, then wrapped in a fixed system prompt (PREFIX) and an
+assistant turn with an empty think block (SUFFIX). A pair is at most MAX_PAIR_TOKENS. The
+score is the next-token logit of "yes" minus that of "no" (locally); DeepInfra returns
+P(yes), the sigmoid of the same quantity, and `to_logit` puts both on one scale. Documents
+sent to DeepInfra are cut client-side the same way, so billing matches our count.
+
+Every pair is scored independently, so a pool scored to depth D answers every shallower
+depth, top-k and reader budget without scoring again. Scores are cached by content:
+(prompt fingerprint, render, query text, document text). The fingerprint hashes the
+instruction's text with the prompt template, so editing either never reuses old scores.
+
+Renders: "plain" is the chunk text. "em" is how EventMemory's rerank() presents a hit: a
+timestamp-and-producer header, then the text as a JSON string.
+
+Spend: every paid request is cached and logged as soon as it returns, so a failure loses
+nothing already paid for. (A request retried after a timeout may have been billed for the
+attempt that timed out; that attempt is not logged, so logged spend can slightly undercount.) The cap (`max_usd`) is TOTAL DeepInfra spend across all models
+and all runs so far, read from the call logs, and is checked before every group of
+requests against its exact token count.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import sqlite3
+import time
+from dataclasses import dataclass
+from functools import cache
+
+import numpy as np
+
+from rbench.datasets import info
+from rbench.paths import SCORES, SECRETS
+from rbench.text import QWEN, tokenizer
+
+PREFIX = (
+    "<|im_start|>system\nJudge whether the Document meets the requirements based on the "
+    'Query and the Instruct provided. Note that the answer can only be "yes" or "no".'
+    "<|im_end|>\n<|im_start|>user\n"
+)
+SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+FORMAT = "<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {document}"
+MAX_PAIR_TOKENS = 8192
+INSTRUCTIONS = {
+    "default": "Given a web search query, retrieve relevant passages that answer the query",
+    "chat": "Given a user's message to an assistant, retrieve passages that help the assistant respond to it",
+}
+EM_HEADER = "[Thursday, October 23, 2026 at 2:05 PM] user: "
+SATURATED = 1e-15  # P(yes) this close to 0 or 1 is clipped; exact 0s and 1s tie (preflight.smoke reports them)
+
+
+@dataclass(frozen=True)
+class Reranker:
+    name: str
+    hf_model: str
+    backend: str  # "local" (transformers on this machine) or "deepinfra"
+    usd_per_mtok: float | None  # DeepInfra list price, checked 2026-11-05
+
+
+RERANKERS = {
+    "q06-local": Reranker("q06-local", "Qwen/Qwen3-Reranker-0.6B", "local", None),
+    "q06": Reranker("q06", "Qwen/Qwen3-Reranker-0.6B", "deepinfra", 0.010),
+    "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025),
+    "q8": Reranker("q8", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050),
+}
+PAID = [m for m, r in RERANKERS.items() if r.backend == "deepinfra"]
+
+
+def instruction_text(instruction: str, dataset: str) -> str:
+    return info(dataset).instruction if instruction == "task" else INSTRUCTIONS[instruction]
+
+
+def prompt_key(instruction_text_: str) -> str:
+    """Fingerprint of everything around the query and document that the model reads."""
+    return _h(PREFIX + FORMAT + SUFFIX + instruction_text_)[:12]
+
+
+def render(text: str, mode: str) -> str:
+    return text if mode == "plain" else EM_HEADER + json.dumps(text, ensure_ascii=False)
+
+
+def _h(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()
+
+
+@cache
+def _fixed_ids() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    t = tokenizer(QWEN)
+    return tuple(t.encode(PREFIX, add_special_tokens=False).ids), tuple(t.encode(SUFFIX, add_special_tokens=False).ids)
+
+
+def _room() -> int:
+    prefix, suffix = _fixed_ids()
+    return MAX_PAIR_TOKENS - len(prefix) - len(suffix)
+
+
+def pair_ids(query: str, documents: list[str], instruction: str) -> list[list[int]]:
+    """Token ids of each pair exactly as the model card builds them."""
+    prefix, suffix = _fixed_ids()
+    texts = [FORMAT.format(instruction=instruction, query=query, document=d) for d in documents]
+    return [list(prefix) + e.ids[: _room()] + list(suffix)
+            for e in tokenizer(QWEN).encode_batch(texts, add_special_tokens=False)]
+
+
+def fit_document(query: str, document: str, instruction: str) -> str:
+    """The document cut so its pair fits MAX_PAIR_TOKENS (what is sent to an API)."""
+    text = FORMAT.format(instruction=instruction, query=query, document=document)
+    e = tokenizer(QWEN).encode(text, add_special_tokens=False)
+    if len(e.ids) <= _room():
+        return document
+    head = len(text) - len(document)
+    return text[head : e.offsets[_room()][0]]
+
+
+def pair_overhead(query: str, instruction: str) -> int:
+    """Tokens every pair repeats before its document (prompt, instruction, query): what a
+    server with a prefix cache computes once per query."""
+    head = FORMAT.format(instruction=instruction, query=query, document="").rstrip()
+    return len(_fixed_ids()[0]) + len(tokenizer(QWEN).encode(head, add_special_tokens=False).ids)
+
+
+def to_logit(reranker: str, scores: np.ndarray) -> np.ndarray:
+    """Cached scores on one scale (yes-no logit) whatever the backend returned."""
+    if RERANKERS[reranker].backend == "local":
+        return scores
+    p = np.clip(scores, SATURATED, 1 - SATURATED)  # keeps all the resolution a double carries
+    return np.log(p) - np.log1p(-p)
+
+
+# ------------------------------------------------------------------------- cache
+
+
+class ScoreCache:
+    def __init__(self, reranker: str):
+        SCORES.mkdir(parents=True, exist_ok=True)
+        self.reranker = reranker
+        self.db = sqlite3.connect(SCORES / f"{reranker}.sqlite")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS scores (key TEXT PRIMARY KEY, score REAL, tokens INTEGER)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS calls (at REAL, pairs INTEGER, tokens INTEGER, billed INTEGER, "
+                        "cost REAL, seconds REAL, note TEXT)")
+
+    @staticmethod
+    def key(prompt: str, mode: str, query: str, document: str) -> str:
+        return f"{prompt}|{mode}|{_h(query)[:16]}|{_h(document)[:16]}"
+
+    def get(self, keys: list[str]) -> dict[str, tuple[float, int]]:
+        out = {}
+        for start in range(0, len(keys), 900):  # SQLite's bound-parameter limit
+            part = keys[start : start + 900]
+            sql = f"SELECT key, score, tokens FROM scores WHERE key IN ({','.join('?' * len(part))})"
+            out.update({k: (s, n) for k, s, n in self.db.execute(sql, part)})
+        return out
+
+    def put(self, rows: list[tuple[str, float, int]], call: tuple) -> None:
+        with self.db:
+            self.db.executemany("INSERT OR REPLACE INTO scores VALUES (?, ?, ?)", rows)
+            self.db.execute("INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?)", call)
+
+    def spent_usd(self) -> float:
+        """Cost so far: the API's reported cost per call, else billed (or counted) tokens at list price."""
+        price = RERANKERS[self.reranker].usd_per_mtok or 0.0
+        row = self.db.execute("SELECT SUM(CASE WHEN cost > 0 THEN cost ELSE COALESCE(NULLIF(billed, 0), tokens) * ? / 1e6 END) "
+                              "FROM calls", (price,)).fetchone()
+        return float(row[0] or 0.0)
+
+
+def total_spent_usd() -> float:
+    return sum(ScoreCache(m).spent_usd() for m in PAID)
+
+
+# ---------------------------------------------------------------------- backends
+
+Work = list[tuple[str, list[tuple[str, str]]]]  # (query, [(cache key, document)])
+DEEPINFRA_URL = "https://api.deepinfra.com/v1/inference/"
+REQUEST_DOCS = 32
+REQUEST_TOKENS = 24000
+IN_FLIGHT = 16
+GROUP_QUERIES = 16
+
+
+def _local(model: str, work: Work, instruction: str, cache_: ScoreCache, note: str) -> None:
+    from rbench import qwen_local
+
+    rows, keys = [], []
+    for query, items in work:
+        rows += pair_ids(query, [d for _, d in items], instruction)
+        keys += [k for k, _ in items]
+    t0 = time.monotonic()
+    scores = qwen_local.score_rows(rows, model)
+    out = [(k, float(s), len(r)) for k, s, r in zip(keys, scores, rows, strict=True)]
+    cache_.put(out, (time.time(), len(out), sum(n for *_, n in out), 0, 0.0, time.monotonic() - t0, note))
+
+
+async def _deepinfra(model: str, work: Work, instruction: str, cache_: ScoreCache, note: str) -> None:
+    """Score with DeepInfra, caching and logging each request as soon as it returns."""
+    import httpx
+
+    key = (SECRETS / "deepinfra_api_key").read_text().strip()
+    requests = []
+    for query, items in work:
+        lengths = [len(r) for r in pair_ids(query, [d for _, d in items], instruction)]
+        batch, size = [], 0
+        for (k, d), n in zip(items, lengths, strict=True):
+            if batch and (len(batch) == REQUEST_DOCS or size + n > REQUEST_TOKENS):
+                requests.append((query, batch))
+                batch, size = [], 0
+            batch.append((k, fit_document(query, d, instruction), n))
+            size += n
+        if batch:
+            requests.append((query, batch))
+    semaphore = asyncio.Semaphore(IN_FLIGHT)
+    async with httpx.AsyncClient(timeout=300, headers={"Authorization": f"bearer {key}"}) as client:
+
+        async def run(query: str, batch: list[tuple[str, str, int]]) -> None:
+            body = {"queries": [query] * len(batch), "documents": [d for _, d, _ in batch], "instruction": instruction}
+            t0 = time.monotonic()
+            for attempt in range(8):
+                async with semaphore:
+                    try:
+                        response = await client.post(DEEPINFRA_URL + model, json=body)
+                    except httpx.TransportError:
+                        response = None
+                if response is not None and response.status_code == 200:
+                    break
+                if response is not None and response.status_code not in (429, 500, 502, 503, 504):
+                    raise RuntimeError(f"DeepInfra {response.status_code}: {response.text[:300]}")
+                await asyncio.sleep(min(60, 2**attempt))
+            else:
+                raise RuntimeError("DeepInfra: retries exhausted")
+            data = response.json()
+            if len(data["scores"]) != len(batch):
+                raise RuntimeError(f"DeepInfra returned {len(data['scores'])} scores for {len(batch)} documents")
+            status = data.get("inference_status") or {}
+            billed = int(data.get("input_tokens") or status.get("tokens_input") or 0)
+            rows = [(k, float(s), n) for (k, _, n), s in zip(batch, data["scores"], strict=True)]
+            cache_.put(rows, (time.time(), len(rows), sum(n for *_, n in rows), billed, float(status.get("cost") or 0.0),
+                              time.monotonic() - t0, note))
+
+        results = await asyncio.gather(*(run(q, b) for q, b in requests), return_exceptions=True)
+    failures = [r for r in results if isinstance(r, BaseException)]
+    if failures:
+        raise RuntimeError(f"{len(failures)} of {len(requests)} requests failed (the rest are cached): {failures[0]}")
+
+
+def score(reranker: str, work: Work, instruction: str, note: str, max_usd: float | None = None) -> None:
+    """Score work in groups, checking the total spend cap before each group of a paid model."""
+    spec, cache_ = RERANKERS[reranker], ScoreCache(reranker)
+    if spec.backend != "local" and max_usd is None:
+        raise SystemExit("a paid backend needs a spend cap (--max-usd, total across models)")
+    todo = sum(len(items) for _, items in work)
+    done, started = 0, time.monotonic()
+    for g in range(0, len(work), GROUP_QUERIES):
+        group = work[g : g + GROUP_QUERIES]
+        if spec.backend == "local":
+            _local(spec.hf_model, group, instruction, cache_, note)
+        else:
+            tokens = sum(len(r) for q, items in group for r in pair_ids(q, [d for _, d in items], instruction))
+            spent = total_spent_usd()
+            if spent + tokens / 1e6 * spec.usd_per_mtok > max_usd:
+                raise SystemExit(f"spend cap: ${spent:.2f} spent + ${tokens / 1e6 * spec.usd_per_mtok:.2f} > ${max_usd:.2f}")
+            asyncio.run(_deepinfra(spec.hf_model, group, instruction, cache_, note))
+        done += sum(len(items) for _, items in group)
+        rate = done / (time.monotonic() - started)
+        print(f"  {done}/{todo} pairs, {rate:.0f} pairs/s, eta {(todo - done) / rate / 60:.1f} min", flush=True)
+
+
+# -------------------------------------------------------------------- pool depth
+
+
+def depth(head_tokens, pool_tokens: int, min_depth: int) -> int:
+    """How many head items to score: until pool_tokens tokens, at least min_depth."""
+    cum = np.cumsum(head_tokens)
+    return int(min(len(head_tokens), max(min_depth, np.searchsorted(cum, pool_tokens, "left") + 1)))
