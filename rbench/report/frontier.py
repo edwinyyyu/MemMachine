@@ -16,10 +16,9 @@ For a coverage target tau (every-gold by default: all of a question's evidence i
   2. r* = R / (B0 - B) for those two, infinite if the reranked one is not cheaper in reader
      tokens.
   3. Bootstrap question clusters for an interval on r*.
-With a dev split, step 1 uses dev and steps 2-3 use test with the choice fixed. Without one
-(LongMemEval: decided 2026-11-06), the choice and the measurement use the same questions,
-and every bootstrap resample makes its own choice, so the interval includes the selection's
-variability. The point estimate still takes a minimum over many more reranked than
+There is no dev split (decided 2026-11-06): the choice and the measurement use the same
+questions, and every bootstrap resample makes its own choice, so the interval includes the
+selection's variability. The point estimate still takes a minimum over many more reranked than
 unreranked configurations, so it leans optimistic for the reranker.
 
 cost_curves gives, per LLM price and target, the total cost with the reranker (its cheapest
@@ -58,20 +57,19 @@ def min_budgets(costs: np.ndarray, targets: np.ndarray = TARGETS) -> np.ndarray:
 @dataclass
 class Config:
     name: tuple[str, str]  # (chunking, ranker)
-    costs: dict[str, np.ndarray]  # split -> event cost per query (sorted by qid)
-    tokens: dict[str, np.ndarray]  # split -> reranker tokens per query
+    costs: np.ndarray  # event cost per query (sorted by qid)
+    tokens: np.ndarray  # reranker tokens per query
 
 
 def configurations(results: Results, model: str | None, token_field: str = "rr_tokens", event: str = EVENT) -> list[Config]:
     """Every configuration of one model (reranking seeds or windows, read alone or expanded,
     default instruction and render); model None means every no-reranker configuration."""
-    d = results.select(split=None, expand=None)
+    d = results.select(expand=None)
     d = d[d.kind == "first_stage"] if model is None else d[d.kind.isin(RERANKED) & (d.model == model)]
     out = []
     for name, g in d.groupby(["chunking", "ranker"]):
         g = g.sort_values("qid")
-        out.append(Config(name, {s: g.loc[g.split == s, event].to_numpy() for s in ("dev", "test")},
-                          {s: g.loc[g.split == s, token_field].to_numpy() for s in ("dev", "test")}))
+        out.append(Config(name, g[event].to_numpy(), g[token_field].to_numpy()))
     return out
 
 
@@ -80,12 +78,12 @@ def _clusters(results: Results) -> np.ndarray:
     return d[(d.chunking == d.chunking.iloc[0]) & (d.ranker == "first_stage")].sort_values("qid").cluster.to_numpy()
 
 
-def _choose(base: list[Config], rr: list[Config], split: str, index: np.ndarray | None):
+def _choose(base: list[Config], rr: list[Config], index: np.ndarray | None):
     """Per target: (index of the chosen no-reranker config, index of the chosen reranked one or None)."""
     take = (lambda a: a) if index is None else (lambda a: a[index])
-    b0 = np.asarray([min_budgets(take(c.costs[split])) for c in base])  # [config, target]
-    b1 = np.asarray([min_budgets(take(c.costs[split])) for c in rr]) if rr else np.zeros((0, len(TARGETS)))
-    tok = np.asarray([take(c.tokens[split]).mean() for c in rr])
+    b0 = np.asarray([min_budgets(take(c.costs)) for c in base])  # [config, target]
+    b1 = np.asarray([min_budgets(take(c.costs)) for c in rr]) if rr else np.zeros((0, len(TARGETS)))
+    tok = np.asarray([take(c.tokens).mean() for c in rr])
     out = []
     for i in range(len(TARGETS)):
         k0 = int(np.argmin(b0[:, i]))
@@ -107,7 +105,7 @@ def _r_star(base: list[Config], rr: list[Config], chosen, index: np.ndarray | No
 
     def budgets(kind: str, k: int, configs: list[Config]) -> np.ndarray:
         if (kind, k) not in cache:
-            cache[(kind, k)] = min_budgets(take(configs[k].costs["test"]))
+            cache[(kind, k)] = min_budgets(take(configs[k].costs))
         return cache[(kind, k)]
 
     for i, (k0, k1) in enumerate(chosen):
@@ -119,7 +117,7 @@ def _r_star(base: list[Config], rr: list[Config], chosen, index: np.ndarray | No
         if not np.isfinite(b0):
             out[i] = 0.0 if np.isfinite(b1) else np.nan  # 0: only the reranker reaches the target
         else:
-            out[i] = take(rr[k1].tokens["test"]).mean() / (b0 - b1) if b1 < b0 else np.inf
+            out[i] = take(rr[k1].tokens).mean() / (b0 - b1) if b1 < b0 else np.inf
     return out
 
 
@@ -129,10 +127,8 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
 
     r* is inf where the chosen reranked configuration is not cheaper, 0 where only the
     reranker reaches the target (cheaper at any price), and nan where nothing does."""
-    held_out = results.has_dev
-    pick = "dev" if held_out else "test"
     base, rr = configurations(results, None, event=event), configurations(results, model, token_field, event)
-    chosen = _choose(base, rr, pick, None)
+    chosen = _choose(base, rr, None)
     point = _r_star(base, rr, chosen, None)
     lo = hi = np.full(len(TARGETS), np.nan)
     if with_interval:
@@ -143,7 +139,7 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
         draws = []
         for _ in range(RESAMPLES):
             index = np.concatenate([members[k] for k in rng.integers(0, len(labels), len(labels))])
-            draws.append(_r_star(base, rr, chosen if held_out else _choose(base, rr, "test", index), index))
+            draws.append(_r_star(base, rr, _choose(base, rr, index), index))
         draws = np.asarray(draws)
         with np.errstate(invalid="ignore"):
             lo, hi = np.nanpercentile(np.where(np.isinf(draws), 1e12, draws), [2.5, 97.5], axis=0)
@@ -156,24 +152,23 @@ def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price:
     """Total cost in $ per 1,000 questions to reach each coverage target, without and with the
     reranker: {llm price -> (no reranker [target], reranker [target])}, prices in $ per million
     tokens. Each side is its cheapest configuration at that price (segment length, expansion and,
-    for the reranker, depth), chosen on dev when there is one, else on the same questions, and
-    measured on test; nan where no configuration of that side reaches the target."""
-    pick = "dev" if results.has_dev else "test"
+    for the reranker, depth), chosen and measured on the same questions; nan where no
+    configuration of that side reaches the target."""
     base, rr = configurations(results, None, event=event), configurations(results, model, token_field, event)
-    b0 = {s: np.asarray([min_budgets(c.costs[s]) for c in base]) for s in ("dev", "test") if len(base[0].costs[s])}
-    b1 = {s: np.asarray([min_budgets(c.costs[s]) for c in rr]) for s in b0} if rr else {}
-    tok = {s: np.asarray([c.tokens[s].mean() for c in rr]) for s in b0} if rr else {}
+    b0 = np.asarray([min_budgets(c.costs) for c in base])
+    b1 = np.asarray([min_budgets(c.costs) for c in rr]) if rr else np.zeros((0, len(TARGETS)))
+    tok = np.asarray([c.tokens.mean() for c in rr])
     out = {}
     for p in llm_prices:
         no, yes = np.full(len(TARGETS), np.nan), np.full(len(TARGETS), np.nan)
         for i in range(len(TARGETS)):
-            k0 = int(np.argmin(b0[pick][:, i]))
-            if np.isfinite(b0["test"][k0, i]):
-                no[i] = p * b0["test"][k0, i] / 1e3  # $/M tokens x tokens / 1e6 x 1,000 questions
+            cheapest = float(np.min(b0[:, i]))
+            if np.isfinite(cheapest):
+                no[i] = p * cheapest / 1e3  # $/M tokens x tokens / 1e6 x 1,000 questions
             if rr:
-                total = p * b1[pick][:, i] + rr_price * tok[pick]
-                k1 = int(np.argmin(np.where(np.isfinite(total), total, np.inf)))
-                if np.isfinite(total[k1]) and np.isfinite(b1["test"][k1, i]):
-                    yes[i] = (p * b1["test"][k1, i] + rr_price * tok["test"][k1]) / 1e3
+                total = p * b1[:, i] + rr_price * tok
+                best = float(np.min(np.where(np.isfinite(total), total, np.inf)))
+                if np.isfinite(best):
+                    yes[i] = best / 1e3
         out[p] = (no, yes)
     return out

@@ -17,9 +17,8 @@ Sections, each answering one question (README lists which question maps where):
  14 EventMemory settings at each reader budget
  15 Reranker latency (a by-product)
 (12, LongMemEval-style session recall, was removed; numbers are kept so references stay valid.)
-Coverage is over the evaluated (test) questions. Choices among configurations are made on dev
-when the dataset has a dev split, else on the same questions (LongMemEval has none, by
-decision), and each such section says which. Intervals: stats.interval.
+Coverage is over all questions (there is no dev split, by decision): choices among
+configurations are made and measured on the same questions, and each such section says so. Intervals: stats.interval.
 History datasets add the expanded configurations to sections 3 and 6-7: the first stage
 and rerank-then-expand at every replayed expand_context, expand-then-rerank where scored.
 """
@@ -109,7 +108,7 @@ def _expanded(r: Results, depth: str | None, models: list[str]) -> list[str]:
 
 
 def _chooser(r: Results) -> str:
-    return "dev" if r.has_dev else "the same questions (no dev split)"
+    return "the same questions (no dev split)"
 
 
 def equal_reader_tokens(r: Results, event: str) -> list[str]:
@@ -164,7 +163,7 @@ def overfetch(r: Results, event: str) -> list[str]:
     out = ["## 5. Overfetch\n", "Coverage at 1,000 / 4,000 reader tokens by rerank depth (chunks); reranker "
            "tokens per query in parentheses; '=' where the pool is exhausted.\n"]
     for m in r.models:
-        d = r.select(split=None, kind="rerank", model=m)
+        d = r.select(kind="rerank", model=m)
         depths = sorted({x for x in d.depth if x.startswith("n")}, key=lambda x: int(x[1:]))
         out += [f"**{m}**\n", "| chunking | none | " + " | ".join(depths) + " |", "|---|---|" + "---|" * len(depths)]
         for c in r.chunkings:
@@ -184,16 +183,15 @@ def overfetch(r: Results, event: str) -> list[str]:
 
 
 def equal_reranker_tokens(r: Results, event: str) -> list[str]:
-    split = "dev" if r.has_dev else "test"
     out = ["## 6. Equal reranker tokens: candidates vs chunk size\n",
            f"Best chunking and reranked configuration (seeds or windows, any expansion, any depth) whose mean reranker "
-           f"tokens fit each budget, chosen on {_chooser(r)}; cells are test coverage.\n"]
+           f"tokens fit each budget, chosen on {_chooser(r)}; cells are coverage.\n"]
     test = r.select(expand=None)
     families = sorted({c[:3] for c in r.chunkings})
     for m in r.models:
         out += [f"**{m}**\n", "| reranker tokens | chunker | " + " | ".join(f"reader {b}" for b in (500, 1000, 2000, 4000)) + " |",
                 "|---|---|---|---|---|---|"]
-        cands = r.select(split=split, model=m, expand=None)
+        cands = r.select(model=m, expand=None)
         cands = cands[cands.kind.isin(frontier.RERANKED)]
         cost = cands.groupby(["chunking", "ranker"]).rr_tokens.mean()
         for R in RERANK_BUDGETS:
@@ -218,8 +216,7 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
 
 
 def worth_it(r: Results, event: str) -> list[str]:
-    pick = ("dev, and r* is measured on test with a 95% interval" if r.has_dev else
-            "the same questions they are measured on (no dev split), with a 95% interval whose every resample makes "
+    pick = ("the same questions they are measured on (no dev split), with a 95% interval whose every resample makes "
             "its own choice; the minimum over many reranked configurations leans optimistic for the reranker")
     out = ["## 7. Worth the money: break-even price ratio\n",
            f"{event}-gold coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
@@ -440,7 +437,7 @@ def latency(r: Results) -> list[str]:
 
 def write(r: Results, event: str = "first") -> str:
     head = [f"# {r.dataset} · {r.scope} · {r.variant} · {r.sample} · {event} gold\n", GLOSSARY,
-            f"Embedder {r.embedder}. {r.test.qid.nunique()} test and {r.df[r.df.split == 'dev'].qid.nunique()} dev queries. "
+            f"Embedder {r.embedder}. {r.df.qid.nunique()} questions, all evaluated (no dev split). "
             f"Rerankers: {', '.join(r.models) or 'none'}.\n"]
     body = (first_stage(r, event) + headroom(r, event) + equal_reader_tokens(r, event) + token_savings(r, event)
             + overfetch(r, event) + equal_reranker_tokens(r, event) + (worth_it(r, event) if event == "every" else [])

@@ -29,14 +29,6 @@ class Results:
     df: pd.DataFrame
 
     @property
-    def test(self) -> pd.DataFrame:
-        return self.df[self.df.split == "test"]
-
-    @property
-    def has_dev(self) -> bool:
-        return bool((self.df.split == "dev").any())
-
-    @property
     def expansions(self) -> list[int]:
         """expand_context values simulated (above 0)."""
         return sorted(int(e) for e in self.df.expand.unique() if e > 0)
@@ -57,21 +49,19 @@ class Results:
         renders = set(self.df.render)
         return "plain" if "plain" in renders else sorted(renders)[0]
 
-    def rows(self, chunking: str, ranker: str, split: str = "test", instruction: str = "default",
+    def rows(self, chunking: str, ranker: str, instruction: str = "default",
              render: str | None = None) -> pd.DataFrame:
         """One configuration's rows, sorted by qid so configurations align query by query."""
         render = render or self.render
         d = self.df
-        return d[(d.chunking == chunking) & (d.ranker == ranker) & (d.split == split) & (d.instruction == instruction)
+        return d[(d.chunking == chunking) & (d.ranker == ranker) & (d.instruction == instruction)
                  & (d.render == render)].sort_values("qid")
 
-    def select(self, split: str | None = "test", kind: str | None = None, model: str | None = None,
+    def select(self, kind: str | None = None, model: str | None = None,
                expand: int | None = 0, instruction: str = "default", render: str | None = None) -> pd.DataFrame:
         """Rows with the sweep factors pinned (default instruction, plain render, no expansion)
         unless asked otherwise, so a section never mixes in another sweep's configurations."""
         d = self.df[(self.df.instruction == instruction) & (self.df.render == (render or self.render))]
-        if split is not None:
-            d = d[d.split == split]
         if expand is not None:
             d = d[d.expand == expand]
         if kind is not None:
@@ -82,7 +72,7 @@ class Results:
 
     def models_at(self, chunking: str) -> list[str]:
         """Models with plain reranked rows at this chunking (sweeps score only some models)."""
-        d = self.select(split=None, kind="rerank")
+        d = self.select(kind="rerank")
         found = set(d.loc[d.chunking == chunking, "model"])
         return [m for m in MODEL_ORDER if m in found]
 
@@ -91,7 +81,7 @@ class Results:
         scores there are left out rather than hiding the others): a token depth where there are
         any (the flat datasets), else a count depth (the history datasets: a vector search
         limit)."""
-        d = self.select(split=None, kind="rerank")
+        d = self.select(kind="rerank")
         d = d[d.chunking == chunking]
         shared = None
         for m in [m for m in (models or self.models_at(chunking)) if m in self.models_at(chunking)]:
@@ -119,7 +109,7 @@ class Results:
 
     def depths_at(self, chunking: str, model: str) -> list[str]:
         """Count depths (vector search limits) a model's reranked rows exist at, shallowest first."""
-        d = self.select(split=None, kind="rerank", model=model)
+        d = self.select(kind="rerank", model=model)
         return sorted({x for x in d.loc[d.chunking == chunking, "depth"] if x.startswith("n")}, key=lambda x: int(x[1:]))
 
 

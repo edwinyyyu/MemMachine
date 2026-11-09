@@ -1,5 +1,5 @@
-"""Break-even ratios and relative cost on constructed result sets: chosen on dev and scored on test
-when there is a dev split, else chosen and scored on the same questions."""
+"""Break-even ratios and relative cost on constructed result sets, chosen and measured on the
+same questions (there is no dev split)."""
 
 import numpy as np
 import pandas as pd
@@ -8,19 +8,17 @@ from rbench.report import frontier
 from rbench.report.data import Results
 
 
-def results(test_reranked_cost: float = 500.0) -> Results:
-    """First stage: every query's gold costs 2,000 reader tokens. Reranked: 500 on dev and
-    `test_reranked_cost` on test, for 10,000 reranker tokens."""
+def results(reranked_cost: float = 500.0) -> Results:
+    """First stage: every query's gold costs 2,000 reader tokens. Reranked: `reranked_cost`, for
+    10,000 reranker tokens."""
     rows = []
-    for split, n in (("dev", 60), ("test", 100)):
-        for q in range(n):
-            common = dict(qid=f"{split}{q}", split=split, cluster=f"{split}{q}", chunking="rec256", expand=0,
-                          instruction="default", render="plain")
-            rows.append(dict(common, ranker="first_stage", kind="first_stage", model=None, depth=None, first=2000.0,
-                             rr_tokens=0.0, rr_prefix_tokens=0.0))
-            rows.append(dict(common, ranker="rerank:q8@t8192", kind="rerank", model="q8", depth="t8192",
-                             first=500.0 if split == "dev" else test_reranked_cost, rr_tokens=10000.0,
-                             rr_prefix_tokens=4000.0))
+    for q in range(100):
+        common = dict(qid=f"q{q}", split="test", cluster=f"q{q}", chunking="rec256", expand=0,
+                      instruction="default", render="plain")
+        rows.append(dict(common, ranker="first_stage", kind="first_stage", model=None, depth=None, first=2000.0,
+                         rr_tokens=0.0, rr_prefix_tokens=0.0))
+        rows.append(dict(common, ranker="rerank:q8@t8192", kind="rerank", model="q8", depth="t8192",
+                         first=reranked_cost, rr_tokens=10000.0, rr_prefix_tokens=4000.0))
     return _results(rows)
 
 
@@ -43,9 +41,8 @@ def test_break_even_is_reranker_tokens_over_reader_tokens_saved():
     assert lo[i] <= point[i] <= hi[i]
 
 
-def test_break_even_is_measured_on_test_not_dev():
-    # chosen on dev (where reranking saves 1,500 tokens), but on test it saves nothing
-    point, *_ = frontier.break_even(results(test_reranked_cost=2000.0), "q8", with_interval=False)
+def test_no_saving_means_never_cheaper():
+    point, *_ = frontier.break_even(results(reranked_cost=2000.0), "q8", with_interval=False)
     i = int(np.argmin(np.abs(frontier.TARGETS - 0.9)))
     assert np.isinf(point[i])
 
@@ -62,22 +59,20 @@ def test_reranking_pays_only_above_the_break_even_price():
     assert yes[2][i] / no[2][i] < yes[1][i] / no[1][i]  # and saves a larger share as the reader gets dearer
 
 
-def test_reranker_chosen_even_when_first_stage_misses_on_dev():
-    # first stage reaches 70% of dev queries but 90% of test; the reranker reaches everything at 500 tokens
+def test_only_the_reranker_reaching_a_target_is_cheaper_at_any_price():
+    # the first stage reaches 90% of questions; the reranker reaches all of them at 500 tokens
     rows = []
-    for split, n, reach in (("dev", 100, 70), ("test", 100, 90)):
-        for q in range(n):
-            common = dict(qid=f"{split}{q}", split=split, cluster=f"{split}{q}", chunking="rec256", expand=0,
-                          instruction="default", render="plain")
-            rows.append(dict(common, ranker="first_stage", kind="first_stage", model=None, depth=None,
-                             first=2000.0 if q < reach else np.inf, rr_tokens=0.0, rr_prefix_tokens=0.0))
-            rows.append(dict(common, ranker="rerank:q8@t8192", kind="rerank", model="q8", depth="t8192", first=500.0,
-                             rr_tokens=10000.0, rr_prefix_tokens=4000.0))
-    r = _results(rows)
-    point, *_ = frontier.break_even(r, "q8", with_interval=False)
+    for q in range(100):
+        common = dict(qid=f"q{q}", split="test", cluster=f"q{q}", chunking="rec256", expand=0,
+                      instruction="default", render="plain")
+        rows.append(dict(common, ranker="first_stage", kind="first_stage", model=None, depth=None,
+                         first=2000.0 if q < 90 else np.inf, rr_tokens=0.0, rr_prefix_tokens=0.0))
+        rows.append(dict(common, ranker="rerank:q8@t8192", kind="rerank", model="q8", depth="t8192", first=500.0,
+                         rr_tokens=10000.0, rr_prefix_tokens=4000.0))
+    point, *_ = frontier.break_even(_results(rows), "q8", with_interval=False)
     at = lambda t: point[int(np.argmin(np.abs(frontier.TARGETS - t)))]  # noqa: E731
-    assert np.isclose(at(0.8), 10000 / (grid_at_least(2000) - grid_at_least(500)))  # first stage reaches 0.8 on test
-    assert at(0.95) == 0.0  # only the reranker reaches 0.95 on test
+    assert np.isclose(at(0.8), 10000 / (grid_at_least(2000) - grid_at_least(500)))
+    assert at(0.95) == 0.0  # only the reranker reaches 0.95
 
 
 def test_common_depth_ignores_models_not_scored_at_a_chunking():
@@ -107,7 +102,7 @@ def history_results() -> Results:
     return _results(rows)
 
 
-def test_without_dev_expanded_configurations_compete_on_every_gold():
+def test_expanded_configurations_compete_on_every_gold():
     point, lo, hi, base, chosen = frontier.break_even(history_results(), "q8")
     i = int(np.argmin(np.abs(frontier.TARGETS - 0.9)))
     assert base[i] == ("seg500", "first_stage+x3")  # the cheaper no-reranker configuration is the expanded one

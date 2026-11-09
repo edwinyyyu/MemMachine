@@ -426,7 +426,7 @@ def break_even(r: Results, out, head: str) -> None:
     ax.set_xlabel(f"coverage target ({EVENT_TEXT[PRIMARY]})")
     ax.xaxis.set_major_locator(MultipleLocator(0.1))
     ax.xaxis.set_minor_locator(MultipleLocator(0.05))
-    split = "dev, measured on test" if r.has_dev else "the same questions"
+    split = "the same questions"
     handles = [_key(SERIES[k]) for k in r.models] + [_key(INK2), _key(INK2, DASH)]
     labels = ([_priced(k) for k in r.models] + ["reranker tokens as an API bills them (band: 95% interval)",
                "with a prefix cache (prompt and question computed once)"])
@@ -466,7 +466,7 @@ def cost_saving(r: Results, out, head: str) -> None:
         if k == 0:
             ax.set_ylabel(f"coverage target ({EVENT_TEXT[PRIMARY]})")
     fig.colorbar(im, ax=axes[0].tolist(), label="% of total cost saved by reranking (red: reranking costs more)")
-    split = "dev, measured on test" if r.has_dev else "the same questions"
+    split = "the same questions"
     _save(fig, out / "cost_saving.png", f"Cost saved by reranking, at every LLM price and coverage target — {head}",
           [Patch(color=ORACLE, alpha=0.6)], ["only the reranker reaches this target"], ncol=1,
           note="Held equal: the coverage target (y) and the LLM input price (x). Color: total cost (reader + reranker "
@@ -476,7 +476,7 @@ def cost_saving(r: Results, out, head: str) -> None:
 
 
 def query_types(r: Results, out, head: str) -> None:
-    if not r.models or r.test.qid.nunique() < 20:
+    if not r.models or r.df.qid.nunique() < 20:
         return
     c = next((c for c in ("seg500", "rec64", "fix256", "rec256", "fix1024") if c in r.chunkings), r.chunkings[0])
     depth = r.common_depth(c)
@@ -656,7 +656,7 @@ CHARTS = {"coverage": "coverage_by_tokens", "rpf": "recall_precision_f1", "reran
 
 
 def _head(r: Results) -> str:
-    return f"{r.dataset} · {r.scope} · {r.variant} · {r.test.qid.nunique()} test queries"
+    return f"{r.dataset} · {r.scope} · {r.variant} · {r.df.qid.nunique()} questions"
 
 
 def write(r: Results) -> str:
