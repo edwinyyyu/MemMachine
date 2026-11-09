@@ -35,7 +35,9 @@ python -m rbench show <dataset> opens the same charts in zoomable matplotlib win
 
 from __future__ import annotations
 
+import math
 import textwrap
+from dataclasses import dataclass
 
 import matplotlib
 
@@ -52,7 +54,15 @@ from rbench import config  # noqa: E402
 from rbench.metrics import CURVE_BUDGETS, CURVE_KS  # noqa: E402
 from rbench.paths import FIGURES  # noqa: E402
 from rbench.report import frontier  # noqa: E402
-from rbench.report.data import Results, coverage, price, query_labels  # noqa: E402
+from rbench.report.data import (  # noqa: E402
+    Results,
+    coverage,
+    default_segment,
+    price,
+    query_labels,
+    size_label,
+    unit_tokens,
+)
 from rbench.report.stats import interval  # noqa: E402
 from rbench.rerankers import RERANKERS  # noqa: E402
 
@@ -144,6 +154,26 @@ def _figure(rows: int, cols: int, panel: tuple[float, float] = PANEL, **kwargs):
 def _human(v: float) -> str:
     """Plain numbers with thousands separators: "1,000" is never ambiguous, "1k" can be (1,000 or 1,024?)."""
     return f"{v:,.0f}" if v >= 1 else f"{v:g}"
+
+
+def _sized(r: Results, c: str) -> str:
+    """A chunking named with its measured size (data.size_label)."""
+    return f"{c} ({size_label(r, c)})"
+
+
+def _unit_title(r: Results, c: str, e: int) -> str:
+    """A panel title's expansion, with the measured window when expanded."""
+    if not e:
+        return "expand_context 0"
+    window = unit_tokens(r, c, e)
+    return f"expand_context {e}" + (f" (window {window:,.0f} tok)" if window else "")
+
+
+def _size_ticks(ax, r: Results, chunkings: list[str]) -> None:
+    """Label a segment-size axis with each limit's measured mean segment tokens beneath it."""
+    sizes = sorted(chunkings, key=lambda c: int(c[3:]))
+    ax.set_xticks([int(c[3:]) for c in sizes],
+                  [f"{c[3:]}\n{t:,.0f} tok" if (t := unit_tokens(r, c)) else c[3:] for c in sizes])
 
 
 def _log_x(ax, base: int = 10, ticks=None) -> None:
@@ -331,13 +361,13 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                         keys.add(key)
                     _token_x(ax)
                     _share_y(ax)
-                    ax.set_title(f"{c} · L {limit[1:]} · expand_context {e}", loc="left")
+                    ax.set_title(f"{c} · L {limit[1:]} · {_unit_title(r, c, e)}", loc="left")
                     if i == len(expansions) - 1:
                         ax.set_xlabel("reader tokens (rendered context)\nexact at every budget; markers every 1,000")
                     if j == 0:
                         ax.set_ylabel(f"share of questions: {EVENT_TEXT[reading]}")
             _save(fig, out / (f"coverage_tokens_{reading}" + (f"_{c}" if len(r.chunkings) > 1 else "") + ".png"),
-                  f"Coverage ({EVENT_TEXT[reading]}) vs reader tokens, {c} — {head}", groups=_ranker_groups(r, keys),
+                  f"Coverage ({EVENT_TEXT[reading]}) vs reader tokens, {_sized(r, c)} — {head}", groups=_ranker_groups(r, keys),
                   note=TOKENS_EQUAL + (BOUND if reading == "every" else "") + " " + EVENT_NOTE)
 
 
@@ -361,7 +391,7 @@ def recall_precision_f1(r: Results, out, head: str) -> None:
                             _plot(axes[i][j], xs, values.mean(0), color=color, linestyle=ls, marker=_marker(key),
                                   markevery=every, linewidth=LINE)
                         keys.add(key)
-                    axes[0][j].set_title(f"{c} · L {limit[1:]} · expand_context {e}", loc="left")
+                    axes[0][j].set_title(f"{c} · L {limit[1:]} · {_unit_title(r, c, e)}", loc="left")
                     for i, label in enumerate(("recall (gold characters)", "precision", "F1")):
                         _token_x(axes[i][j]) if axis == "tokens" else _k_x(axes[i][j], max(CURVE_KS))
                         if j == 0:
@@ -375,7 +405,7 @@ def recall_precision_f1(r: Results, out, head: str) -> None:
                         "Held equal: segments read (x; window neighbours count), the vector search limit and the expansion "
                         "(panel). Not equal: reader tokens, reranker tokens. " + SAME_LIMIT)
                 name = f"rpf_{axis}" + (f"_x{e}" if e else "")
-                _save(fig, out / _file(name, None, c, r), f"Gold-character recall, precision and F1 vs {xlabel}, {c} — {head}",
+                _save(fig, out / _file(name, None, c, r), f"Gold-character recall, precision and F1 vs {xlabel}, {_sized(r, c)} — {head}",
                       groups=_ranker_groups(r, keys), note=note)
 
 
@@ -406,7 +436,7 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
                 _k_x(ax, top)
                 ax.set_xlabel(f"{xlabel}\nexact at every count")
                 _share_y(ax)
-                ax.set_title(f"{c} · L {limit[1:]} · expand_context {e}: equal {'seeds kept' if j == 0 else 'segments'}",
+                ax.set_title(f"{c} · L {limit[1:]} · {_unit_title(r, c, e)}: equal {'seeds kept' if j == 0 else 'segments'}",
                              loc="left")
                 if j == 0:
                     ax.set_ylabel(_coverage(reading))
@@ -419,8 +449,8 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
             _log_x(ax, 10, values)
             _share_y(ax)
             ax.set_xlabel("vector search limit L (seeds retrieved; a reranker scores all of them)\nmarkers: the limits measured")
-            ax.set_title(f"{c} · expand_context {e}: 10 seeds kept, as L grows", loc="left")
-        _save(fig, out / _file("coverage_counts", reading, c, r), f"Coverage at equal counts instead of tokens, {c} — {head}",
+            ax.set_title(f"{c} · {_unit_title(r, c, e)}: 10 seeds kept, as L grows", loc="left")
+        _save(fig, out / _file("coverage_counts", reading, c, r), f"Coverage at equal counts instead of tokens, {_sized(r, c)} — {head}",
               groups=_ranker_groups(r, keys),
               note="Held equal: seeds kept (left), segments read (middle), the vector search limit L (each panel; right: "
                    "as it grows) and the expansion (row). Not equal: reader tokens and reranker tokens. " + SAME_LIMIT
@@ -466,7 +496,7 @@ def rerank_cost(r: Results, out, head: str, reading: str) -> None:
                 ax.set_ylabel(_coverage(reading))
     keys = list(styles)
     handles = [_key(styles[k]["color"], styles[k]["ls"], styles[k]["marker"]) for k in keys] + [_key(INK2, ":", "x")]
-    labels = [f"{k}, reranked" for k in keys] + ["first stage at the same vector search limits (no reranker tokens)"]
+    labels = [f"{_sized(r, k)}, reranked" for k in keys] + ["first stage at the same vector search limits (no reranker tokens)"]
     _save(fig, out / _file("rerank_cost", reading), f"Coverage vs reranker tokens as the vector search limit grows — {head}",
           handles, labels, ncol=2,
           note="Held equal: reader tokens (per panel) and, at each marker, the vector search limit (5, 10, 20, ...). x: the "
@@ -505,8 +535,9 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
                 _plot(ax, xs, means, color=ramp.get(b, INK2), marker="2")
             ax.axhline(0, color=INK2, linewidth=0.8)
             _log_x(ax, 2, sizes)
+            _size_ticks(ax, r, sized)
             ax.set_title(f"{LABEL[m]} · L {d[1:]}", loc="left")
-            ax.set_xlabel("segment size (characters, EventMemory's limit)")
+            ax.set_xlabel("segment limit (characters) and measured mean segment of the retrieved seeds")
             if j == 0:
                 ax.set_ylabel(f"gain in {_coverage(reading)}")
     _save(fig, out / _file("gain_sizes", reading), f"Reranker gain vs segment size — {head}",
@@ -598,7 +629,7 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
     over the same seeds (EventMemory's default limit, 20, where scored)."""
     if not r.models or r.df.qid.nunique() < 20:
         return
-    c = "seg500" if "seg500" in r.chunkings else r.chunkings[0]
+    c = default_segment() if default_segment() in r.chunkings else r.chunkings[0]
     limits = r.limits(c, config.EVAL.limits)
     if not limits:
         return
@@ -652,6 +683,8 @@ def first_stage_sizes(r: Results, out, head: str, reading: str) -> None:
             _plot(ax, xs, ys, color=color, marker=marker, linestyle=ls)
             present.add(fam)
         _log_x(ax, 2, sizes)
+        if set(present) == {"seg"}:
+            _size_ticks(ax, r, [f"seg{n}" for n in sizes])
         _share_y(ax)
         ax.set_title(f"reader budget {b:,}", loc="left")
         ax.set_xlabel("segment / chunk size; markers: sizes measured")
@@ -670,56 +703,101 @@ EXPANSION_APPROACHES = (("plain chunks of the read size", "#2a78d6"), ("seeds, e
 EXPANSION_MARKERS = dict(zip((a for a, _ in EXPANSION_APPROACHES), ("x", "+", "2", "1"), strict=True))
 
 
-def expansion_rows(r: Results) -> list[tuple[str, int, list[tuple[str, str, str]]]]:
-    """Per (model, read size): the four approaches as (label, chunking, ranker) when present.
-    Seeds are EventMemory's default 500-character segments when expanded, else the smallest
-    chunking with expansions; the plain comparison is the chunking of the window's nominal
-    size (4x for expand 3)."""
+@dataclass(frozen=True)
+class ExpansionPanel:
+    """One (model, expand_context) comparison. seed: the chunking whose seeds are expanded;
+    window: their measured mean window (segment-text tokens); plain: the unexpanded chunking
+    whose measured unit is closest to the window, and plain_size its measured size."""
+
+    model: str
+    expand: int
+    seed: str
+    window: float | None
+    plain: str | None
+    plain_size: float | None
+    items: tuple[tuple[str, str, str], ...]
+
+    @property
+    def ratio(self) -> float | None:
+        return self.plain_size / self.window if self.plain_size and self.window else None
+
+    @property
+    def matched(self) -> bool:
+        return self.ratio is not None and abs(self.ratio - 1) <= config.EVAL.size_tolerance
+
+    def sizes(self) -> str:
+        window = f"window {self.window:,.0f} tok" if self.window else "window not measured"
+        if self.plain is None:
+            return f"{window}; no unexpanded chunking to compare"
+        plain = f"plain {self.plain} {self.plain_size:,.0f} tok"
+        return f"{window}; {plain}" + ("" if self.matched else f" — NOT size-matched ({self.ratio:.2f}×)")
+
+
+def expansion_rows(r: Results) -> list[ExpansionPanel]:
+    """Per (model, expand_context): the four approaches as (label, chunking, ranker) when
+    present. Seeds are EventMemory's default segments when expanded, else the smallest chunking
+    with expansions; the plain comparison is the unexpanded chunking whose measured mean unit
+    (data.unit_tokens) is closest to the seeds' measured mean window."""
     expanded = sorted({c for c in r.df.loc[r.df.expand > 0, "chunking"]}, key=lambda c: int(c[3:]))
     if not expanded:
         return []
-    seed = "seg500" if "seg500" in expanded else expanded[0]
-    fam, base = seed[:3], int(seed[3:])
+    seed = default_segment() if default_segment() in expanded else expanded[0]
+    sized = [(c, unit_tokens(r, c)) for c in r.chunkings if c != seed]
+    sized = [(c, t) for c, t in sized if t]
     out = []
-    for m in r.models:
-        for e, plain in ((3, f"{fam}{base * 4}"),):
-            if not (r.df.expand == e).any():
-                continue
+    for e in r.expansions:
+        if not ((r.df.chunking == seed) & (r.df.expand == e)).any():
+            continue
+        window = unit_tokens(r, seed, e)
+        plain, plain_size = (min(sized, key=lambda ct: abs(math.log(ct[1] / window))) if sized and window
+                             else (None, None))
+        for m in r.models:
             depth = r.common_depth(seed, [m])
-            items = [(EXPANSION_APPROACHES[0][0], plain, f"rerank:{m}@{r.common_depth(plain, [m])}") if plain in r.chunkings
-                     else (EXPANSION_APPROACHES[0][0], seed, "missing"),
-                     (EXPANSION_APPROACHES[1][0], seed, f"first_stage@{depth}+x{e}"),
+            items = [(EXPANSION_APPROACHES[1][0], seed, f"first_stage@{depth}+x{e}"),
                      (EXPANSION_APPROACHES[2][0], seed, f"rerank:{m}@{depth}+x{e}"),
                      (EXPANSION_APPROACHES[3][0], seed, f"xrerank:{m}@{depth}+x{e}")]
-            items = [(a, c, n) for a, c, n in items if not r.rows(c, n).empty]
+            if plain is not None:
+                items.insert(0, (EXPANSION_APPROACHES[0][0], plain, f"rerank:{m}@{r.common_depth(plain, [m])}"))
+            items = tuple((a, c, n) for a, c, n in items if not r.rows(c, n).empty)
             if len(items) > 1:
-                out.append((m, base * (1 + e), items))
+                out.append(ExpansionPanel(m, e, seed, window, plain, plain_size, items))
     return out
 
 
 def expansion(r: Results, out, head: str, reading: str) -> None:
-    rows = expansion_rows(r)
-    if not rows:
+    panels = expansion_rows(r)
+    if not panels:
         return
-    fig, axes = _figure(1, len(rows), sharey=True)
+    expands = sorted({p.expand for p in panels})
+    models = [m for m in r.models if any(p.model == m for p in panels)]
+    fig, axes = _figure(len(expands), len(models), sharey=True)
     colors = dict(EXPANSION_APPROACHES)
     present = set()
-    for j, (m, unit, items) in enumerate(rows):
-        ax = axes[0][j]
-        for label, c, name in items:
+    for p in panels:
+        i, j = expands.index(p.expand), models.index(p.model)
+        ax = axes[i][j]
+        for label, c, name in p.items:
             _steps(ax, r.rows(c, name)[reading].to_numpy(), 0, 16000, TOKEN_MARKS, EXPANSION_MARKERS[label],
                    color=colors[label])
             present.add(label)
         _token_x(ax)
         _share_y(ax)
-        ax.set_title(f"{LABEL[m]} · window ≈ {unit}", loc="left")
+        ax.set_title(f"{LABEL[p.model]} · expand_context {p.expand}\n{p.sizes()}", loc="left")
         ax.set_xlabel("reader tokens: exact steps, one per question; markers every 1,000")
         if j == 0:
             ax.set_ylabel(_coverage(reading))
+    for i, e in enumerate(expands):  # panels without a comparison stay empty
+        for j, m in enumerate(models):
+            if not any(p.expand == e and p.model == m for p in panels):
+                axes[i][j].set_visible(False)
     keys = [k for k, _ in EXPANSION_APPROACHES if k in present]
+    unmatched = any(not p.matched for p in panels if p.plain is not None)
     _save(fig, out / _file("expansion", reading), f"Embedded vs reranked vs read unit — {head}",
           [_key(colors[k], marker=EXPANSION_MARKERS[k]) for k in keys], keys, ncol=2,
-          note="Held equal: reader tokens (x). Not equal: reranker tokens and vector search limit.")
+          note="Sizes are measured: mean segment-text tokens per retrieved seed (its window when expanded), over every "
+               "seed the first stage retrieved. Plain chunks: the unexpanded chunking closest to the window's measured size"
+               + (f"; panels flag pairs more than {config.EVAL.size_tolerance:.0%} apart" if unmatched else "")
+               + ". Held equal: reader tokens (x). Not equal: reranker tokens and vector search limit.")
 
 
 ALL_READINGS = ("coverage", "rpf")  # drawn for every reading or measure at once

@@ -144,12 +144,60 @@ def query_labels(r: Results, chunking: str, ranker: str = "first_stage") -> tupl
     return base, labels
 
 
-def mean_unit_tokens(r: Results, chunking_name: str) -> str:
-    """Mean chunk tokens for flat datasets; for history datasets, the nominal segment size."""
+def default_segment() -> str:
+    """The chunking name of EventMemory's default segment length (TextSegmenter's default)."""
+    import inspect
+
+    from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter
+
+    return f"seg{inspect.signature(TextSegmenter).parameters['max_chunk_length'].default}"
+
+
+def _measured(r: Results, chunking_name: str, column: str, expand: int = 0) -> float | None:
+    """A per-question measured column's mean over questions (None if not recorded)."""
+    d = r.df[(r.df.chunking == chunking_name) & (r.df.expand == expand)]
+    if d.empty or column not in d or d[column].isna().all():
+        return None
+    return float(d.groupby("qid")[column].first().mean())
+
+
+def segment_size(r: Results, chunking_name: str) -> tuple[float, float] | None:
+    """A history chunking's measured mean segment size over the whole history (characters,
+    tokens), averaged over questions; None for results simulated before sizes were recorded."""
+    chars, tokens = _measured(r, chunking_name, "seg_chars"), _measured(r, chunking_name, "seg_tokens")
+    return None if chars is None or tokens is None else (chars, tokens)
+
+
+def unit_tokens(r: Results, chunking_name: str, expand: int = 0) -> float | None:
+    """Measured mean segment-text tokens one retrieved seed's context holds at an expand_context
+    (the seed alone at 0); for flat datasets, the chunking's mean chunk tokens at 0 and None
+    above (windows not measured there)."""
     from rbench.datasets import info
 
     if info(r.dataset).partitioned:
-        return f"≤{chunking_name.removeprefix('seg')} chars"
+        return _measured(r, chunking_name, "unit_tokens", expand)
+    if expand:
+        return None
     from rbench import chunking
 
-    return f"{chunking.load(r.dataset, chunking_name).tokens.mean():.0f}"
+    return float(chunking.load(r.dataset, chunking_name).tokens.mean())
+
+
+def size_label(r: Results, chunking_name: str, expand: int = 0) -> str:
+    """What one unit of a configuration measures: for history datasets the segment limit with
+    the history's measured mean segment, or the measured mean window when expanded; for flat
+    datasets the mean chunk tokens."""
+    from rbench.datasets import info
+
+    if not info(r.dataset).partitioned:
+        tokens = unit_tokens(r, chunking_name, expand)
+        return "not measured" if tokens is None else f"{tokens:,.0f} tokens"
+    if expand:
+        tokens = unit_tokens(r, chunking_name, expand)
+        return "not measured" if tokens is None else f"window: {tokens:,.0f} tokens"
+    size, limit = segment_size(r, chunking_name), chunking_name.removeprefix("seg")
+    if size is None:
+        return f"≤{limit} chars (not measured)"
+    seeds = unit_tokens(r, chunking_name)
+    return (f"≤{limit} chars; history {size[0]:,.0f} chars, {size[1]:,.0f} tokens"
+            + (f"; seeds {seeds:,.0f} tokens" if seeds else ""))

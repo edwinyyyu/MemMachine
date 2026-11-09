@@ -28,6 +28,10 @@ Output: results/sim/<embedder>/<dataset>/history/question/<sample>/seg<size>.par
 the same columns as simulate.py plus:
   admitted                 segments admitted before reading stopped (past MAX_COST, or at the
                            end of the reranked pool)
+  seg_chars, seg_tokens    the history's mean segment size, measured (characters, tokens)
+  unit_tokens              the mean segment-text tokens one retrieved seed's context holds at the
+                           row's expand_context (the seed alone, or its window), over every seed
+                           the first stage retrieved (FIRST_STAGE_LIMIT)
   <event>_ctx              contexts (seeds) read when the event happens: coverage after
                            reranking at k kept seeds is <event>_ctx <= k
   segs_t<B>, ctx_t<B>      segments and contexts read within reader budget B: EventMemory's
@@ -54,7 +58,7 @@ from rbench.simulate import COLUMNS, scored_prefix
 MAX_COST = 16000  # reading stops past the largest reader budget measured
 FIRST_STAGE_LIMIT = 400  # the first stage's vector search limit: enough seeds to fill MAX_COST
 EVENTS = ("first", "every", "first_touch", "every_touch")
-EXTRA = (["admitted"] + [f"{e}_ctx" for e in EVENTS]
+EXTRA = (["admitted", "seg_chars", "seg_tokens", "unit_tokens"] + [f"{e}_ctx" for e in EVENTS]
          + [f"segs_t{b}" for b in metrics.BUDGETS] + [f"ctx_t{b}" for b in metrics.BUDGETS])
 
 
@@ -147,6 +151,10 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
         chars = np.asarray([len(t) for t in seg.texts])
         scores = {(m, e): scored_prefix(caches[m], m, keys_for(query, prompts[m], texts[e])) for m in models for e in units}
         seed_tokens = seg.tokens[head]
+        # measured sizes: the history's segments, and what one retrieved seed reads at each
+        # expansion (its context), over every seed the first stage retrieved
+        sizes = [float(chars.mean()), float(seg.tokens.mean())]
+        unit_tokens = {e: float(np.mean([seg.tokens[u].sum() for u in units[e]])) for e in units}
         priority = {e: np.asarray([2 if any(i in g.union for i in u) else 0 for u in units[e]]) for e in units}
         for r in all_rankers:
             if r.id not in records:
@@ -168,7 +176,7 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
             values = metrics.evaluate(admitted, cum, chars, g)
             prefix = cost - max(0, n - 1) * overheads[r.model] if r.model is not None else 0.0
             records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values,
-                                  len(admitted), *counts(values, cum, ctx)])
+                                  len(admitted), *sizes, unit_tokens[r.expand], *counts(values, cum, ctx)])
     frames = []
     for r in all_rankers:
         if r.id not in records:

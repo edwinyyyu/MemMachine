@@ -30,7 +30,7 @@ import numpy as np
 from rbench.paths import SUMMARY
 from rbench import config
 from rbench.report import frontier
-from rbench.report.data import Results, coverage, mean_unit_tokens, query_labels
+from rbench.report.data import Results, coverage, query_labels, size_label
 from rbench.report.stats import delta
 
 EVENTS = ("first", "every", "first_touch", "every_touch")  # complete and touched readings (metrics.py)
@@ -52,12 +52,16 @@ def first_stage(r: Results, event: str) -> list[str]:
            f"{event}-gold coverage by reader budget, no reranker"
            + (". Δ rows: recursive minus fixed at matched size.\n" if _pairs(r) else
               "; `+xE` reads each seed's EventMemory window (expand_context E).\n"),
-           "| chunking | mean tokens | " + " | ".join(map(str, config.EVAL.columns)) + " |", "|---|---|" + "---|" * len(config.EVAL.columns)]
+           "Measured unit: for EventMemory segments, the limit, the history's mean segment and the mean of the seeds "
+           "retrieved; for windows, the mean window of the seeds retrieved (segment-text tokens).\n"
+           if any(c.startswith("seg") for c in r.chunkings) else "",
+           "| chunking | measured unit | " + " | ".join(map(str, config.EVAL.columns)) + " |", "|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
-        for name in ["first_stage", *(f"first_stage+x{e}" for e in r.expansions)]:
+        for e in (0, *r.expansions):
+            name = "first_stage" + (f"+x{e}" if e else "")
             rows = r.rows(c, name)
             if not rows.empty:
-                out.append(f"| {c}{name.removeprefix('first_stage')} | {mean_unit_tokens(r, c)} | "
+                out.append(f"| {c}{name.removeprefix('first_stage')} | {size_label(r, c, e)} | "
                            + " | ".join(_cov(rows, event, config.EVAL.columns)) + " |")
     for c in r.chunkings:
         if c.startswith("fix") and "rec" + c[3:] in r.chunkings:
@@ -333,19 +337,33 @@ def help_harm(r: Results, event: str) -> list[str]:
 def expansion(r: Results, event: str) -> list[str]:
     from rbench.report.figures import expansion_rows
 
-    groups = expansion_rows(r)
-    if not groups:
+    panels = expansion_rows(r)
+    if not panels:
         return []
     out = ["## 11. Expansion: embedded vs reranked vs read unit\n",
-           "Seeds are the smallest expanded chunking. 'Plain' chunks are embedded, reranked and read whole; expanded seeds are embedded small "
-           "and read as EventMemory windows. Reader cost counts overlapping windows once.\n",
-           "| model | read unit | approach | reranker tokens | " + " | ".join(f"@{b}" for b in config.EVAL.budgets) + " |",
-           "|---|---|---|---|---|---|---|---|"]
-    for m, unit, items in groups:
-        for label, c, name in items:
+           f"Seeds are {panels[0].seed}'s segments, embedded small and read as EventMemory windows; 'plain' chunks are "
+           "embedded, reranked and read whole. Sizes are measured (mean segment-text tokens per retrieved seed, or its "
+           "window); the plain chunking is the one closest to the window's measured size. Reader cost counts overlapping "
+           "windows once.\n",
+           "| model | expand_context | approach | measured unit (tokens) | reranker tokens | "
+           + " | ".join(f"@{b}" for b in config.EVAL.budgets) + " |",
+           "|---|---|---|---|---|" + "---|" * len(config.EVAL.budgets)]
+    flagged = []
+    for p in panels:
+        for label, c, name in p.items:
             rows = r.rows(c, name)
-            out.append(f"| {m} | ~{unit} | {label} ({c} {name}) | {rows.rr_tokens.mean():,.0f} | "
+            size = p.plain_size if c == p.plain else p.window
+            out.append(f"| {p.model} | {p.expand} | {label} ({c} {name}) | "
+                       + (f"{size:,.0f}" if size else "not measured") + f" | {rows.rr_tokens.mean():,.0f} | "
                        + " | ".join(_cov(rows, event, config.EVAL.budgets)) + " |")
+        if p.plain is not None and not p.matched:
+            flagged.append(f"expand_context {p.expand}: {p.sizes()}")
+    if all(p.plain is None for p in panels):
+        out.append(f"\nNo chunking besides {panels[0].seed} was simulated, so there are no plain chunks to compare with "
+                   "the windows.")
+    for f in dict.fromkeys(flagged):
+        out.append(f"\n**Not size-matched** ({f}; tolerance {config.EVAL.size_tolerance:.0%}). Coverage is still "
+                   "compared at equal reader tokens, but the plain chunks are not the windows' size.")
     return out + [""]
 
 

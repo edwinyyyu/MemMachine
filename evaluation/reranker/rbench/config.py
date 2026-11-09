@@ -14,6 +14,9 @@ reads them from EVAL rather than hard-coding them.
                is 0). Rerank-then-expand is free at all of them; expand-then-rerank exists only
                where a run scored the windows (grid.py)
   token_top    where the reader-token axes end (the data runs to metrics.CURVE_BUDGETS' last)
+  size_tolerance  how far apart (relative) two measured unit sizes may be and still be reported
+               as matched, where a comparison pairs units by size (the expansion comparison);
+               beyond it the report flags the pair as not size-matched
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ class Evaluation:
     readings: tuple[str, ...] = ("every",)
     expansions: tuple[int, ...] = (1, 2, 3, 6)
     token_top: int = 8000
+    size_tolerance: float = 0.25
 
 
 EVAL = Evaluation()
