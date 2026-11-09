@@ -1,7 +1,7 @@
 """Qwen3 rerankers: input format, backends, the score cache, and the spend cap.
 
 Each model's entry in RERANKERS holds everything specific to it: its backend and price, its
-chart label, color and marker, and its Template. The Qwen3 model card's template: the string
+chart label, color and markers, and its Template. The Qwen3 model card's template: the string
 "<Instruct>: {instruction}\\n<Query>: {query}\\n<Document>: {document}" is tokenized in one
 piece and cut from the end to fit, then wrapped in a fixed system prompt (PREFIX) and an
 assistant turn with an empty think block (SUFFIX). A pair is at most 8,192 tokens. The
@@ -83,10 +83,13 @@ class Reranker:
     usd_per_mtok: float | None  # DeepInfra list price, checked 2026-11-05; None for a local model
     label: str  # in tables and charts
     color: str  # chart color: a slot of the validated categorical palette (report/figures.py)
-    marker: str  # chart marker: a line-only shape, distinct per model
     template: Template = QWEN3_CARD
     priced_as: str | None = None  # a local model's stand-in price: this hosted model's
     local_tok_per_s: float | None = None  # pair tokens per second on this machine (M3 Pro), measured 2026-11-05
+    # chart markers, line-only shapes: (scoring the seeds, scoring the windows). Color tells
+    # models apart; the marker tells what the reranker scored, so the two lines of one model
+    # differ by shape, never by dashes (report/figures.py)
+    markers: tuple[str, str] = ("2", "1")  # up caltrop: seeds; down caltrop: windows
 
     @property
     def price(self) -> float:
@@ -98,14 +101,14 @@ class Reranker:
 
 RERANKERS = {
     "q06-local": Reranker("q06-local", "Qwen/Qwen3-Reranker-0.6B", "local", None, "Qwen3-Reranker-0.6B (local)", "#e87ba4",
-                          "3", priced_as="q06", local_tok_per_s=2500),
+                          priced_as="q06", local_tok_per_s=2500),
     "q06-local-raw": Reranker("q06-local-raw", "Qwen/Qwen3-Reranker-0.6B", "local", None,
-                              "Qwen3-Reranker-0.6B (local, raw pairs)", "#6250d6", "4", template=RAW_PAIRS, priced_as="q06",
+                              "Qwen3-Reranker-0.6B (local, raw pairs)", "#6250d6", template=RAW_PAIRS, priced_as="q06",
                               local_tok_per_s=2500),
-    "q06": Reranker("q06", "Qwen/Qwen3-Reranker-0.6B", "deepinfra", 0.010, "Qwen3-Reranker-0.6B", "#eb6834", "3",
+    "q06": Reranker("q06", "Qwen/Qwen3-Reranker-0.6B", "deepinfra", 0.010, "Qwen3-Reranker-0.6B", "#eb6834",
                     local_tok_per_s=2500),
-    "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B", "#1baf7a", "1"),
-    "q8": Reranker("q8", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B", "#eda100", "2"),
+    "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B", "#1baf7a"),
+    "q8": Reranker("q8", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B", "#eda100"),
 }
 PAID = [m for m, r in RERANKERS.items() if r.backend == "deepinfra"]
 

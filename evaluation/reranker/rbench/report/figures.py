@@ -5,7 +5,7 @@ from rbench.config.EVAL. Files (a suffix _<chunking> when several chunkings were
   coverage_tokens_<reading>.png  coverage vs reader tokens: a row per expand_context, a column per
                                  vector search limit L; in each panel every line reads only the top
                                  L seeds: the first stage in vector order, each reranker scoring the
-                                 seeds (solid) or their windows (dashed, where scored)
+                                 seeds (up caltrop) or their windows (down caltrop, where scored)
   rpf_<tokens|k>[_x<E>].png      gold-character recall, precision and F1 vs tokens and vs k
   coverage_counts.png            coverage at equal counts (seeds kept, segments read, L)
   rerank_cost.png                coverage vs reranker tokens as L grows, beside the first stage at
@@ -19,12 +19,16 @@ Single-reading charts are drawn for each reading in EVAL.readings, with a _<read
 except for "every".
 
 Colors follow the dataviz reference palette and were checked with its validator: models take
-their color, marker and label from their registry entry (rerankers.RERANKERS); the perfect
+their color, markers and label from their registry entry (rerankers.RERANKERS); the perfect
 reranker is neutral gray; ordered values (segment sizes, budgets) use a one-hue ordinal ramp;
 savings use a diverging blue (saves) / red (costs more) scale around a neutral gray midpoint.
 
-Reading the charts: lines are thin with a light outline so crossings stay apart; each ranking
-also has a line-only marker shape (MARKERS). Coverage curves are exact step functions (one step
+Reading the charts: every data line is thin and solid, with no outline (an outline cuts gaps
+into the lines beneath). Color tells models (and chunkers) apart; a line-only marker shape tells
+what a line is: up caltrop, a reranker scoring the seeds; down caltrop, scoring the windows; x,
+the first stage; +, the perfect reranker. Every line has one width, and markers sit at the
+same points on every line: where two caltrops meet as a six-pointed star, the values are equal.
+Coverage curves are exact step functions (one step
 per question); recall, precision and F1 are measured at every minor gridline (every 250 reader
 tokens, every k: metrics.CURVE_BUDGETS, CURVE_KS). Markers only identify the series. Token and
 count axes are linear. Under each title, a line says what is held equal and what is not.
@@ -44,7 +48,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm  # noqa: E402
-from matplotlib import patheffects  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 from matplotlib.ticker import FuncFormatter, LogLocator, MultipleLocator, NullFormatter  # noqa: E402
@@ -66,17 +69,17 @@ from rbench.report.stats import interval  # noqa: E402
 from rbench.rerankers import RERANKERS  # noqa: E402
 
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
-# Models take their color, marker and label from their registry entry (rerankers.RERANKERS).
+# Models take their color, markers and label from their registry entry (rerankers.RERANKERS).
 SERIES = {"first_stage": "#2a78d6", **{m: spec.color for m, spec in RERANKERS.items()}}
 ORACLE = "#8f8e89"
-# A marker shape per ranking, so overlapping lines stay identifiable without color. Line-only
-# shapes (caltrops "1"-"4", x, +) cover nothing beneath them, so overlapping points stay
-# readable, and their centre is the data point. Most curves here are flat or stepped, so the
-# caltrops with a vertical prong (up "2", down "1") go to the models that matter most; left
-# "3" (a prong along the line) to the local 0.6B; + (its bar along flat lines) to the gray reference.
-MARKERS = {"first_stage": "x", "oracle": "+", **{m: spec.marker for m, spec in RERANKERS.items()}}
+# Line-only marker shapes cover nothing beneath them and their centre is the data point. A
+# model's seeds line takes the first of its registry pair (up caltrop "2"), its windows line the
+# second (down caltrop "1"); the first stage x, the perfect reranker + (its bar along flat lines).
+MARKERS = {"first_stage": "x", "oracle": "+", **{m: spec.markers[0] for m, spec in RERANKERS.items()}}
+WINDOW_MARKERS = {m: spec.markers[1] for m, spec in RERANKERS.items()}
 LABEL = {"first_stage": "first stage only", **{m: spec.label for m, spec in RERANKERS.items()}}
-CHUNKERS = {"seg": ("#1baf7a", "2", "-"), "cut": ("#2a78d6", "x", (0, (5, 3)))}  # color, marker, line per chunker
+# color and marker per chunker (left / right caltrop, apart from the rankings' shapes); lines solid
+CHUNKERS = {"seg": ("#1baf7a", "3", "-"), "cut": ("#2a78d6", "4", "-")}
 CHUNKER_NAMES = {"seg": "EventMemory segments (TextSegmenter)", "cut": "simple chunker (a cut every N characters)"}
 RAMP = {3: ("#86b6ef", "#2a78d6", "#104281"), 5: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281")}
 DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34948", "#f2b8b5", "#f0efec", "#9ec5f4",
@@ -90,16 +93,15 @@ plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE, "axes.edgecolor": GRID,
     "axes.labelcolor": INK2, "xtick.color": INK2, "ytick.color": INK2, "text.color": INK, "axes.grid": True,
     "grid.color": GRID, "grid.linewidth": 1, "axes.spines.top": False, "axes.spines.right": False, "font.size": 9,
-    "axes.titlesize": 10, "axes.titlecolor": INK, "lines.linewidth": 1.3, "lines.solid_capstyle": "round",
+    "axes.titlesize": 10, "axes.titlecolor": INK, "lines.linewidth": 1.0, "lines.solid_capstyle": "round",
     "lines.markeredgewidth": 0.6, "lines.markeredgecolor": SURFACE,
     "legend.frameon": False, "legend.labelcolor": INK2, "legend.fontsize": 9, "legend.handlelength": 4.2,
     "legend.handletextpad": 0.6, "legend.columnspacing": 2.4, "figure.constrained_layout.h_pad": 0.08,
 })
-DASH = (0, (5, 3))  # the dashed style: long enough dashes to read in the legend's line samples
 PANEL = (4.4, 3.2)  # inches per panel; figures are at least MIN_WIDTH wide so the legend never dwarfs the plot
 MIN_WIDTH = 7.5
 TOKEN_MARKS = list(range(1000, 16000 + 1, 1000))  # where step curves carry their series marker
-LINE, THIN = 1.3, 1.0  # line widths (points): thin enough that overlapping lines stay apart
+LINE = 1.0  # the one line width (points): thin, with no outline, so overlapping lines stay whole
 
 
 def _hollow(kwargs: dict) -> dict:
@@ -113,12 +115,12 @@ def _hollow(kwargs: dict) -> dict:
 
 
 def _plot(ax, x, y, **kwargs):
-    """ax.plot with a surface-colored outline on the line, so crossing and overlapping lines
-    stay distinct, and hollow markers drawn on top without it."""
-    width = kwargs.get("linewidth", LINE)
+    """ax.plot of a thin plain line (no outline: an outline cuts gaps into the lines beneath),
+    with its hollow line-only markers drawn on top."""
+    kwargs.setdefault("linewidth", LINE)
     marks = {k: kwargs.pop(k) for k in ("marker", "markersize", "markerfacecolor", "markeredgecolor", "markeredgewidth",
                                         "markevery") if k in kwargs}
-    lines = ax.plot(x, y, path_effects=[patheffects.withStroke(linewidth=width + 1.4, foreground=SURFACE)], **kwargs)
+    lines = ax.plot(x, y, **kwargs)
     if marks.get("marker"):
         ax.plot(x, y, linestyle="none", zorder=lines[0].get_zorder() + 0.1, **_hollow({**marks, "color": kwargs.get("color")}))
     return lines
@@ -138,7 +140,8 @@ def _steps(ax, costs: np.ndarray, lo: float, hi: float, marks=None, marker: str 
 
 
 def _marker(key: str) -> str:
-    return MARKERS.get(key.split("~")[0], "o")
+    base, _, what = key.partition("~")
+    return WINDOW_MARKERS[base] if what == "windows" else MARKERS.get(base, "o")
 
 
 _SHOWING = False  # set by show(): figures stay open in windows instead of being written
@@ -232,8 +235,8 @@ def _blank() -> Line2D:
 
 
 def _key(color: str, ls="-", marker=None) -> Line2D:
-    """A legend sample: thicker than the plotted line so color and dash pattern read at a glance."""
-    return Line2D([], [], linestyle=ls, linewidth=1.8, **_hollow({"marker": marker, "color": color, "markersize": 9}))
+    """A legend sample: the line as plotted, with its marker drawn larger."""
+    return Line2D([], [], linestyle=ls, linewidth=LINE, **_hollow({"marker": marker, "color": color, "markersize": 9}))
 
 
 def _save(fig, path, title: str, handles=None, labels=None, ncol: int | None = None,
@@ -286,15 +289,15 @@ def _expansions(r: Results) -> list[int]:
 def _series(r: Results, c: str, limit: str, e: int, bound: bool = False) -> list[tuple[str, str, str, str]]:
     """(legend key, ranker, color, line style) at one vector search limit and expand_context e.
     Every line reads only the top `limit` seeds: the first stage in vector order; each model
-    scoring the seeds (solid: rerank, then read the seeds or their windows); each model scoring
-    the windows (dashed: expand, then rerank; only where they were scored). bound adds the
-    perfect reranker, which is a bound only for "all evidence read in full" with seeds alone
-    (rankers.py): pass it only there."""
+    scoring the seeds (up caltrop: rerank, then read the seeds or their windows); each model
+    scoring the windows (down caltrop: expand, then rerank; only where they were scored). All
+    lines are solid. bound adds the perfect reranker, which is a bound only for "all evidence
+    read in full" with seeds alone (rankers.py): pass it only there."""
     tail = f"+x{e}" if e else ""
     out = [("first_stage", f"first_stage@{limit}{tail}", SERIES["first_stage"], "-")]
     out += [(m, f"rerank:{m}@{limit}{tail}", SERIES[m], "-") for m in r.models_at(c)]
     if e:
-        out += [(f"{m}~windows", f"xrerank:{m}@{limit}{tail}", SERIES[m], DASH) for m in r.models_at(c)]
+        out += [(f"{m}~windows", f"xrerank:{m}@{limit}{tail}", SERIES[m], "-") for m in r.models_at(c)]
     if bound and not e:
         out.append(("oracle", f"oracle@{limit}", ORACLE, "-"))
     return [x for x in out if not r.rows(c, x[1]).empty]
@@ -319,18 +322,35 @@ def _priced(m: str) -> str:
 
 
 def _ranker_groups(r: Results, keys: set[str]) -> list[tuple[str, list, list[str]]]:
-    """Two legend columns for charts drawn with _series: color and marker = how the seeds are
-    ordered, line style = what the reranker scores."""
+    """Two legend columns for charts drawn with _series: color = how the seeds are ordered (the
+    first stage, a model, the perfect reranker), marker = what a model's reranker scores."""
     bases = {k.split("~")[0] for k in keys}
     color_keys = [k for k in ("first_stage", *r.models, "oracle") if k in bases]
     names = {"first_stage": "first stage (vector search order)",
-             "oracle": "perfect reranker, seeds only: a bound for the solid lines at expand_context 0"}
+             "oracle": "perfect reranker, seeds only: a bound for the reranked lines at expand_context 0"}
     labels = [names.get(k, LABEL.get(k, k)) for k in color_keys]
-    groups = [("order (color, marker)", [_key(SERIES.get(k, ORACLE), marker=MARKERS.get(k, "o")) for k in color_keys], labels)]
-    if any("~windows" in k for k in keys):
-        groups.append(("what the reranker scores (line)", [_key(INK2), _key(INK2, DASH)],
-                       ["the seeds (rerank, then read the seeds or their windows)",
-                        "the windows (expand, then rerank)"]))
+    handles = [_key(SERIES.get(k, ORACLE), marker=MARKERS[k] if k in ("first_stage", "oracle") else None)
+               for k in color_keys]
+    groups = [("order (color)", handles, labels)]
+    models = [m for m in r.models if m in bases]
+    pairs = {RERANKERS[m].markers for m in models}
+    windows = any("~windows" in k for k in keys)
+    if models:
+        if len(pairs) == 1:  # one pair for every model: one key
+            seeds, win = next(iter(pairs))
+            groups.append(("what the reranker scores (marker)",
+                           [_key(INK2, marker=seeds)] + ([_key(INK2, marker=win)] if windows else []),
+                           ["the seeds (rerank, then read the seeds or their windows)"]
+                           + (["the windows (expand, then rerank)"] if windows else [])))
+        else:
+            hs, ls = [], []
+            for m in models:
+                hs.append(_key(SERIES[m], marker=MARKERS[m]))
+                ls.append(f"{LABEL[m]}: the seeds")
+                if windows:
+                    hs.append(_key(SERIES[m], marker=WINDOW_MARKERS[m]))
+                    ls.append(f"{LABEL[m]}: the windows (expand, then rerank)")
+            groups.append(("what the reranker scores (marker)", hs, ls))
     return groups
 
 
@@ -360,7 +380,7 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                         continue
                     for key, name, color, ls in _series(r, c, limit, e, bound=reading == "every"):
                         _steps(ax, r.rows(c, name)[reading].to_numpy(), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
-                               linestyle=ls, linewidth=THIN if key == "oracle" else LINE)
+                               linestyle=ls)
                         keys.add(key)
                     _token_x(ax)
                     _share_y(ax)
@@ -434,7 +454,7 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
                 for key, name, color, ls in series:
                     _steps(ax, r.rows(c, name)[column].to_numpy(), 0, top,
                            range(5 if top <= 50 else 20, top + 1, 5 if top <= 50 else 20), _marker(key), color=color,
-                           linestyle=ls, linewidth=THIN if key == "oracle" else LINE)
+                           linestyle=ls)
                     keys.add(key)
                 _k_x(ax, top)
                 ax.set_xlabel(f"{xlabel}\nexact at every count")
@@ -448,10 +468,11 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
             for key, _, color, ls in series:
                 names = [_name_at(key, d, e) for d in limits]
                 ys = [(r.rows(c, n)[f"{reading}_ctx"] <= 10).mean() if not r.rows(c, n).empty else np.nan for n in names]
-                _plot(ax, values, ys, color=color, linestyle=ls, marker=_marker(key), linewidth=THIN if key == "oracle" else LINE)
+                _plot(ax, values, ys, color=color, linestyle=ls, marker=_marker(key))
             _log_x(ax, 10, values)
             _share_y(ax)
-            ax.set_xlabel("vector search limit L (seeds retrieved; a reranker scores all of them)\nmarkers: the limits measured")
+            ax.set_xlabel("vector search limit L (seeds retrieved; a reranker scores all of them)\n"
+                          "markers: the limits measured")
             ax.set_title(f"{c} · {_unit_title(r, c, e)}: 10 seeds kept, as L grows", loc="left")
         _save(fig, out / _file("coverage_counts", reading, c, r), f"Coverage at equal counts instead of tokens, {_sized(r, c)} — {head}",
               groups=_ranker_groups(r, keys),
@@ -498,7 +519,7 @@ def rerank_cost(r: Results, out, head: str, reading: str) -> None:
                     continue
                 xs, ys, bs = zip(*sorted(pts), strict=True)
                 _plot(ax, xs, ys, color=s["color"], linestyle=s["ls"], marker=s["marker"])
-                _plot(ax, xs, bs, color=s["color"], linestyle=":", linewidth=THIN, marker="x", markersize=4)
+                _plot(ax, xs, bs, color=s["color"], linewidth=LINE, marker="x")
             _log_x(ax)
             ax.xaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
             _share_y(ax)
@@ -507,12 +528,12 @@ def rerank_cost(r: Results, out, head: str, reading: str) -> None:
             if j == 0:
                 ax.set_ylabel(_coverage(reading))
     keys = list(styles)
-    handles = [_key(styles[k]["color"], styles[k]["ls"], styles[k]["marker"]) for k in keys] + [_key(INK2, ":", "x")]
+    handles = [_key(styles[k]["color"], styles[k]["ls"], styles[k]["marker"]) for k in keys] + [_key(INK2, marker="x")]
     labels = [f"{_sized(r, k)}, reranked" for k in keys] + ["first stage at the same vector search limits (no reranker tokens)"]
     _save(fig, out / _file("rerank_cost", reading), f"Coverage vs reranker tokens as the vector search limit grows — {head}",
           handles, labels, ncol=2,
           note="Held equal: reader tokens (per panel) and, at each marker, the vector search limit (5, 10, 20, ...). x: the "
-               "reranker's tokens per query at that limit; the dotted line is the first stage over the same seeds, drawn at "
+               "reranker's tokens per query at that limit; the line with x markers is the first stage over the same seeds, drawn at "
                "the same x though it spends no reranker tokens. Seeds only (expand_context 0).")
 
 
@@ -534,7 +555,7 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
     for i, m in enumerate(r.models):
         for j, d in enumerate(limits):
             ax = axes[i][j]
-            for k, b in enumerate(budgets):
+            for b in budgets:
                 for fam, chunkings in families.items():
                     means, los, his = [], [], []
                     for c in chunkings:
@@ -544,10 +565,10 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
                         means.append(gain.mean())
                         los.append(gain.mean() - lo if np.isfinite(lo) else 0.0)
                         his.append(hi - gain.mean() if np.isfinite(hi) else 0.0)
-                    xs = [measured[c] * (1 + 0.03 * (k - (len(budgets) - 1) / 2)) for c in chunkings]  # side by side
-                    ax.errorbar(xs, means, yerr=[los, his], color=ramp.get(b, INK2), linewidth=THIN, capsize=0, fmt="none")
-                    _plot(ax, xs, means, color=ramp.get(b, INK2), marker=CHUNKERS[fam][1], linestyle=CHUNKERS[fam][2])
-            ax.axhline(0, color=INK2, linewidth=0.8)
+                    xs = [measured[c] for c in chunkings]
+                    ax.errorbar(xs, means, yerr=[los, his], color=ramp.get(b, INK2), linewidth=LINE, capsize=0, fmt="none")
+                    _plot(ax, xs, means, color=ramp.get(b, INK2), marker=CHUNKERS[fam][1])
+            ax.axhline(0, color=INK2, linewidth=LINE)
             _measured_x(ax, {c: measured[c] for c in sized})
             ax.set_title(f"{LABEL[m]} · L {d[1:]}", loc="left")
             ax.set_xlabel("measured mean segment of the retrieved seeds (tokens)")
@@ -576,7 +597,6 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
     llm = np.logspace(-2, 2, 81)  # $ per million reader tokens
     fig, axes = _figure(1, len(r.models), panel=(4.6, 3.8), sharey=True)
     finite = lambda v: np.where(np.isfinite(v) & (v > 0) & (v < 1e12), v, np.nan)  # noqa: E731
-    halo = [patheffects.withStroke(linewidth=3.2, foreground=SURFACE)]
     for k, m in enumerate(r.models):
         curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading)
         no = np.stack([curves[p][0] for p in llm], 1)  # [target, price]
@@ -593,9 +613,11 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
         y = frontier.TARGETS
         shown = np.isfinite(finite(api))  # the interval only where there is a line: elsewhere the estimate is "never"
         lo, hi = np.where(shown, lo, np.nan), np.where(shown, hi, np.nan)
-        for line, ls, width in ((lo, ":", THIN), (hi, ":", THIN), (cached, DASH, LINE), (api, "-", LINE)):
-            ax.plot(finite(line) * price(m), y, drawstyle="steps-mid", color=INK, linestyle=ls, linewidth=width,
-                    path_effects=halo)
+        marks = [i for i, t in enumerate(y) if round(t * 100) % 10 == 0]  # a marker at every 0.1 of coverage
+        for line in (lo, hi):  # the interval's edges: dotted, no markers
+            ax.plot(finite(line) * price(m), y, drawstyle="steps-mid", color=INK, linestyle=":", linewidth=LINE)
+        for line, marker in ((api, "x"), (cached, "+")):
+            _plot(ax, finite(line) * price(m), y, drawstyle="steps-mid", color=INK, marker=marker, markevery=marks)
         ax.set_xlim(llm[0], llm[-1])
         ax.set_facecolor(SURFACE)  # blank where neither reaches the target
         _log_x(ax)
@@ -607,7 +629,7 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
             ax.set_ylabel(f"coverage target ({EVENT_TEXT[reading]})")
     fig.colorbar(im, ax=axes[0].tolist(), label="% of total cost saved by reranking (red: reranking costs more)")
     _save(fig, out / _file("cost_saving", reading), f"Cost saved by reranking, at every LLM price and coverage target — {head}",
-          [_key(INK), _key(INK, ":"), _key(INK, DASH), Patch(color=ORACLE, alpha=0.6)],
+          [_key(INK, marker="x"), _key(INK, ":"), _key(INK, marker="+"), Patch(color=ORACLE, alpha=0.6)],
           ["break-even LLM price (reranker tokens as an API bills them)", "its 95% interval",
            "break-even with a prefix cache (prompt and question computed once)", "only the reranker reaches this target"],
           ncol=2,
@@ -648,7 +670,7 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
                 if not np.isnan(lo):
                     ax.plot([lo, hi], [y, y], color=SERIES[m], linewidth=LINE)
                 ax.plot([gain[mask].mean()], [y], "o", color=SERIES[m], markersize=5.5)
-        ax.axvline(0, color=INK2, linewidth=1)
+        ax.axvline(0, color=INK2, linewidth=LINE)
         ax.set_yticks(range(len(groups)), [f"{f}: {v} (n={int((labels[f] == v).sum())})" for f, v in groups])
         ax.invert_yaxis()
         ax.xaxis.set_major_locator(MultipleLocator(0.2))
