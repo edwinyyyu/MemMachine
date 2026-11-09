@@ -60,17 +60,6 @@ def runs(datasets, chunkings, models, **settings) -> list[Run]:
     return [Run(d, *default(d), tuple(chunkings), tuple(models), **settings) for d in datasets]
 
 
-# Paired query forms: (dataset, scope, variant compared with the default, note).
-FORMS = [
-    ("conditionalqa", "corpus", "question", "the question without the scenario"),
-    ("multidoc2dial", "corpus", "turn", "the user turn alone"),
-    ("multidoc2dial", "corpus", "recent", "the last agent turn and the user turn"),
-    ("swebench_lite", "scope_docs", "title", "the issue title only"),
-    ("qasper", "doc", "scoped", "the question prefixed with the paper's title"),
-    ("legalbenchrag", "doc", "question", "doc scope, the pair for 'ask'"),
-    ("legalbenchrag", "doc", "ask", "the ask without the contract's name"),
-]
-
 LME = "longmemeval_m"
 
 

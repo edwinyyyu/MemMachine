@@ -13,8 +13,7 @@
              (the answer needs several separate pieces of the source)
 
 The labels are deliberately simple and auditable (every rule is below). They slice
-results; they are not ground truth about intent. The paired variants (grid.FORMS) are the
-controlled comparison of phrasing.
+results; they are not ground truth about intent.
 """
 
 from __future__ import annotations
