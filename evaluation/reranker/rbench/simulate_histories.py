@@ -24,7 +24,7 @@ Expansions: rerank-then-expand and the expanded first stage need no new scores, 
 replayed at every value in config.EVAL.expansions; expand-then-rerank needs the windows scored and appears
 only where a run scored them (grid.py scores expand 3).
 
-Output: results/sim/<embedder>/<dataset>/history/question/<sample>/seg<size>.parquet,
+Output: results/sim/<embedder>/<dataset>/history/question/<sample>/<chunking>.parquet,
 the same columns as simulate.py plus:
   admitted                 segments admitted before reading stopped (past MAX_COST, or at the
                            end of the reranked pool)
@@ -62,8 +62,8 @@ EXTRA = (["admitted", "seg_chars", "seg_tokens", "unit_tokens"] + [f"{e}_ctx" fo
          + [f"segs_t{b}" for b in metrics.BUDGETS] + [f"ctx_t{b}" for b in metrics.BUDGETS])
 
 
-def path(embedder: str, dataset: str, sample_name: str, size: int) -> object:
-    return SIM / embedder / dataset / "history" / "question" / sample_name / f"seg{size}.parquet"
+def path(embedder: str, dataset: str, sample_name: str, chunking: str) -> object:
+    return SIM / embedder / dataset / "history" / "question" / sample_name / f"{chunking}.parquet"
 
 
 def gold_for(dataset: str, qid: str, seg: hs.Segments) -> metrics.Gold:
@@ -101,22 +101,22 @@ def counts(values: list[float], cum: np.ndarray, ctx: np.ndarray) -> list[float]
     return at + segs + [float(seen[n - 1]) if n else 0.0 for n in segs]
 
 
-def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str],
+def run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
         expansions: tuple[int, ...] | None = None) -> pd.DataFrame:
     """expansions: expand_context values to replay (default: config.EVAL.expansions)."""
     from rbench import config
 
     expansions = config.EVAL.expansions if expansions is None else expansions
-    return asyncio.run(_run(embedder, dataset, size, sample_name, models, expansions))
+    return asyncio.run(_run(embedder, dataset, chunking, sample_name, models, expansions))
 
 
-async def first_stage(embedder: str, dataset: str, size: int, qid: str, query: str, expansions: tuple[int, ...]):
+async def first_stage(embedder: str, dataset: str, chunking: str, qid: str, query: str, expansions: tuple[int, ...]):
     """(segments, seed ids in similarity order, their similarities, {expand: each seed's
     context as segment ids}, {expand: each context rendered for the reranker}) from
     EventMemory.query without a reranker."""
     from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory
 
-    async with Memory(embedder, dataset, size) as m:
+    async with Memory(embedder, dataset, chunking) as m:
         seg = await hs.table(m, dataset, qid)
         partition = await (await m.event_memory()).open_or_create_partition(qid)
         results = {e: await partition.query(query, vector_search_limit=FIRST_STAGE_LIMIT, expand_context=e)
@@ -133,7 +133,7 @@ async def first_stage(embedder: str, dataset: str, size: int, qid: str, query: s
     return seg, [index[u] for u in seeds], np.asarray([c.score for c in first]), units, texts
 
 
-async def _run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str],
+async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
                expansions: tuple[int, ...]) -> pd.DataFrame:
     rows = queries(dataset)
     prompts = {m: prompt_key(RERANKERS[m].template) for m in models}
@@ -145,7 +145,7 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
     for qi in picked:
         q = rows[qi]
         query = q["variants"]["question"]
-        seg, head, sims, units, texts = await first_stage(embedder, dataset, size, q["qid"], query, expansions)
+        seg, head, sims, units, texts = await first_stage(embedder, dataset, chunking, q["qid"], query, expansions)
         g = gold_for(dataset, q["qid"], seg)
         overheads = {m: pair_overhead(query, RERANKERS[m].template) for m in models}
         chars = np.asarray([len(t) for t in seg.texts])
@@ -182,21 +182,21 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
         if r.id not in records:
             continue
         meta = {"qid": [rows[i]["qid"] for i in picked], "split": [rows[i]["split"] for i in picked],
-                "cluster": [rows[i]["qid"] for i in picked], "chunking": f"seg{size}", "ranker": r.id, "kind": r.kind,
+                "cluster": [rows[i]["qid"] for i in picked], "chunking": chunking, "ranker": r.id, "kind": r.kind,
                 "model": r.model, "depth": r.depth.label if r.depth else None, "expand": r.expand,
                 "question_type": [rows[i]["features"]["question_type"] for i in picked]}
         frames.append(pd.concat([pd.DataFrame(meta), pd.DataFrame(records[r.id], columns=[*COLUMNS, *EXTRA])], axis=1))
-    report_dropped(dataset, size, dropped, set(records))
+    report_dropped(dataset, chunking, dropped, set(records))
     out = pd.concat(frames, ignore_index=True)
     curves = [c for c in out.columns if c.startswith(("recall_", "precision_"))]
     out[curves] = out[curves].astype("float32")  # ~230 curve columns per row; float32 halves the files
-    target = path(embedder, dataset, sample_name, size)
+    target = path(embedder, dataset, sample_name, chunking)
     target.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(target, index=False)
     return out
 
 
-def report_dropped(dataset: str, size: int, dropped: dict[str, str], kept: set[str]) -> None:
+def report_dropped(dataset: str, chunking: str, dropped: dict[str, str], kept: set[str]) -> None:
     """Say which configurations of the scored models were left out because some question was
     not scored deep enough (models with no scores at all, and windows never scored at an
     expansion, drop out silently: that is by design)."""
@@ -210,25 +210,25 @@ def report_dropped(dataset: str, size: int, dropped: dict[str, str], kept: set[s
             lost = sorted({k.split("@")[1].split("+")[0] for k in relevant}, key=lambda d: int(d[1:]))
             if lost:
                 example = next(v for k, v in relevant.items() if k.split("@")[1].split("+")[0] == lost[0])
-                print(f"{dataset} seg{size}: {m} reranking {what} is left out at vector search limits {', '.join(lost)}: "
+                print(f"{dataset} {chunking}: {m} reranking {what} is left out at vector search limits {', '.join(lost)}: "
                       f"some question was not scored that deep (e.g. {example})", flush=True)
 
 
-def scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
+def scoring_work(embedder: str, dataset: str, chunking: str, sample_name: str, model: str, expand: int,
                  pool_seeds: int):
     """Pairs to score for a run, as rerankers.Work: what EventMemory.query sends its reranker
     for each question at vector search limit pool_seeds (the deepest the run replays), found by
     querying with the reranker in record mode; unique by key, not yet in the model's cache."""
-    return asyncio.run(_scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds))
+    return asyncio.run(_scoring_work(embedder, dataset, chunking, sample_name, model, expand, pool_seeds))
 
 
-async def _scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
+async def _scoring_work(embedder: str, dataset: str, chunking: str, sample_name: str, model: str, expand: int,
                         pool_seeds: int):
     rows = queries(dataset)
     reranker = CachedReranker(model, mode="record")
     for qi in sample(dataset, sample_name):
         q = rows[qi]
-        async with Memory(embedder, dataset, size) as m:
+        async with Memory(embedder, dataset, chunking) as m:
             partition = await (await m.event_memory(reranker)).open_or_create_partition(q["qid"])
             await partition.query(q["variants"]["question"], vector_search_limit=pool_seeds, expand_context=expand)
     work, seen = [], set()

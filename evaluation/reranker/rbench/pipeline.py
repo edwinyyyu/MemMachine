@@ -23,10 +23,6 @@ from rbench.report.data import load
 from rbench.rerankers import RERANKERS, ScoreCache, pair_ids, score
 
 
-def _size(chunking_name: str) -> int:
-    return int(chunking_name.removeprefix("seg"))
-
-
 _PREPARED: set[tuple] = set()  # (embedder, dataset, chunking, sample) done in this process
 
 
@@ -40,7 +36,7 @@ def prepare(run: Run, embedder: str = EMBEDDER) -> None:
             if (embedder, run.dataset, c, run.sample) in _PREPARED:
                 continue  # the same stage's other scoring position
             _PREPARED.add((embedder, run.dataset, c, run.sample))
-            hs.ingest(embedder, run.dataset, _size(c), [rows[i]["qid"] for i in sample(run.dataset, run.sample)])
+            hs.ingest(embedder, run.dataset, c, [rows[i]["qid"] for i in sample(run.dataset, run.sample)])
         return
     for c in run.chunkings:
         chunking.build(run.dataset, c)
@@ -63,7 +59,7 @@ def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER
     spec = RERANKERS[model]
     for c in run.chunkings:
         if info(run.dataset).partitioned:
-            work = simulate_histories.scoring_work(embedder, run.dataset, _size(c), run.sample, model, run.expand,
+            work = simulate_histories.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand,
                                                    run.pool_seeds)
         else:
             work = missing(run, model, c, embedder)
@@ -85,13 +81,13 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     for run in runs:
         if info(run.dataset).partitioned:  # both scoring positions replay in one simulation
             for c in run.chunkings:  # the replayed expansions, plus any whose windows this run scores
-                history_jobs[(run.dataset, _size(c), run.sample)] |= {run.expand} - {0}
+                history_jobs[(run.dataset, c, run.sample)] |= {run.expand} - {0}
             reported.add((run.dataset, "history", run.variant, run.sample))
             continue
         for c in run.chunkings:
             groups[(run.dataset, run.scope, run.variant, run.sample)].add(c)
-    for (dataset, size, sample_name), expansions in sorted(history_jobs.items()):
-        simulate_histories.run(embedder, dataset, size, sample_name, list(RERANKERS), tuple(sorted(expansions)))
+    for (dataset, c, sample_name), expansions in sorted(history_jobs.items()):
+        simulate_histories.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)))
     for (dataset, scope, variant, sample_name), chunkings in sorted(groups.items()):
         for c in sorted(chunkings):
             simulate.run(embedder, dataset, scope, variant, sample_name, c, list(RERANKERS))

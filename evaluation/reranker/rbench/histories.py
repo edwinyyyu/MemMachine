@@ -9,7 +9,8 @@ timestamp is its session's date plus one microsecond per earlier turn in the his
 turn is ordered, and nothing rendered or embedded changes (renders show the minute, the
 embedding text the date).
 
-Everything else is MemMachine's own code: segmenting (TextSegmenter), the text embedded
+Everything else is MemMachine's own code: segmenting (TextSegmenter, or the benchmark's
+FixedCutSegmenter for cut<N> chunkings: memory.segmenter), the text embedded
 (WholeTextDeriver), storing, searching, expanding and rendering. This module adds:
   ingest   encode a sample's histories, each embedded once (the stores are kept)
   table    a stored history's segments in EventMemory's order, read through the segment
@@ -31,6 +32,7 @@ import numpy as np
 
 from rbench.datasets.longmemeval import history, session_datetime
 from rbench.memory import Memory  # imports MemMachine (quietly) before the names below
+from rbench.memory import segmenter as memory_segmenter
 from rbench.reading import constants
 from rbench.schema import queries
 from rbench.text import GEMMA, count
@@ -38,7 +40,6 @@ from rbench.text import GEMMA, count
 from memmachine_server.episodic_memory.event_memory.data_types import Event, ProducerContext, Segment, TextBlock  # noqa: E402, I001
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import WholeTextDeriver  # noqa: E402
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: E402
-from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: E402
 
 PRODUCERS = {"user": "User", "assistant": "Assistant"}
 TICK = timedelta(microseconds=1)  # per turn: orders turns, never rendered
@@ -67,16 +68,16 @@ def events(dataset: str, qid: str) -> tuple[tuple[Event, ...], dict[uuid.UUID, t
     return tuple(out), where
 
 
-def ingest(embedder: str, dataset: str, size: int, qids: list[str]) -> None:
+def ingest(embedder: str, dataset: str, chunking: str, qids: list[str]) -> None:
     """Encode each history into its partition (embedding it), skipping those already in."""
 
     async def go() -> None:
         done = 0
         for qid in qids:
-            async with Memory(embedder, dataset, size) as m:
+            async with Memory(embedder, dataset, chunking) as m:
                 done += await m.ingest(qid, list(events(dataset, qid)[0]))
             if done and done % 25 == 0:
-                print(f"{dataset} seg{size}: {done} histories encoded", flush=True)
+                print(f"{dataset} {chunking}: {done} histories encoded", flush=True)
 
     asyncio.run(go())
 
@@ -148,13 +149,13 @@ async def table(m: Memory, dataset: str, qid: str) -> Segments:
 
 
 @lru_cache(maxsize=4)
-def offline(dataset: str, qid: str, size: int) -> tuple[Segments, tuple[Segment, ...], tuple[str, ...]]:
+def offline(dataset: str, qid: str, chunking: str) -> tuple[Segments, tuple[Segment, ...], tuple[str, ...]]:
     """(segments, MemMachine Segment objects, embedding texts) without a store: the history's
-    events through MemMachine's TextSegmenter and WholeTextDeriver in process. The texts and
+    events through the chunking's segmenter (memory.segmenter) and MemMachine's WholeTextDeriver in process. The texts and
     order are the stored ones; only the uuids differ (the segmenter draws them)."""
 
     async def go() -> tuple[list[Segment], list[str]]:
-        segmenter, deriver = TextSegmenter(max_chunk_length=size), WholeTextDeriver()
+        segmenter, deriver = memory_segmenter(chunking), WholeTextDeriver()
         segments = [s for e in events(dataset, qid)[0] for s in await segmenter.segment(e)]
         texts = [d.block.text for s in segments for d in await deriver.derive(s)]
         return segments, texts
@@ -166,10 +167,10 @@ def offline(dataset: str, qid: str, size: int) -> tuple[Segments, tuple[Segment,
     return _segments_table(dataset, qid, segments), tuple(segments), tuple(texts)
 
 
-def embedding_tokens(dataset: str, qid: str, size: int) -> int:
+def embedding_tokens(dataset: str, qid: str, chunking: str) -> int:
     """Tokens a history's embedding costs: its embedding texts plus special tokens (the
     no-prompt setup EventMemory's OpenAIEmbedder sends)."""
-    _, _, texts = offline(dataset, qid, size)
+    _, _, texts = offline(dataset, qid, chunking)
     return int(count(list(texts), GEMMA).sum()) + 2 * len(texts)
 
 

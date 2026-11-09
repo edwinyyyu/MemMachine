@@ -5,6 +5,8 @@ searching its own history through MemMachine's EventMemory itself (memory.py, hi
 
 Varied:
   segment size     500 characters (EventMemory's default) in the core; 250, 1,000 and 2,000
+  chunker          EventMemory's TextSegmenter (seg<N>, recursive splitting) throughout; the simple
+                   chunker (cut<N>, a cut every N characters within each turn) as an option
   reranking        none; the seeds (rerank, then read seeds or expand them); or each seed's
                    expand_context-3 window (expand, then rerank: what EventMemory's query does
                    whenever expand_context > 0; its default is 0)
@@ -60,10 +62,10 @@ def runs(datasets, chunkings, models, **settings) -> list[Run]:
 LME = "longmemeval_m"
 
 
-def lme(sizes: tuple[int, ...], models: tuple[str, ...], expand: int, **settings) -> Run:
-    """A LongMemEval-M run: EventMemory segments of `sizes` characters, all 470 answerable questions."""
-    return Run(LME, "history", "question", tuple(f"seg{n}" for n in sizes), models, sample="all", expand=expand,
-               **settings)
+def lme(chunkings: tuple[str, ...], models: tuple[str, ...], expand: int, **settings) -> Run:
+    """A LongMemEval-M run on all 470 answerable questions. chunkings: seg<N> (EventMemory's
+    TextSegmenter at N characters) or cut<N> (the simple chunker: memory.segmenter)."""
+    return Run(LME, "history", "question", chunkings, models, sample="all", expand=expand, **settings)
 
 
 # LongMemEval-M first (the other datasets are inactive until we decide which to add back).
@@ -74,15 +76,18 @@ def lme(sizes: tuple[int, ...], models: tuple[str, ...], expand: int, **settings
 # the pilot's 100 are part of the core's 470.
 STAGES: dict[str, list[Run]] = {
     # Free and fast: the local 0.6B on 8 LongMemEval-S histories, to test the pipeline itself.
-    "lme-test": [Run("longmemeval_s", "history", "question", ("seg500",), ("q06-local",), sample="tiny",
+    "lme-test": [Run("longmemeval_s", "history", "question", ("seg500", "cut500"), ("q06-local",), sample="tiny",
                      pool_seeds=30, expand=e) for e in (0, 3)],
     # Paid, cheap: every planned configuration on 100 questions first.
-    "lme-pilot": [replace(lme((500,), ("q8",), e), sample="proto") for e in (0, 3)],
-    "lme-core": [lme((500,), ("q8",), e) for e in (0, 3)],
-    "lme-sizes": [lme((250, 1000, 2000), ("q8",), e) for e in (0, 3)],
-    "lme-depth": [lme((500,), ("q8",), e, pool_seeds=200) for e in (0, 3)],
+    "lme-pilot": [replace(lme(("seg500",), ("q8",), e), sample="proto") for e in (0, 3)],
+    "lme-core": [lme(("seg500",), ("q8",), e) for e in (0, 3)],
+    "lme-sizes": [lme(("seg250", "seg1000", "seg2000"), ("q8",), e) for e in (0, 3)],
+    "lme-depth": [lme(("seg500",), ("q8",), e, pool_seeds=200) for e in (0, 3)],
     # Optional: the 0.6B as the cheap middle option.
-    "lme-small": [lme((500,), ("q06",), e) for e in (0, 3)],
+    "lme-small": [lme(("seg500",), ("q06",), e) for e in (0, 3)],
+    # Optional: the simple chunker at EventMemory's default limit. Reports state each chunking's
+    # measured size, and comparisons that pair by size use the measured one.
+    "lme-cut": [lme(("cut500",), ("q8",), e) for e in (0, 3)],
 }
 
 

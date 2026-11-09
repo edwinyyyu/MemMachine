@@ -13,13 +13,15 @@ interfaces:
   QueryCachingEmbedder  MemMachine's OpenAIEmbedder (the no-prompt path), against the local
                      llama-server or DeepInfra, with concurrency bounded and question
                      embeddings cached, so replaying configurations does not re-embed them.
+  FixedCutSegmenter  a Segmenter that cuts every N characters: the simple chunker, an option
+                     beside MemMachine's TextSegmenter (chunking names: segmenter()).
   CachedReranker     Qwen3-Reranker scores from the score cache (rerankers.py). EventMemory calls
                      it as it calls any reranker: score(question, rendered contexts). Replay mode
                      treats a missing score as an error, so replays never spend; record mode
                      collects the misses (scored 0) as the work a paid run scores.
 
 One partition per history, keyed by the question id. Stores live under
-data/memory/<embedder>/<dataset>/seg<N>/ and are kept.
+data/memory/<embedder>/<dataset>/<chunking>/ (seg<N> or cut<N>) and are kept.
 """
 
 from __future__ import annotations
@@ -49,13 +51,19 @@ from memmachine_server.common.vector_store.vector_search_engine.vector_search_en
     SearchResult,
     VectorSearchEngine,
 )
-from memmachine_server.episodic_memory.event_memory.data_types import Event, FormatOptions  # noqa: E402
+from memmachine_server.episodic_memory.event_memory.data_types import (  # noqa: E402
+    Event,
+    FormatOptions,
+    Segment,
+    TextBlock,
+)
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import WholeTextDeriver  # noqa: E402
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory, EventMemoryParams  # noqa: E402
 from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_segment_store import (  # noqa: E402
     SQLAlchemySegmentStore,
     SQLAlchemySegmentStoreParams,
 )
+from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import Segmenter  # noqa: E402
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
@@ -66,6 +74,42 @@ from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa
 MEMORY = DATA / "memory"
 RERANK_FORMAT = FormatOptions(time_style="short")  # what EventMemory.query renders for its reranker
 RENDER = "em"  # score-cache render tag: units are EventMemory-rendered contexts
+
+
+class FixedCutSegmenter(Segmenter):
+    """The simple chunker: cuts each text block every `length` characters (code points),
+    whatever the text, the last piece shorter. Like TextSegmenter it segments one event at a
+    time (one LongMemEval turn), so no segment spans turns; unlike it, nothing is stripped, so
+    the pieces join back to the turn exactly."""
+
+    def __init__(self, length: int) -> None:
+        self._length = length
+
+    async def segment(self, event: Event, *, format_options: FormatOptions | None = None) -> list[Segment]:
+        segments: list[Segment] = []
+        for index, block in enumerate(event.blocks):
+            match block:
+                case TextBlock(text=text):
+                    pieces = [text[i : i + self._length] for i in range(0, len(text), self._length)]
+                    segments.extend(Segment(uuid=uuid.uuid4(), event_uuid=event.uuid, index=index, offset=offset,
+                                            timestamp=event.timestamp, block=TextBlock(text=piece), context=event.context,
+                                            properties=event.properties) for offset, piece in enumerate(pieces))
+                case _:
+                    raise NotImplementedError(f"Unsupported block type: {type(block).__name__}")
+        return segments
+
+
+SEGMENTERS = {"seg": TextSegmenter, "cut": FixedCutSegmenter}
+
+
+def segmenter(chunking: str) -> Segmenter:
+    """The Segmenter a history chunking names: seg<C> is MemMachine's TextSegmenter (recursive
+    splitting, EventMemory's default) at a limit of C characters; cut<C> the simple chunker,
+    cutting every C characters."""
+    kind, length = chunking[:3], chunking[3:]
+    if kind not in SEGMENTERS or not length.isdigit():
+        raise ValueError(f"unknown history chunking {chunking!r}: expected seg<characters> or cut<characters>")
+    return SEGMENTERS[kind](int(length))
 
 
 class ExactSearchEngine(VectorSearchEngine):
@@ -205,18 +249,20 @@ class CachedReranker(Reranker):
 
 
 class Memory:
-    """One segment length's EventMemory stores for an embedder and dataset, and EventMemory
+    """One chunking's EventMemory stores for an embedder and dataset, and EventMemory
     instances over them (with or without a reranker; they share the stores).
 
     Use one per history (`async with Memory(...)`): the SQLite vector store keeps every opened
     partition's index in memory until it shuts down, so closing after each history keeps
     memory flat. A history's events are encoded in one call, so its index is saved once."""
 
-    def __init__(self, embedder: str, dataset: str, size: int, root: Path | None = None,
+    def __init__(self, embedder: str, dataset: str, chunking: str, root: Path | None = None,
                  backend: Embedder | None = None) -> None:
-        """root and backend replace the stores' directory and the embedder (tests)."""
-        self.embedder, self.dataset, self.size = embedder, dataset, size
-        self.root = root or MEMORY / embedder / dataset / f"seg{size}"
+        """chunking: seg<C> or cut<C> (segmenter()). root and backend replace the stores'
+        directory and the embedder (tests)."""
+        self.embedder, self.dataset, self.chunking = embedder, dataset, chunking
+        self.segmenter = segmenter(chunking)
+        self.root = root or MEMORY / embedder / dataset / chunking
         self.root.mkdir(parents=True, exist_ok=True)
         self._backend = backend
         self._embedder: Embedder | None = None
@@ -246,7 +292,7 @@ class Memory:
     async def event_memory(self, reranker: Reranker | None = None) -> EventMemory:
         segment_store, vector_store, _ = await self.stores()
         return EventMemory(EventMemoryParams(segment_store=segment_store, vector_store=vector_store,
-                                             segmenter=TextSegmenter(max_chunk_length=self.size), deriver=WholeTextDeriver(),
+                                             segmenter=self.segmenter, deriver=WholeTextDeriver(),
                                              embedder=self._embedder, reranker=reranker))
 
     def done(self, key: str) -> Path:

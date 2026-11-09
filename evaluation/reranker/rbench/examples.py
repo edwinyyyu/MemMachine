@@ -78,7 +78,7 @@ def history_example(dataset: str, qi: int, size: int = 500) -> list[str]:
 
     q = queries(dataset)[qi]
     h = history(dataset, q["qid"])
-    seg = hs.offline(dataset, q["qid"], size)[0]
+    seg = hs.offline(dataset, q["qid"], f"seg{size}")[0]
     out = [f"### {dataset} · {q['qid']} · {q['features']['question_type']}\n",
            f"**Question** (asked {q['features']['question_date']}):\n", _quote(q["variants"]["question"]), "",
            f"**Gold:** {len(q['gold_turns'][0])} turn(s) in {len(q['gold_sessions'])} evidence session(s) of "

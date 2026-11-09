@@ -41,8 +41,9 @@ def test_expansion_pairs_plain_chunks_by_measured_size():
     from rbench.report.figures import expansion_rows
 
     r = load("gemma300m-raw", "longmemeval_s", "history", "question", "tiny")
-    windows = {e: r.df.loc[(r.df.expand == e), "unit_tokens"].groupby(r.df.qid).first().mean() for e in r.expansions}
-    plain = r.df[r.df.expand == 0]
+    seeds = r.df[r.df.chunking == "seg500"]
+    windows = {e: seeds.loc[seeds.expand == e, "unit_tokens"].groupby(seeds.qid).first().mean() for e in r.expansions}
+    plain = seeds[seeds.expand == 0]
     # two invented chunkings, named against their sizes: "seg9000" measures like the 1-window,
     # "seg100" like the 3-window
     fakes = [plain.assign(chunking=name, unit_tokens=windows[e] * 1.05) for name, e in (("seg9000", 1), ("seg100", 3))]

@@ -184,8 +184,9 @@ def unit_tokens(r: Results, chunking_name: str, expand: int = 0) -> float | None
 
 
 def size_label(r: Results, chunking_name: str, expand: int = 0) -> str:
-    """What one unit of a configuration measures: for history datasets the segment limit with
-    the history's measured mean segment, or the measured mean window when expanded; for flat
+    """What one unit of a configuration measures: for history datasets the chunker's limit (seg:
+    at most N characters; cut: every N) with the history's measured mean segment, or the
+    measured mean window when expanded; for flat
     datasets the mean chunk tokens."""
     from rbench.datasets import info
 
@@ -195,9 +196,10 @@ def size_label(r: Results, chunking_name: str, expand: int = 0) -> str:
     if expand:
         tokens = unit_tokens(r, chunking_name, expand)
         return "not measured" if tokens is None else f"window: {tokens:,.0f} tokens"
-    size, limit = segment_size(r, chunking_name), chunking_name.removeprefix("seg")
+    size = segment_size(r, chunking_name)
+    limit = f"≤{chunking_name[3:]} chars" if chunking_name.startswith("seg") else f"cut every {chunking_name[3:]} chars"
     if size is None:
-        return f"≤{limit} chars (not measured)"
+        return f"{limit} (not measured)"
     seeds = unit_tokens(r, chunking_name)
-    return (f"≤{limit} chars; history {size[0]:,.0f} chars, {size[1]:,.0f} tokens"
+    return (f"{limit}; history {size[0]:,.0f} chars, {size[1]:,.0f} tokens"
             + (f"; seeds {seeds:,.0f} tokens" if seeds else ""))

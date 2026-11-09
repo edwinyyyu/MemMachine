@@ -76,7 +76,10 @@ ORACLE = "#8f8e89"
 # "3" (a prong along the line) to the local 0.6B; + (its bar along flat lines) to the gray reference.
 MARKERS = {"first_stage": "x", "oracle": "+", **{m: spec.marker for m, spec in RERANKERS.items()}}
 LABEL = {"first_stage": "first stage only", **{m: spec.label for m, spec in RERANKERS.items()}}
-CHUNKERS = {"fix": ("#2a78d6", "x", "-"), "rec": ("#eb6834", "1", (0, (5, 3))), "seg": ("#1baf7a", "2", "-")}  # color, marker, line
+CHUNKERS = {"fix": ("#2a78d6", "x", "-"), "rec": ("#eb6834", "1", (0, (5, 3))), "seg": ("#1baf7a", "2", "-"),
+            "cut": ("#2a78d6", "x", (0, (5, 3)))}  # color, marker, line per chunker family
+CHUNKER_NAMES = {"fix": "fixed token windows", "rec": "recursive, size-matched", "seg": "EventMemory segments (TextSegmenter)",
+                 "cut": "simple chunker (a cut every N characters)"}
 RAMP = {3: ("#86b6ef", "#2a78d6", "#104281"), 5: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281")}
 DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34948", "#f2b8b5", "#f0efec", "#9ec5f4",
                                                                   "#3987e5", "#104281"])  # equal steps per arm
@@ -167,11 +170,15 @@ def _unit_title(r: Results, c: str, e: int) -> str:
     return f"expand_context {e}" + (f" (window {window:,.0f} tok)" if window else "")
 
 
-def _size_ticks(ax, r: Results, chunkings: list[str]) -> None:
-    """Label a segment-size axis with each limit's measured mean segment tokens beneath it."""
-    sizes = sorted(chunkings, key=lambda c: int(c[3:]))
-    ax.set_xticks([int(c[3:]) for c in sizes],
-                  [f"{c[3:]}\n{t:,.0f} tok" if (t := unit_tokens(r, c)) else c[3:] for c in sizes])
+def _measured_x(ax, measured: dict[str, float]) -> None:
+    """A log axis of measured sizes, a labelled tick at each chunking's measured size (name and
+    tokens), padded so the outermost markers clear the frame."""
+    ax.set_xscale("log", base=2)
+    xs = sorted(measured.values())
+    ax.set_xlim(xs[0] / 1.25, xs[-1] * 1.25)
+    ax.set_xticks(xs, [f"{c}\n{t:,.0f} tok" for c, t in sorted(measured.items(), key=lambda ct: ct[1])])
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
 
 
 def _log_x(ax, base: int = 10, ticks=None) -> None:
@@ -455,12 +462,21 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
                    + (BOUND if reading == "every" else ""))
 
 
+def _families(chunkings: list[str]) -> dict[str, list[str]]:
+    """Chunkings by chunker family (fix, rec, seg, cut), each sorted by size limit."""
+    out: dict[str, list[str]] = {}
+    for c in sorted(chunkings, key=lambda c: int(c[3:])):
+        out.setdefault(c[:3], []).append(c)
+    return out
+
+
 def _size_styles(chunkings: list[str]) -> dict[str, dict]:
+    """Color by size limit; line and marker by chunker family (CHUNKERS)."""
     sizes = sorted({int(c[3:]) for c in chunkings})
     ramp = RAMP[3] if len(sizes) <= 3 else RAMP[5]
     color = dict(zip(sizes[-len(ramp):], ramp))  # beyond 5 sizes, the smallest go unplotted
-    return {c: {"color": color[int(c[3:])], "ls": DASH if c.startswith("rec") else "-",
-                "marker": "1" if c.startswith("rec") else "2"} for c in chunkings if int(c[3:]) in color}
+    return {c: {"color": color[int(c[3:])], "ls": CHUNKERS[c[:3]][2], "marker": CHUNKERS[c[:3]][1]}
+            for c in chunkings if int(c[3:]) in color}
 
 
 def rerank_cost(r: Results, out, head: str, reading: str) -> None:
@@ -503,45 +519,53 @@ def rerank_cost(r: Results, out, head: str, reading: str) -> None:
 
 
 def gain_sizes(r: Results, out, head: str, reading: str) -> None:
-    """Reranker gain against segment size: coverage reranked minus coverage of the first stage
-    over the same seeds (same vector search limit), at each configured budget, with 95%
-    intervals; a panel per (model, limit)."""
-    sized = sorted((c for c in r.chunkings if c.startswith("seg")), key=lambda c: int(c[3:]))
-    if len(sized) < 2 or not r.models:
+    """Reranker gain against measured segment size: coverage reranked minus coverage of the first
+    stage over the same seeds (same vector search limit), at each configured budget, with 95%
+    intervals; a panel per (model, limit), a line per (budget, chunker family)."""
+    measured = {c: unit_tokens(r, c) for c in r.chunkings}
+    families = _families([c for c, t in measured.items() if t])
+    if sum(map(len, families.values())) < 2 or not r.models:
         return
+    sized = [c for cs in families.values() for c in cs]
     limits = [d for d in _limit_grid(r) if all(d in r.limits(c, config.EVAL.limits) for c in sized)]
     if not limits:
         return
     budgets = config.EVAL.budgets
     ramp = dict(zip(budgets, RAMP[5] if len(budgets) > 3 else RAMP[3], strict=False))
     fig, axes = _figure(len(r.models), len(limits), panel=(3.8, 3.2), sharey=True)
-    sizes = [int(c[3:]) for c in sized]
     for i, m in enumerate(r.models):
         for j, d in enumerate(limits):
             ax = axes[i][j]
             for k, b in enumerate(budgets):
-                means, los, his = [], [], []
-                for c in sized:
-                    rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
-                    gain = (rows[reading].to_numpy() <= b).astype(float) - (base[reading].to_numpy() <= b)
-                    lo, hi = interval(gain, base.cluster.to_numpy())
-                    means.append(gain.mean())
-                    los.append(gain.mean() - lo if np.isfinite(lo) else 0.0)
-                    his.append(hi - gain.mean() if np.isfinite(hi) else 0.0)
-                xs = [x * (1 + 0.03 * (k - (len(budgets) - 1) / 2)) for x in sizes]  # side by side
-                ax.errorbar(xs, means, yerr=[los, his], color=ramp.get(b, INK2), linewidth=THIN, capsize=0, fmt="none")
-                _plot(ax, xs, means, color=ramp.get(b, INK2), marker="2")
+                for fam, chunkings in families.items():
+                    means, los, his = [], [], []
+                    for c in chunkings:
+                        rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
+                        gain = (rows[reading].to_numpy() <= b).astype(float) - (base[reading].to_numpy() <= b)
+                        lo, hi = interval(gain, base.cluster.to_numpy())
+                        means.append(gain.mean())
+                        los.append(gain.mean() - lo if np.isfinite(lo) else 0.0)
+                        his.append(hi - gain.mean() if np.isfinite(hi) else 0.0)
+                    xs = [measured[c] * (1 + 0.03 * (k - (len(budgets) - 1) / 2)) for c in chunkings]  # side by side
+                    ax.errorbar(xs, means, yerr=[los, his], color=ramp.get(b, INK2), linewidth=THIN, capsize=0, fmt="none")
+                    _plot(ax, xs, means, color=ramp.get(b, INK2), marker=CHUNKERS[fam][1], linestyle=CHUNKERS[fam][2])
             ax.axhline(0, color=INK2, linewidth=0.8)
-            _log_x(ax, 2, sizes)
-            _size_ticks(ax, r, sized)
+            _measured_x(ax, {c: measured[c] for c in sized})
             ax.set_title(f"{LABEL[m]} · L {d[1:]}", loc="left")
-            ax.set_xlabel("segment limit (characters) and measured mean segment of the retrieved seeds")
+            ax.set_xlabel("measured mean segment of the retrieved seeds (tokens)")
             if j == 0:
                 ax.set_ylabel(f"gain in {_coverage(reading)}")
-    _save(fig, out / _file("gain_sizes", reading), f"Reranker gain vs segment size — {head}",
-          [_key(ramp.get(b, INK2), marker="2") for b in budgets], [f"reader budget {b:,}" for b in budgets], ncol=4,
-          note="Held equal: the vector search limit (panel) and the reader budget (line). y: coverage reranked minus coverage "
-               "of the first stage over the same seeds, mean with 95% interval over questions. Seeds only (expand_context 0).")
+    handles = [_key(ramp.get(b, INK2)) for b in budgets]
+    labels = [f"reader budget {b:,}" for b in budgets]
+    if len(families) > 1:
+        handles += [_key(INK2, CHUNKERS[f][2], CHUNKERS[f][1]) for f in families]
+        labels += [CHUNKER_NAMES[f] for f in families]
+    _save(fig, out / _file("gain_sizes", reading), f"Reranker gain vs measured segment size — {head}", handles, labels,
+          ncol=4,
+          note="Held equal: the vector search limit (panel) and the reader budget (color). x: each chunking's measured mean "
+               "segment over the seeds the first stage retrieved (" + ", ".join(sized) + "). y: coverage reranked minus "
+               "coverage of the first stage over the same seeds, mean with 95% interval over questions. Seeds only "
+               "(expand_context 0).")
 
 
 def cost_saving(r: Results, out, head: str, reading: str) -> None:
@@ -639,36 +663,30 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
 
 
 def first_stage_sizes(r: Results, out, head: str, reading: str) -> None:
-    sizes = sorted({int(c[3:]) for c in r.chunkings if c[:3] in ("fix", "rec", "seg")})
-    if len(sizes) < 3:
+    """First-stage coverage against each chunking's measured size, a line per chunker family."""
+    measured = {c: unit_tokens(r, c) for c in r.chunkings if c[:3] in CHUNKERS}
+    families = _families([c for c, t in measured.items() if t])
+    if sum(map(len, families.values())) < 2:
         return
     budgets = config.EVAL.budgets
     fig, axes = _figure(1, len(budgets), panel=(3.4, 3.2), sharey=True)
-    styles = CHUNKERS
-    present = set()
     for j, b in enumerate(budgets):
         ax = axes[0][j]
-        for fam, (color, marker, ls) in styles.items():
-            xs = [n for n in sizes if f"{fam}{n}" in r.chunkings]
-            if not xs:
-                continue
-            ys = [(r.rows(f"{fam}{n}", "first_stage")[reading] <= b).mean() for n in xs]
-            _plot(ax, xs, ys, color=color, marker=marker, linestyle=ls)
-            present.add(fam)
-        _log_x(ax, 2, sizes)
-        if set(present) == {"seg"}:
-            _size_ticks(ax, r, [f"seg{n}" for n in sizes])
+        for fam, chunkings in families.items():
+            color, marker, ls = CHUNKERS[fam]
+            ys = [(r.rows(c, "first_stage")[reading] <= b).mean() for c in chunkings]
+            _plot(ax, [measured[c] for c in chunkings], ys, color=color, marker=marker, linestyle=ls)
+        _measured_x(ax, {c: measured[c] for cs in families.values() for c in cs})
         _share_y(ax)
         ax.set_title(f"reader budget {b:,}", loc="left")
-        ax.set_xlabel("segment / chunk size; markers: sizes measured")
+        ax.set_xlabel("measured mean segment / chunk (tokens)")
         if j == 0:
             ax.set_ylabel(f"{_coverage(reading)}, no reranker")
-    names = {"fix": "fixed windows", "rec": "recursive, size-matched", "seg": "EventMemory segments (characters)"}
-    keys = [k for k in styles if k in present]
-    _save(fig, out / _file("first_stage_sizes", reading), f"First-stage coverage vs segment size (no reranker) — {head}",
-          [_key(styles[k][0], styles[k][2], styles[k][1]) for k in keys], [names[k] for k in keys],
-          note="Held equal: reader tokens (per panel). No reranker: the first stage reads as deep as the budget allows "
-               "(this chart compares segment sizes, not rerankers).")
+    _save(fig, out / _file("first_stage_sizes", reading), f"First-stage coverage vs measured segment size (no reranker) — {head}",
+          [_key(CHUNKERS[f][0], CHUNKERS[f][2], CHUNKERS[f][1]) for f in families], [CHUNKER_NAMES[f] for f in families],
+          note="Held equal: reader tokens (per panel). x: each chunking's measured mean unit (for histories, over the seeds "
+               "the first stage retrieved; " + ", ".join(c for cs in families.values() for c in cs) + "). No reranker: "
+               "the first stage reads as deep as the budget allows (this chart compares segment sizes, not rerankers).")
 
 
 EXPANSION_APPROACHES = (("plain chunks of the read size", "#2a78d6"), ("seeds, expanded (no reranker)", "#8f8e89"),
@@ -698,24 +716,25 @@ class ExpansionPanel:
     def matched(self) -> bool:
         return self.ratio is not None and abs(self.ratio - 1) <= config.EVAL.size_tolerance
 
-    def sizes(self) -> str:
+    def sizes(self, flag: bool = True) -> str:
         window = f"window {self.window:,.0f} tok" if self.window else "window not measured"
         if self.plain is None:
-            return f"{window}; no unexpanded chunking to compare"
+            return f"{window}; no unexpanded {self.seed[:3]} chunking to compare"
         plain = f"plain {self.plain} {self.plain_size:,.0f} tok"
-        return f"{window}; {plain}" + ("" if self.matched else f" — NOT size-matched ({self.ratio:.2f}×)")
+        return f"{window}; {plain}" + ("" if self.matched or not flag else f" — NOT size-matched ({self.ratio:.2f}×)")
 
 
 def expansion_rows(r: Results) -> list[ExpansionPanel]:
     """Per (model, expand_context): the four approaches as (label, chunking, ranker) when
     present. Seeds are EventMemory's default segments when expanded, else the smallest chunking
-    with expansions; the plain comparison is the unexpanded chunking whose measured mean unit
-    (data.unit_tokens) is closest to the seeds' measured mean window."""
+    with expansions; the plain comparison is the unexpanded chunking of the same chunker whose
+    measured mean unit (data.unit_tokens) is closest to the seeds' measured mean window (another
+    chunker would change the boundaries as well as the size)."""
     expanded = sorted({c for c in r.df.loc[r.df.expand > 0, "chunking"]}, key=lambda c: int(c[3:]))
     if not expanded:
         return []
     seed = default_segment() if default_segment() in expanded else expanded[0]
-    sized = [(c, unit_tokens(r, c)) for c in r.chunkings if c != seed]
+    sized = [(c, unit_tokens(r, c)) for c in r.chunkings if c != seed and c[:3] == seed[:3]]
     sized = [(c, t) for c, t in sized if t]
     out = []
     for e in r.expansions:
@@ -768,7 +787,8 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
     _save(fig, out / _file("expansion", reading), f"Embedded vs reranked vs read unit — {head}",
           [_key(colors[k], marker=EXPANSION_MARKERS[k]) for k in keys], keys, ncol=2,
           note="Sizes are measured: mean segment-text tokens per retrieved seed (its window when expanded), over every "
-               "seed the first stage retrieved. Plain chunks: the unexpanded chunking closest to the window's measured size"
+               "seed the first stage retrieved. Plain chunks: the unexpanded chunking of the same chunker closest to the window's "
+               "measured size"
                + (f"; panels flag pairs more than {config.EVAL.size_tolerance:.0%} apart" if unmatched else "")
                + ". Held equal: reader tokens (x). Not equal: reranker tokens and vector search limit.")
 

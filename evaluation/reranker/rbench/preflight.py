@@ -130,7 +130,7 @@ def embed_fidelity(dataset: str = "longmemeval_m", chunking_name: str = "seg500"
 
         docs = []
         for q in queries(dataset)[:3]:
-            _, _, texts = hs.offline(dataset, q["qid"], int(chunking_name.removeprefix("seg")))
+            _, _, texts = hs.offline(dataset, q["qid"], chunking_name)
             docs += [texts[int(i)] for i in rng.choice(len(texts), n // 3, replace=False)]
     else:
         texts = chunking.load(dataset, chunking_name).texts(dataset)

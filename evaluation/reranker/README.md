@@ -19,7 +19,7 @@ The first-stage results come from the same runs, so the benchmark doubles as an 
 | stage | module | output (cached; reruns skip finished work) |
 |---|---|---|
 | prepare | `rbench/datasets/longmemeval.py` | `data/prepared/longmemeval_m/` — one file per history; gold turns and sessions |
-| ingest | `rbench/histories.py`, `rbench/memory.py` | each history encoded into its own EventMemory partition: MemMachine segments, derives and embeds it; stores kept under `data/memory/<embedder>/<dataset>/seg<N>/` |
+| ingest | `rbench/histories.py`, `rbench/memory.py` | each history encoded into its own EventMemory partition: MemMachine segments, derives and embeds it; stores kept under `data/memory/<embedder>/<dataset>/<chunking>/` (`seg<N>`: MemMachine's TextSegmenter; `cut<N>`: the simple chunker) |
 | query | `rbench/simulate_histories.py` | `EventMemory.query` per question and `expand_context` (exact search, MemMachine's own expansion) |
 | rerank | `rbench/rerankers.py`, `rbench/memory.py` | what `EventMemory.query` sends its reranker, collected by querying with a recording reranker; every pair cached by content |
 | simulate | `rbench/simulate_histories.py`, `rbench/reading.py`, `rbench/metrics.py` | one row per question × ranker × depth × expansion; a reranked row reads only its pool; reader cost = tokens of EventMemory's rendered context |

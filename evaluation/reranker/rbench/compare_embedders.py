@@ -49,7 +49,7 @@ def haystack(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int
     evidence = sorted({s for s, _ in q["gold_turns"][0]} | set(q["gold_sessions"]))
     others = [s for s in range(len(sessions)) if s not in evidence]
     keep = set(evidence) | set(random.Random(f"haystack:{q['qid']}").sample(others, min(EXTRA, len(others))))
-    seg, _, texts = hs.offline(dataset, q["qid"], size)
+    seg, _, texts = hs.offline(dataset, q["qid"], f"seg{size}")
     picked = [i for i in range(len(seg)) if int(seg.session[i]) in keep]
     position = {i: k for k, i in enumerate(picked)}
     gold = [[position[i] for i in ids] for ids in hs.gold_segments(dataset, q["qid"], seg)]

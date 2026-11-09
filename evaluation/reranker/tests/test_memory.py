@@ -79,7 +79,7 @@ def stored(tmp_path):
     events = _events()
 
     async def go():
-        async with Memory("fake", "synthetic", 80, root=tmp_path, backend=FakeEmbedder()) as m:
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
             assert await m.ingest("h", events)
             assert not await m.ingest("h", events)  # encoded once
             partition = await (await m.event_memory()).open_or_create_partition("h")
@@ -115,7 +115,7 @@ def test_replayed_reranking_matches_eventmemory_query_at_each_limit(tmp_path):
     question = "what did my sister say about the price?"
 
     async def go():
-        async with Memory("fake", "synthetic", 80, root=tmp_path, backend=FakeEmbedder()) as m:
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
             await m.ingest("h", events)
             plain = await (await m.event_memory()).open_or_create_partition("h")
             reranked = await (await m.event_memory(FakeReranker())).open_or_create_partition("h")
@@ -183,7 +183,7 @@ def test_a_new_encoding_refreshes_the_segment_table(tmp_path, monkeypatch):
     monkeypatch.setattr(hs, "events", lambda dataset, qid: (tuple(events), {e.uuid: (0, i, i) for i, e in enumerate(events)}))
 
     async def go():
-        async with Memory("fake", "synthetic", 80, root=tmp_path, backend=FakeEmbedder()) as m:
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
             await m.ingest("h", events)
             first = await hs.table(m, "synthetic", "h")
             assert (await hs.table(m, "synthetic", "h")).uuid == first.uuid  # cached
@@ -193,3 +193,22 @@ def test_a_new_encoding_refreshes_the_segment_table(tmp_path, monkeypatch):
             assert again.texts == first.texts and again.uuid != first.uuid  # new uuids, table refreshed
 
     _run(go())
+
+
+def test_simple_chunker_cuts_every_n_characters_within_each_turn():
+    """cut<N> pieces are N characters (the last shorter), join back to the turn exactly, and
+    never span events; seg<N> is MemMachine's TextSegmenter."""
+    from rbench.memory import FixedCutSegmenter, segmenter
+
+    from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: I001
+
+    text = "  Hello there.\n\nThis turn is cut every seven characters, whatever it holds.  "
+    event = Event(uuid=uuid.uuid4(), timestamp=datetime.datetime(2023, 5, 20, tzinfo=datetime.UTC),
+                  context=ProducerContext(producer="User"), blocks=[TextBlock(text=text)])
+    pieces = asyncio.run(segmenter("cut7").segment(event))
+    assert isinstance(segmenter("cut7"), FixedCutSegmenter) and isinstance(segmenter("seg500"), TextSegmenter)
+    assert "".join(p.block.text for p in pieces) == text
+    assert [len(p.block.text) for p in pieces[:-1]] == [7] * (len(pieces) - 1) and 0 < len(pieces[-1].block.text) <= 7
+    assert [p.offset for p in pieces] == list(range(len(pieces))) and {p.event_uuid for p in pieces} == {event.uuid}
+    with pytest.raises(ValueError):
+        segmenter("fix500")

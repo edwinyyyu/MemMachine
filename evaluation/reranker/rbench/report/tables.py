@@ -52,9 +52,9 @@ def first_stage(r: Results, event: str) -> list[str]:
            f"{event}-gold coverage by reader budget, no reranker"
            + (". Δ rows: recursive minus fixed at matched size.\n" if _pairs(r) else
               "; `+xE` reads each seed's EventMemory window (expand_context E).\n"),
-           "Measured unit: for EventMemory segments, the limit, the history's mean segment and the mean of the seeds "
+           "Measured unit: for EventMemory segments, the chunker's limit, the history's mean segment and the mean of the seeds "
            "retrieved; for windows, the mean window of the seeds retrieved (segment-text tokens).\n"
-           if any(c.startswith("seg") for c in r.chunkings) else "",
+           if any(c.startswith(("seg", "cut")) for c in r.chunkings) else "",
            "| chunking | measured unit | " + " | ".join(map(str, config.EVAL.columns)) + " |", "|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
         for e in (0, *r.expansions):
@@ -343,7 +343,8 @@ def expansion(r: Results, event: str) -> list[str]:
     out = ["## 11. Expansion: embedded vs reranked vs read unit\n",
            f"Seeds are {panels[0].seed}'s segments, embedded small and read as EventMemory windows; 'plain' chunks are "
            "embedded, reranked and read whole. Sizes are measured (mean segment-text tokens per retrieved seed, or its "
-           "window); the plain chunking is the one closest to the window's measured size. Reader cost counts overlapping "
+           "window); the plain chunking is the one of the same chunker closest to the window's measured size. Reader cost "
+           "counts overlapping "
            "windows once.\n",
            "| model | expand_context | approach | measured unit (tokens) | reranker tokens | "
            + " | ".join(f"@{b}" for b in config.EVAL.budgets) + " |",
@@ -357,10 +358,10 @@ def expansion(r: Results, event: str) -> list[str]:
                        + (f"{size:,.0f}" if size else "not measured") + f" | {rows.rr_tokens.mean():,.0f} | "
                        + " | ".join(_cov(rows, event, config.EVAL.budgets)) + " |")
         if p.plain is not None and not p.matched:
-            flagged.append(f"expand_context {p.expand}: {p.sizes()}")
+            flagged.append(f"expand_context {p.expand}: {p.sizes(flag=False)}, {p.ratio:.2f}×")
     if all(p.plain is None for p in panels):
-        out.append(f"\nNo chunking besides {panels[0].seed} was simulated, so there are no plain chunks to compare with "
-                   "the windows.")
+        out.append(f"\nNo other {panels[0].seed[:3]} chunking than {panels[0].seed} was simulated, so there are no plain "
+                   "chunks of the same chunker to compare with the windows.")
     for f in dict.fromkeys(flagged):
         out.append(f"\n**Not size-matched** ({f}; tolerance {config.EVAL.size_tolerance:.0%}). Coverage is still "
                    "compared at equal reader tokens, but the plain chunks are not the windows' size.")

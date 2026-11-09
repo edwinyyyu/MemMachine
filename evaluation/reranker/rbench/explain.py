@@ -149,7 +149,6 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
     from rbench import histories as hs
     from rbench.simulate_histories import gold_for, keys_for, read
 
-    size = int(chunking_name.removeprefix("seg"))
     rows = queries(dataset)
     qi = next(i for i, q in enumerate(rows) if q["qid"] == qid)
     q = rows[qi]
@@ -158,8 +157,8 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
 
     from rbench.simulate_histories import first_stage
 
-    hs.ingest(embedder, dataset, size, [qid])  # encoded once (embedded when not yet)
-    seg, head, sims, units_all, texts_all = asyncio.run(first_stage(embedder, dataset, size, qid, query, (expand,)))
+    hs.ingest(embedder, dataset, chunking_name, [qid])  # encoded once (embedded when not yet)
+    seg, head, sims, units_all, texts_all = asyncio.run(first_stage(embedder, dataset, chunking_name, qid, query, (expand,)))
     head = np.asarray(head)
     producer = {u: p for u, p in zip(seg.uuid, _producers(dataset, qid, seg), strict=True)}
     g = gold_for(dataset, qid, seg)
@@ -167,7 +166,8 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
     w = [f"# Dry run: {dataset} · {qid} · {chunking_name} · {RERANKERS[model].hf_model}\n",
          f"## 1. The question ({q['features']['question_type']}, asked {q['features']['question_date']})\n",
          "> " + query.replace("\n", "\n> "), "",
-         f"The history: {len(seg):,} EventMemory segments of at most {size} characters, "
+         f"The history: {len(seg):,} EventMemory segments ({chunking_name}; mean {np.mean([len(t) for t in seg.texts]):,.0f} "
+         "characters), "
          f"{int(seg.event.max()) + 1:,} turns, {len(set(seg.session.tolist()))} sessions, in timestamp order.\n"]
 
     turns = hs.gold_segments(dataset, qid, seg)

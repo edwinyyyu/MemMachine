@@ -24,7 +24,7 @@ def test_segments_are_in_eventmemory_order_and_gold_maps_to_segments():
     from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: I001
 
     for q in _tiny():
-        seg, segments, texts = hs.offline("longmemeval_s", q["qid"], 500)
+        seg, segments, texts = hs.offline("longmemeval_s", q["qid"], "seg500")
         keys = [(s.timestamp, s.event_uuid, s.index, s.offset) for s in segments]
         assert keys == sorted(keys)  # ids are EventMemory's (timestamp, event, index, offset) order
         assert np.all(np.diff(seg.event) >= 0) and all(t.strip() for t in seg.texts)
@@ -52,7 +52,7 @@ def test_sessions_out_of_file_order_are_sorted_by_date():
         order = hs.chronological(sessions)
         if order != list(range(len(sessions))) and found < 3:
             found += 1
-            seg = hs.offline("longmemeval_s", q["qid"], 500)[0]
+            seg = hs.offline("longmemeval_s", q["qid"], "seg500")[0]
             seen = list(dict.fromkeys(seg.session.tolist()))
             assert seen == [s for s in order if any(t["content"].strip() for t in sessions[s]["turns"])]
     assert found  # the files do have histories out of date order
@@ -98,7 +98,7 @@ def test_the_prompt_comparison_haystack_keeps_every_gold_turn_in_eventmemory_for
 
     for q in _tiny()[:3]:
         texts, gold = ce.haystack("longmemeval_s", q, 500)
-        full = set(hs.offline("longmemeval_s", q["qid"], 500)[2])
+        full = set(hs.offline("longmemeval_s", q["qid"], "seg500")[2])
         assert len(gold) == len(q["gold_turns"][0]) and all(gold)
         assert set(texts) <= full  # the same embedding texts as the whole history
         assert all(texts[i].split("] ", 1)[1].startswith(("User:", "Assistant:")) for turn in gold for i in turn)
