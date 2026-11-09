@@ -12,7 +12,7 @@ import numpy as np
 
 from rbench import chunking, retrieval
 from rbench.expansion import Windows
-from rbench.rerankers import ScoreCache, depth, instruction_text, prompt_key, render
+from rbench.rerankers import INSTRUCTION, ScoreCache, depth, prompt_key
 from rbench.samples import sample
 from rbench.schema import queries
 
@@ -26,7 +26,7 @@ def tokens(table: chunking.ChunkTable, head: np.ndarray, windows: Windows | None
 
 
 def keys(prompt: str, mode: str, query: str, unit_texts: list[str]) -> list[str]:
-    return [ScoreCache.key(prompt, mode, query, render(u, mode)) for u in unit_texts]
+    return [ScoreCache.key(prompt, mode, query, u) for u in unit_texts]
 
 
 def pool_items(run, chunking_name: str, embedder: str) -> list[tuple[str, list[tuple[str, str]]]]:
@@ -35,7 +35,7 @@ def pool_items(run, chunking_name: str, embedder: str) -> list[tuple[str, list[t
     chunk_texts = table.texts(run.dataset)
     pools = retrieval.build(embedder, run.dataset, run.scope, chunking_name, run.variant)
     windows = Windows(run.dataset, table, run.expand) if run.expand else None
-    prompt = prompt_key(instruction_text(run.instruction, run.dataset))
+    prompt = prompt_key(INSTRUCTION)
     out, seen = [], set()
     for qi in sample(run.dataset, run.sample):
         head, _ = pools.head(qi)
@@ -43,9 +43,9 @@ def pool_items(run, chunking_name: str, embedder: str) -> list[tuple[str, list[t
         query = queries(run.dataset)[qi]["variants"][run.variant]
         unit_texts = texts(table, chunk_texts, head, windows)
         items = []
-        for k, u in zip(keys(prompt, run.render, query, unit_texts), unit_texts, strict=True):
+        for k, u in zip(keys(prompt, "plain", query, unit_texts), unit_texts, strict=True):
             if k not in seen:
                 seen.add(k)
-                items.append((k, render(u, run.render)))
+                items.append((k, u))
         out.append((query, items))
     return out

@@ -20,8 +20,7 @@ expand_context 3 only. The reranker is the 8B; the 0.6B is an optional cheap mid
 Scores are cached by content, so later combinations pay only for new pairs
 (`python -m rbench adhoc ... --expand E`).
 
-A Run reranks one (dataset, scope, variant, sample) at some chunkings with some models, one
-instruction and one render, to `pool_tokens` tokens of first-stage seeds (at least
+A Run reranks one (dataset, scope, variant, sample) at some chunkings with some models, to `pool_tokens` tokens of first-stage seeds (at least
 `min_depth`). For history datasets, expand > 0 means the reranker scores windows.
 """
 
@@ -42,8 +41,6 @@ class Run:
     sample: str = "large"
     pool_tokens: int = 4096  # rerank the head chunks within 4,096 tokens (the depth stage checks 16k)
     min_depth: int = 10
-    instruction: str = "default"
-    render: str = "plain"
     expand: int = 0  # > 0: score each seed's EventMemory window (expand_context = expand), not the seed
     pool_seeds: int = 50  # history datasets: score each question's top pool_seeds seeds (its deepest vector search limit)
     note: str = ""

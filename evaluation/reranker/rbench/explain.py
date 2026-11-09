@@ -19,7 +19,7 @@ from rbench import chunking, metrics, retrieval
 from rbench.datasets import info
 from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.rankers import Depth, Ranker
-from rbench.rerankers import RERANKERS, ScoreCache, depth, instruction_text, pair_overhead, prompt_key, score, to_logit
+from rbench.rerankers import INSTRUCTION, RERANKERS, ScoreCache, depth, pair_overhead, prompt_key, score, to_logit
 from rbench.schema import corpus, queries
 from rbench.simulate import gold_priority
 
@@ -83,7 +83,7 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
                  f"{union.get(int(c), 0)} | {_preview(texts[c])} |")
     w.append("")
 
-    itext = instruction_text("default", dataset)
+    itext = INSTRUCTION
     n = depth(table.tokens[head], pool_tokens, min_depth)
     overhead = pair_overhead(query, itext)
     keys = [ScoreCache.key(prompt_key(itext), "plain", query, texts[c]) for c in head[:n]]
@@ -185,7 +185,7 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
                  f"{'yes' if int(c) in union else ''} | {_preview(seg.texts[c])} |")
     w.append("")
 
-    itext = instruction_text("default", dataset)
+    itext = INSTRUCTION
     prompt = prompt_key(itext)
     n = min(pool_seeds, len(head))
     units = {e: units_all[e][:n] for e in (0, expand)}

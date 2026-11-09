@@ -13,8 +13,8 @@ depth, top-k and reader budget without scoring again. Scores are cached by conte
 (prompt fingerprint, render, query text, document text). The fingerprint hashes the
 instruction's text with the prompt template, so editing either never reuses old scores.
 
-Renders: "plain" is the chunk text. "em" is how EventMemory's rerank() presents a hit: a
-timestamp-and-producer header, then the text as a JSON string.
+Cache keys carry a tag for what the document is: "plain" chunk text (the non-conversation
+datasets) or an "em" context EventMemory rendered (memory.RENDER).
 
 Spend: every paid request is cached and logged as soon as it returns, so a failure loses
 nothing already paid for. (A request retried after a timeout may have been billed for the
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -35,7 +34,6 @@ from functools import cache
 
 import numpy as np
 
-from rbench.datasets import info
 from rbench.paths import SCORES, SECRETS
 from rbench.text import QWEN, tokenizer
 
@@ -47,11 +45,7 @@ PREFIX = (
 SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 FORMAT = "<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {document}"
 MAX_PAIR_TOKENS = 8192
-INSTRUCTIONS = {
-    "default": "Given a web search query, retrieve relevant passages that answer the query",
-    "chat": "Given a user's message to an assistant, retrieve passages that help the assistant respond to it",
-}
-EM_HEADER = "[Thursday, October 23, 2026 at 2:05 PM] user: "
+INSTRUCTION = "Given a web search query, retrieve relevant passages that answer the query"  # the model card's default
 SATURATED = 1e-15  # P(yes) this close to 0 or 1 is clipped; exact 0s and 1s tie (preflight.smoke reports them)
 
 
@@ -72,17 +66,9 @@ RERANKERS = {
 PAID = [m for m, r in RERANKERS.items() if r.backend == "deepinfra"]
 
 
-def instruction_text(instruction: str, dataset: str) -> str:
-    return info(dataset).instruction if instruction == "task" else INSTRUCTIONS[instruction]
-
-
 def prompt_key(instruction_text_: str) -> str:
     """Fingerprint of everything around the query and document that the model reads."""
     return _h(PREFIX + FORMAT + SUFFIX + instruction_text_)[:12]
-
-
-def render(text: str, mode: str) -> str:
-    return text if mode == "plain" else EM_HEADER + json.dumps(text, ensure_ascii=False)
 
 
 def _h(text: str) -> str:

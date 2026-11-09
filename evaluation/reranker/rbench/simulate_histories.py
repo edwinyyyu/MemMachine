@@ -24,7 +24,7 @@ Expansions: rerank-then-expand and the expanded first stage need no new scores, 
 replayed at every value in EXPANSIONS; expand-then-rerank needs the windows scored and appears
 only where a run scored them (grid.py scores expand 3).
 
-Output: results/sim/<embedder>/<dataset>/history/question/<sample>/seg<size>__<instruction>__em.parquet,
+Output: results/sim/<embedder>/<dataset>/history/question/<sample>/seg<size>.parquet,
 the same columns as simulate.py plus:
   admitted                 segments admitted before reading stopped (past MAX_COST, or at the
                            end of the reranked pool)
@@ -46,7 +46,7 @@ from rbench import metrics, rankers
 from rbench.memory import RENDER, RERANK_FORMAT, CachedReranker, Memory
 from rbench.paths import SIM
 from rbench.reading import admission, reading
-from rbench.rerankers import ScoreCache, instruction_text, pair_overhead, prompt_key
+from rbench.rerankers import INSTRUCTION, ScoreCache, pair_overhead, prompt_key
 from rbench.samples import sample
 from rbench.schema import queries
 from rbench.simulate import COLUMNS, scored_prefix
@@ -59,8 +59,8 @@ EXTRA = (["admitted"] + [f"{e}_ctx" for e in EVENTS]
          + [f"segs_t{b}" for b in metrics.BUDGETS] + [f"ctx_t{b}" for b in metrics.BUDGETS])
 
 
-def path(embedder: str, dataset: str, sample_name: str, size: int, instruction: str) -> object:
-    return SIM / embedder / dataset / "history" / "question" / sample_name / f"seg{size}__{instruction}__{RENDER}.parquet"
+def path(embedder: str, dataset: str, sample_name: str, size: int) -> object:
+    return SIM / embedder / dataset / "history" / "question" / sample_name / f"seg{size}.parquet"
 
 
 def gold_for(dataset: str, qid: str, seg: hs.Segments) -> metrics.Gold:
@@ -98,9 +98,9 @@ def counts(values: list[float], cum: np.ndarray, ctx: np.ndarray) -> list[float]
     return at + segs + [float(seen[n - 1]) if n else 0.0 for n in segs]
 
 
-def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str], instruction: str = "default",
+def run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str],
         expansions: tuple[int, ...] = EXPANSIONS) -> pd.DataFrame:
-    return asyncio.run(_run(embedder, dataset, size, sample_name, models, instruction, expansions))
+    return asyncio.run(_run(embedder, dataset, size, sample_name, models, expansions))
 
 
 async def first_stage(embedder: str, dataset: str, size: int, qid: str, query: str, expansions: tuple[int, ...]):
@@ -126,10 +126,10 @@ async def first_stage(embedder: str, dataset: str, size: int, qid: str, query: s
     return seg, [index[u] for u in seeds], np.asarray([c.score for c in first]), units, texts
 
 
-async def _run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str], instruction: str,
+async def _run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str],
                expansions: tuple[int, ...]) -> pd.DataFrame:
     rows = queries(dataset)
-    itext = instruction_text(instruction, dataset)
+    itext = INSTRUCTION
     prompt = prompt_key(itext)
     caches = {m: ScoreCache(m) for m in models}
     all_rankers = rankers.for_models(models, expansions, rankers.HISTORY_DEPTHS, limited_first_stage=True)
@@ -181,7 +181,7 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
     out = pd.concat(frames, ignore_index=True)
     curves = [c for c in out.columns if c.startswith(("recall_", "precision_"))]
     out[curves] = out[curves].astype("float32")  # ~230 curve columns per row; float32 halves the files
-    target = path(embedder, dataset, sample_name, size, instruction)
+    target = path(embedder, dataset, sample_name, size)
     target.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(target, index=False)
     return out
@@ -206,17 +206,17 @@ def report_dropped(dataset: str, size: int, dropped: dict[str, str], kept: set[s
 
 
 def scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
-                 pool_seeds: int, instruction: str = "default"):
+                 pool_seeds: int):
     """Pairs to score for a run, as rerankers.Work: what EventMemory.query sends its reranker
     for each question at vector search limit pool_seeds (the deepest the run replays), found by
     querying with the reranker in record mode; unique by key, not yet in the model's cache."""
-    return asyncio.run(_scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds, instruction))
+    return asyncio.run(_scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds))
 
 
 async def _scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
-                        pool_seeds: int, instruction: str):
+                        pool_seeds: int):
     rows = queries(dataset)
-    reranker = CachedReranker(model, instruction_text(instruction, dataset), mode="record")
+    reranker = CachedReranker(model, INSTRUCTION, mode="record")
     for qi in sample(dataset, sample_name):
         q = rows[qi]
         async with Memory(embedder, dataset, size) as m:

@@ -10,7 +10,7 @@
   run <stage> [--only prepare|rerank|report] [--models m,...] [--max-usd X]
                                      --max-usd caps TOTAL DeepInfra reranker spend, all models and runs so far
   adhoc --datasets a,b --chunkings x,y --models m,n [--variant V] [--scope S] [--sample S]
-        [--pool-tokens N] [--min-depth N] [--pool-seeds N] [--instruction I] [--render R] [--expand E] [--only ...]
+        [--pool-tokens N] [--min-depth N] [--pool-seeds N] [--expand E] [--only ...]
         [--max-usd X]
                                      any combination on request (same caching and spend cap)
   smoke [--models q06,q4,q8]         preflight: what DeepInfra returns and bills
@@ -76,8 +76,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("adhoc")
     for name in ("datasets", "chunkings", "models"):
         p.add_argument(f"--{name}", required=True)
-    for name, default in (("variant", None), ("scope", None), ("sample", "large"), ("instruction", "default"),
-                          ("render", "plain"), ("only", None)):
+    for name, default in (("variant", None), ("scope", None), ("sample", "large"), ("only", None)):
         p.add_argument(f"--{name}", default=default)
     p.add_argument("--pool-tokens", type=int, default=8192)
     p.add_argument("--min-depth", type=int, default=16)
@@ -157,7 +156,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             runs = grid.adhoc(args.datasets.split(","), args.chunkings.split(","), args.models.split(","),
                               variant=args.variant, scope=args.scope, sample=args.sample, pool_tokens=args.pool_tokens,
-                              min_depth=args.min_depth, instruction=args.instruction, render=args.render,
+                              min_depth=args.min_depth,
                               expand=args.expand, pool_seeds=args.pool_seeds)
             models = None
             print(json.dumps(_estimate(runs, args.embedder)["summary"], indent=1))

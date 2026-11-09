@@ -23,7 +23,7 @@ import numpy as np
 from rbench import chunking, retrieval
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.paths import CHUNKS, VECTORS
-from rbench.rerankers import RERANKERS, _fixed_ids, instruction_text, pair_ids, pair_overhead
+from rbench.rerankers import INSTRUCTION, RERANKERS, _fixed_ids, pair_ids, pair_overhead
 from rbench.samples import sample
 from rbench.schema import corpus, queries
 
@@ -53,7 +53,7 @@ def run_tokens(run, chunking_name: str, embedder: str = DEFAULT_EMBEDDER) -> Tal
     chunking's mean size and every query's pool full."""
     from rbench import units
 
-    itext = instruction_text(run.instruction, run.dataset)
+    itext = INSTRUCTION
     suffix = len(_fixed_ids()[1])
     tally = Tally()
     if retrieval.path(embedder, run.dataset, run.scope, chunking_name, run.variant).exists():
@@ -97,8 +97,7 @@ def embed_tokens(dataset: str, chunking_name: str, embedder: str = DEFAULT_EMBED
 def estimate(runs, embedder: str = DEFAULT_EMBEDDER) -> dict:
     """Totals per model for a list of grid.Run, counting each distinct scoring job once.
 
-    Two runs that score the same (model, dataset, scope, variant, chunking, instruction,
-    render) share the cache, so only the deepest pool on the largest sample is counted."""
+    Two runs that score the same (model, dataset, scope, variant, chunking) share the cache, so only the deepest pool on the largest sample is counted."""
     from rbench.samples import ORDER
 
     jobs: dict[tuple, tuple] = {}
@@ -107,7 +106,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER) -> dict:
         for c in run.chunkings:
             embed[(run.dataset, c)] = embed_tokens(run.dataset, c, embedder)
             for m in run.models:
-                k = (m, run.dataset, run.scope, run.variant, c, run.instruction, run.render, run.expand)
+                k = (m, run.dataset, run.scope, run.variant, c, run.expand)
                 old = jobs.get(k)
                 new = (run.pool_tokens, run.min_depth, run.sample)
                 if old is None or (new[0], new[1], ORDER.index(new[2])) > (old[0], old[1], ORDER.index(old[2])):
@@ -116,13 +115,13 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER) -> dict:
     per_job = []
     from rbench.grid import Run
 
-    for (m, d, s, v, c, i, r, e), (pool_tokens, min_depth, sample_name) in jobs.items():
-        job = Run(d, s, v, (c,), (m,), sample_name, pool_tokens, min_depth, i, r, e)
+    for (m, d, s, v, c, e), (pool_tokens, min_depth, sample_name) in jobs.items():
+        job = Run(d, s, v, (c,), (m,), sample_name, pool_tokens, min_depth, expand=e)
         t = run_tokens(job, c, embedder)
         per_model.setdefault(m, Tally()).add(t)
-        per_job.append({"model": m, "dataset": d, "scope": s, "variant": v, "chunking": c, "instruction": i,
-                        "render": r, "expand": e, "sample": sample_name, "pool_tokens": pool_tokens, "queries": t.queries,
-                        "pairs": t.pairs, "billed_M": t.billed / 1e6, "prefix_cached_M": t.prefix_cached / 1e6})
+        per_job.append({"model": m, "dataset": d, "scope": s, "variant": v, "chunking": c, "expand": e, "sample": sample_name,
+                        "pool_tokens": pool_tokens, "queries": t.queries, "pairs": t.pairs, "billed_M": t.billed / 1e6,
+                        "prefix_cached_M": t.prefix_cached / 1e6})
     summary = {}
     for m, t in per_model.items():
         price = RERANKERS[m].usd_per_mtok
@@ -145,7 +144,7 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
     """ESTIMATE for history (partitioned) datasets.
 
     Runs that score the same pairs are counted once: they are grouped by (dataset, segment
-    length, expand, model, instruction), and a group scores the union of its questions to its
+    length, expand, model), and a group scores the union of its questions to its
     deepest pool (samples nest, so pilot questions are part of the core, and the core's pools
     are a prefix of the depth stage's). Where the group's pools exist, its pairs are counted
     exactly (EventMemory queried with the reranker in record mode), minus those already cached.
@@ -173,17 +172,16 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
     for run in runs:
         for c in run.chunkings:
             for m in run.models:
-                groups[(run.dataset, int(c.removeprefix("seg")), run.expand, m, run.instruction)].append(run)
+                groups[(run.dataset, int(c.removeprefix("seg")), run.expand, m)].append(run)
     per_model: dict[str, float] = {}
     basis: dict[str, set[str]] = defaultdict(set)
-    for (dataset, size, expand, model, instruction), members in groups.items():
+    for (dataset, size, expand, model), members in groups.items():
         sample_name = max((r.sample for r in members), key=ORDER.index)  # the largest holds the others
         pool_seeds = max(r.pool_seeds for r in members)
-        itext = instruction_text(instruction, dataset)
+        itext = INSTRUCTION
         rows = queries(dataset)
         if all(encoded(dataset, size, rows[i]["qid"]) for i in sample_of(dataset, sample_name)):
-            work = simulate_histories.scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds,
-                                                   instruction)
+            work = simulate_histories.scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds)
             tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], itext)))
             basis[model].add("exact (histories encoded; cached pairs excluded)")
         else:

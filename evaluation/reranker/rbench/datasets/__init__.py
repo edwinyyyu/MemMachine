@@ -40,7 +40,6 @@ class DatasetInfo:
     caveats: str
     source: str
     license: str
-    instruction: str  # task-specific reranker instruction (an ablation; the default is generic)
     variant_scopes: dict[str, str] = field(default_factory=dict)  # variants valid only in another scope
     # What bootstrap intervals resample: queries that share it are not independent.
     # "doc_id" (queries about one document share its chunks) or a feature name.
@@ -68,7 +67,6 @@ _LONGMEMEVAL = dict(
             "assistant turns make 'complete' strict, which is why 'touched' and 'fraction' are reported too.",
     source="https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned",
     license="MIT",
-    instruction="Given a question about the user's past conversations, retrieve the conversation turns that answer it",
     cluster="qid",
     partitioned=True,
 )
@@ -99,7 +97,6 @@ INACTIVE: dict[str, DatasetInfo] = {
                 "paragraph sits early in its article (median 7% in).",
         source="https://huggingface.co/datasets/UKPLab/dapr (NaturalQuestions)",
         license="Natural Questions: CC BY-SA 3.0 (unverified for DAPR's packaging)",
-        instruction="Given a web search query, retrieve passages of a Wikipedia article that answer the query",
     ),
     "conditionalqa": DatasetInfo(
         name="conditionalqa",
@@ -118,8 +115,6 @@ INACTIVE: dict[str, DatasetInfo] = {
         source="https://huggingface.co/datasets/UKPLab/dapr (ConditionalQA); "
                "https://github.com/haitian-sun/ConditionalQA (scenario and question separately)",
         license="unverified; check the ConditionalQA repository",
-        instruction="Given a person's description of their situation and their question, retrieve passages of "
-                    "UK government guidance that answer it, including any conditions that apply",
     ),
     "legalbenchrag": DatasetInfo(
         name="legalbenchrag",
@@ -138,7 +133,6 @@ INACTIVE: dict[str, DatasetInfo] = {
                 "agreements to bound the corpus.",
         source="https://github.com/zeroentropy-ai/legalbenchrag",
         license="code MIT; each source corpus (ContractNLI, CUAD, MAUD, PrivacyQA) has its own terms",
-        instruction="Given a question about a legal contract, retrieve the clauses of the contract that answer it",
     ),
     "qasper": DatasetInfo(
         name="qasper",
@@ -154,8 +148,6 @@ INACTIVE: dict[str, DatasetInfo] = {
         caveats="Unanswerable and figure-only questions are dropped.",
         source="https://allenai.org/data/qasper (v0.3)",
         license="CC BY 4.0",
-        instruction="Given a question about a scientific paper, retrieve passages of the paper that contain the "
-                    "evidence to answer it",
     ),
     "covid_qa": DatasetInfo(
         name="covid_qa",
@@ -171,8 +163,6 @@ INACTIVE: dict[str, DatasetInfo] = {
                 "drop if cost must be cut. No official split: dev is a hash of the article id.",
         source="https://huggingface.co/datasets/deepset/covid_qa_deepset",
         license="Apache 2.0",
-        instruction="Given a question about a biomedical research article, retrieve passages of the article that "
-                    "answer it",
     ),
     "multidoc2dial": DatasetInfo(
         name="multidoc2dial",
@@ -192,8 +182,6 @@ INACTIVE: dict[str, DatasetInfo] = {
                 "verbatim copies of the gold in other documents are accepted as alternatives.",
         source="https://doc2dial.github.io/multidoc2dial/",
         license="Apache 2.0 (per the Hugging Face card of IBM/multidoc2dial)",
-        instruction="Given a conversation between a user and a support agent, retrieve passages of government "
-                    "service documents that the agent needs to answer the user's last message",
         cluster="dialogue_id",  # turns of one dialogue share its history and documents
     ),
     "swebench_lite": DatasetInfo(
@@ -215,7 +203,6 @@ INACTIVE: dict[str, DatasetInfo] = {
                 "lines are where the fix goes, not everything an agent must read.",
         source="https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite (+ _oracle, _bm25_27K)",
         license="SWE-bench MIT; each repository's own license applies to its code",
-        instruction="Given a GitHub issue, retrieve the code that must be changed to resolve it",
         cluster="instance_id",  # each issue has its own snapshot of candidate files
     ),
 }

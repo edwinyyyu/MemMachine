@@ -9,7 +9,7 @@ With expansions (expansion.py), each head item is a seed read with its window.
 Rerank-then-expand uses the seeds' own scores; expand-then-rerank uses scores of the
 windows' text, which a separate scoring run produces (grid.Run.expand).
 
-Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>__<instruction>__<render>.parquet
+Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>.parquet
   qid, split, cluster, chunking            the query; `cluster` is what intervals resample
   ranker, kind, model, depth, expand   the configuration (rankers.Ranker)
   pairs, rr_tokens, rr_prefix_tokens       reranker cost: pairs scored, Qwen3 tokens as an API
@@ -29,7 +29,7 @@ from rbench import chunking, metrics, rankers, retrieval, units
 from rbench.datasets import info
 from rbench.expansion import Windows
 from rbench.paths import SIM
-from rbench.rerankers import ScoreCache, instruction_text, pair_overhead, prompt_key, to_logit
+from rbench.rerankers import INSTRUCTION, ScoreCache, pair_overhead, prompt_key, to_logit
 from rbench.samples import sample
 from rbench.schema import corpus, queries
 
@@ -46,8 +46,8 @@ def expansions_for(chunking_name: str) -> tuple[int, ...]:
     return tuple(e for e in EXPANSIONS if (1 + e) * size <= MAX_WINDOW_TOKENS)
 
 
-def path(embedder, dataset, scope, variant, sample_name, chunking_name, instruction, render_mode):
-    return SIM / embedder / dataset / scope / variant / sample_name / f"{chunking_name}__{instruction}__{render_mode}.parquet"
+def path(embedder, dataset, scope, variant, sample_name, chunking_name):
+    return SIM / embedder / dataset / scope / variant / sample_name / f"{chunking_name}.parquet"
 
 
 def cluster_of(dataset: str, row: dict) -> str:
@@ -82,7 +82,7 @@ def scored_prefix(cache: ScoreCache, model: str, keys: list[str]) -> tuple[np.nd
 
 
 def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str, chunking_name: str,
-        models: list[str], instruction: str = "default", render_mode: str = "plain",
+        models: list[str],
         expansions: tuple[int, ...] | None = None) -> pd.DataFrame:
     table = chunking.load(dataset, chunking_name)
     chunk_texts = table.texts(dataset)
@@ -94,7 +94,7 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
     windows = {e: Windows(dataset, table, e) for e in expansions}
     rows, picked = queries(dataset), sample(dataset, sample_name)
     caches = {m: ScoreCache(m) for m in models}
-    itext = instruction_text(instruction, dataset)
+    itext = INSTRUCTION
     prompt = prompt_key(itext)
     all_rankers = rankers.for_models(models, expansions)
     records: dict[str, list] = {r.id: [] for r in all_rankers}
@@ -106,7 +106,7 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
         overhead = pair_overhead(query, itext) if models else 0
 
         def scores(unit_texts: list[str], query: str = query) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-            keys = units.keys(prompt, render_mode, query, unit_texts)
+            keys = units.keys(prompt, "plain", query, unit_texts)
             return {m: scored_prefix(caches[m], m, keys) for m in models}
 
         seed_scores = scores(units.texts(table, chunk_texts, head, None))
@@ -144,7 +144,7 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
     out = pd.concat(frames, ignore_index=True)
     curves = [c for c in out.columns if c.startswith(("recall_", "precision_"))]
     out[curves] = out[curves].astype("float32")  # ~230 curve columns per row; float32 halves the files
-    target = path(embedder, dataset, scope, variant, sample_name, chunking_name, instruction, render_mode)
+    target = path(embedder, dataset, scope, variant, sample_name, chunking_name)
     target.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(target, index=False)
     return out

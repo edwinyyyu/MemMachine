@@ -63,7 +63,7 @@ class Config:
 
 def configurations(results: Results, model: str | None, token_field: str = "rr_tokens", event: str = EVENT) -> list[Config]:
     """Every configuration of one model (reranking seeds or windows, read alone or expanded,
-    default instruction and render); model None means every no-reranker configuration."""
+    model None means every no-reranker configuration."""
     d = results.select(expand=None)
     d = d[d.kind == "first_stage"] if model is None else d[d.kind.isin(RERANKED) & (d.model == model)]
     out = []

@@ -1,6 +1,6 @@
 """Loading simulated results and the views every report section uses.
 
-A configuration is (chunking, ranker, instruction, render). Its per-query rows carry the
+A configuration is (chunking, ranker). Its per-query rows carry the
 event costs, so coverage at any reader budget B is the share of rows with cost <= B: the
 budget is a continuous knob, not a fixed grid.
 """
@@ -15,7 +15,7 @@ import pandas as pd
 from rbench.paths import SIM
 from rbench.rerankers import RERANKERS
 
-CONFIG = ["chunking", "ranker", "instruction", "render"]
+CONFIG = ["chunking", "ranker"]
 MODEL_ORDER = ["q06-local", "q06", "q4", "q8"]
 
 
@@ -42,26 +42,15 @@ class Results:
         found = set(self.df.loc[self.df.kind == "rerank", "model"].dropna())
         return [m for m in MODEL_ORDER if m in found]
 
-    @property
-    def render(self) -> str:
-        """The dataset's own rendering: 'em' for history datasets (always rendered as EventMemory
-        renders), else 'plain' unless only another rendering was simulated."""
-        renders = set(self.df.render)
-        return "plain" if "plain" in renders else sorted(renders)[0]
-
-    def rows(self, chunking: str, ranker: str, instruction: str = "default",
-             render: str | None = None) -> pd.DataFrame:
+    def rows(self, chunking: str, ranker: str) -> pd.DataFrame:
         """One configuration's rows, sorted by qid so configurations align query by query."""
-        render = render or self.render
         d = self.df
-        return d[(d.chunking == chunking) & (d.ranker == ranker) & (d.instruction == instruction)
-                 & (d.render == render)].sort_values("qid")
+        return d[(d.chunking == chunking) & (d.ranker == ranker)].sort_values("qid")
 
     def select(self, kind: str | None = None, model: str | None = None,
-               expand: int | None = 0, instruction: str = "default", render: str | None = None) -> pd.DataFrame:
-        """Rows with the sweep factors pinned (default instruction, plain render, no expansion)
-        unless asked otherwise, so a section never mixes in another sweep's configurations."""
-        d = self.df[(self.df.instruction == instruction) & (self.df.render == (render or self.render))]
+               expand: int | None = 0) -> pd.DataFrame:
+        """Rows of one kind and model, without expansion unless asked otherwise."""
+        d = self.df
         if expand is not None:
             d = d[d.expand == expand]
         if kind is not None:
@@ -117,10 +106,9 @@ def load(embedder: str, dataset: str, scope: str, variant: str, sample: str) -> 
     base = SIM / embedder / dataset / scope / variant / sample
     frames = []
     for path in sorted(base.glob("*.parquet")):
-        _, instruction, render = path.stem.split("__")
-        frame = pd.read_parquet(path)
-        frame["instruction"], frame["render"] = instruction, render
-        frames.append(frame)
+        if "__" in path.stem:  # written before the instruction and render sweep was removed: superseded
+            continue
+        frames.append(pd.read_parquet(path))
     if not frames:
         raise FileNotFoundError(f"no simulated results under {base}")
     return Results(embedder, dataset, scope, variant, sample, pd.concat(frames, ignore_index=True))
