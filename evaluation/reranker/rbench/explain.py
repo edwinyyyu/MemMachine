@@ -19,7 +19,7 @@ from rbench import chunking, metrics, retrieval
 from rbench.datasets import info
 from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.rankers import Depth, Ranker
-from rbench.rerankers import INSTRUCTION, RERANKERS, ScoreCache, depth, pair_overhead, prompt_key, score, to_logit
+from rbench.rerankers import RERANKERS, ScoreCache, depth, pair_overhead, prompt_key, score, to_logit
 from rbench.schema import corpus, queries
 from rbench.simulate import gold_priority
 
@@ -83,17 +83,17 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
                  f"{union.get(int(c), 0)} | {_preview(texts[c])} |")
     w.append("")
 
-    itext = INSTRUCTION
+    tmpl = RERANKERS[model].template
     n = depth(table.tokens[head], pool_tokens, min_depth)
-    overhead = pair_overhead(query, itext)
-    keys = [ScoreCache.key(prompt_key(itext), "plain", query, texts[c]) for c in head[:n]]
+    overhead = pair_overhead(query, tmpl)
+    keys = [ScoreCache.key(prompt_key(tmpl), "plain", query, texts[c]) for c in head[:n]]
     cache = ScoreCache(model)
     have = cache.get(keys)
     missing = [(k, texts[c]) for k, c in zip(keys, head[:n], strict=True) if k not in have]
     if missing:
         if RERANKERS[model].backend != "local":
             raise SystemExit(f"{len(missing)} pairs are not scored for {model}; score the pool first")
-        score(model, [(query, missing)], itext, f"explain/{dataset}/{qid}")
+        score(model, [(query, missing)], f"explain/{dataset}/{qid}")
         have = cache.get(keys)
     logits = to_logit(model, np.asarray([have[k][0] for k in keys]))
     pair_tokens = np.asarray([have[k][1] for k in keys])
@@ -185,8 +185,8 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
                  f"{'yes' if int(c) in union else ''} | {_preview(seg.texts[c])} |")
     w.append("")
 
-    itext = INSTRUCTION
-    prompt = prompt_key(itext)
+    tmpl = RERANKERS[model].template
+    prompt = prompt_key(tmpl)
     n = min(pool_seeds, len(head))
     units = {e: units_all[e][:n] for e in (0, expand)}
     cache, scored = ScoreCache(model), {}
@@ -198,10 +198,10 @@ def run_history(dataset: str, chunking_name: str, qid: str, model: str = "q06-lo
         if missing:
             if RERANKERS[model].backend != "local":
                 raise SystemExit(f"{len(missing)} pairs are not scored for {model}; score the pool first")
-            score(model, [(query, missing)], itext, f"explain/{dataset}/{qid}/x{e}")
+            score(model, [(query, missing)], f"explain/{dataset}/{qid}/x{e}")
             have = cache.get(keys)
         scored[e] = (to_logit(model, np.asarray([have[k][0] for k in keys])), np.asarray([have[k][1] for k in keys]), texts)
-    overhead = pair_overhead(query, itext)
+    overhead = pair_overhead(query, tmpl)
     w += [f"## 4. Rerank pool: the top {n} seeds (vector search limit {n})\n",
           f"Each pair is the model card's prompt + instruction + query ({overhead} tokens) + one unit rendered as "
           "EventMemory's reranker sees it. Reranker tokens for this question (API billing / with a prefix cache): "

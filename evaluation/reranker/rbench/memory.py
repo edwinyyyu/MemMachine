@@ -61,7 +61,7 @@ from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from rbench import embedding as emb  # noqa: E402
 from rbench.paths import DATA, SECRETS  # noqa: E402
-from rbench.rerankers import ScoreCache, prompt_key, to_logit  # noqa: E402
+from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
 
 MEMORY = DATA / "memory"
 RERANK_FORMAT = FormatOptions(time_style="short")  # what EventMemory.query renders for its reranker
@@ -182,10 +182,10 @@ class CachedReranker(Reranker):
     """A Qwen3 reranker's scores, from the score cache. mode "replay": a missing score is an
     error. mode "record": misses are collected in `work` (scored 0) for a paid run to score."""
 
-    def __init__(self, model: str, instruction: str, mode: str = "replay") -> None:
-        self.model, self.instruction, self.mode = model, instruction, mode
+    def __init__(self, model: str, mode: str = "replay") -> None:
+        self.model, self.mode = model, mode
         self.cache = ScoreCache(model)
-        self.prompt = prompt_key(instruction)
+        self.prompt = prompt_key(RERANKERS[model].template)
         self.work: dict[str, list[tuple[str, str]]] = {}  # question -> [(cache key, rendered context)]
 
     def keys(self, query: str, candidates: list[str]) -> list[str]:

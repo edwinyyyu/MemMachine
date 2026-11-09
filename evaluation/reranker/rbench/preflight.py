@@ -16,7 +16,7 @@ import numpy as np
 
 from rbench import chunking, retrieval, rerankers
 from rbench.embedding import DEFAULT as EMBEDDER
-from rbench.rerankers import INSTRUCTION, RERANKERS, ScoreCache, pair_ids, prompt_key
+from rbench.rerankers import RERANKERS, ScoreCache, pair_ids, prompt_key
 from rbench.samples import sample
 from rbench.schema import queries
 
@@ -49,10 +49,10 @@ def smoke(models: list[str]) -> list[str]:
     for m in models:
         spec = RERANKERS[m]
         for query, docs in SMOKE:
-            a = call(spec.hf_model, query, docs, INSTRUCTION)
+            a = call(spec.hf_model, query, docs, spec.template.instruction)
             b = call(spec.hf_model, query, docs, OTHER_INSTRUCTION)
             scores, other = np.asarray(a["scores"]), np.asarray(b["scores"])
-            counted = sum(len(r) for r in pair_ids(query, docs, INSTRUCTION))
+            counted = sum(len(r) for r in pair_ids(query, docs, spec.template))
             status = a.get("inference_status") or {}
             billed = int(a.get("input_tokens") or status.get("tokens_input") or 0)
             cost = float(status.get("cost") or 0.0)
@@ -85,7 +85,7 @@ def fidelity(dataset: str, scope: str, variant: str, chunking_name: str, sample_
     for qi in sample(dataset, sample_name):
         ids, _ = pools.head(qi)
         query = queries(dataset)[qi]["variants"][variant]
-        prompt = prompt_key(INSTRUCTION)
+        prompt = prompt_key(RERANKERS[api].template)
         docs = {ScoreCache.key(prompt, "plain", query, texts[c]): texts[c] for c in ids}
         have = a.get(list(docs))
         keys = [k for k in docs if k in have]
@@ -95,7 +95,7 @@ def fidelity(dataset: str, scope: str, variant: str, chunking_name: str, sample_
         per_query.append(keys)
     if work:
         cap = rerankers.total_spent_usd() + max_usd
-        rerankers.score(api, work, INSTRUCTION, f"fidelity/{dataset}/{chunking_name}", cap)
+        rerankers.score(api, work, f"fidelity/{dataset}/{chunking_name}", cap)
     xs, ys, rho, top1 = [], [], [], []
     for keys in per_query:
         if len(keys) < 3:

@@ -29,7 +29,7 @@ from rbench import chunking, metrics, rankers, retrieval, units
 from rbench.datasets import info
 from rbench.expansion import Windows
 from rbench.paths import SIM
-from rbench.rerankers import INSTRUCTION, ScoreCache, pair_overhead, prompt_key, to_logit
+from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key, to_logit
 from rbench.samples import sample
 from rbench.schema import corpus, queries
 
@@ -94,8 +94,7 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
     windows = {e: Windows(dataset, table, e) for e in expansions}
     rows, picked = queries(dataset), sample(dataset, sample_name)
     caches = {m: ScoreCache(m) for m in models}
-    itext = INSTRUCTION
-    prompt = prompt_key(itext)
+    prompts = {m: prompt_key(RERANKERS[m].template) for m in models}
     all_rankers = rankers.for_models(models, expansions)
     records: dict[str, list] = {r.id: [] for r in all_rankers}
     for qi in picked:
@@ -103,11 +102,10 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
         g = golds[qi]
         union, cheapest = g.union, set(g.cheapest)
         query = rows[qi]["variants"][variant]
-        overhead = pair_overhead(query, itext) if models else 0
+        overheads = {m: pair_overhead(query, RERANKERS[m].template) for m in models}
 
         def scores(unit_texts: list[str], query: str = query) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-            keys = units.keys(prompt, "plain", query, unit_texts)
-            return {m: scored_prefix(caches[m], m, keys) for m in models}
+            return {m: scored_prefix(caches[m], m, units.keys(prompts[m], "plain", query, unit_texts)) for m in models}
 
         seed_scores = scores(units.texts(table, chunk_texts, head, None))
         per_e = {0: (gold_priority([{int(c)} for c in head], union, cheapest), table.tokens[head], None)}
@@ -130,7 +128,7 @@ def run(embedder: str, dataset: str, scope: str, variant: str, sample_name: str,
             seeds = head[r.order(n, sims, logits, priority)]
             order = seeds if r.expand == 0 else windows[r.expand].read_order(seeds)
             values = metrics.evaluate(order, np.cumsum(table.tokens[order]), chars, g)
-            prefix_cost = cost - max(0, n - 1) * overhead if r.model is not None else 0.0
+            prefix_cost = cost - max(0, n - 1) * overheads[r.model] if r.model is not None else 0.0
             records[r.id].append([n if r.model else 0, cost, prefix_cost, n if r.kind == "oracle" else 0, *values])
     frames = []
     for r in all_rankers:

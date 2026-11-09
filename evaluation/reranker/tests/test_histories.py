@@ -58,7 +58,7 @@ def test_sessions_out_of_file_order_are_sorted_by_date():
     assert found  # the files do have histories out of date order
 
 
-SIMULATED = SIM / "gemma300m-raw/longmemeval_s/history/question/tiny/seg500__default__em.parquet"
+SIMULATED = SIM / "gemma300m-raw/longmemeval_s/history/question/tiny/seg500.parquet"
 
 
 @pytest.mark.skipif(not SIMULATED.exists(), reason="needs the lme-test stage's simulation")

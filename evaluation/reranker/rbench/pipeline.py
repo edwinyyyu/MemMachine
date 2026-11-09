@@ -20,7 +20,7 @@ from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.grid import Run
 from rbench.report import figures, tables
 from rbench.report.data import load
-from rbench.rerankers import INSTRUCTION, RERANKERS, ScoreCache, pair_ids, score
+from rbench.rerankers import RERANKERS, ScoreCache, pair_ids, score
 
 
 def _size(chunking_name: str) -> int:
@@ -51,7 +51,7 @@ def missing(run: Run, model: str, chunking_name: str, embedder: str = EMBEDDER):
     """The run's pairs not yet in the model's cache, as rerankers.Work."""
     cache = ScoreCache(model)
     out = []
-    for query, items in units.pool_items(run, chunking_name, embedder):
+    for query, items in units.pool_items(run, chunking_name, embedder, model):
         have = cache.get([k for k, _ in items])
         todo = [(k, d) for k, d in items if k not in have]
         if todo:
@@ -61,7 +61,6 @@ def missing(run: Run, model: str, chunking_name: str, embedder: str = EMBEDDER):
 
 def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER) -> None:
     spec = RERANKERS[model]
-    itext = INSTRUCTION
     for c in run.chunkings:
         if info(run.dataset).partitioned:
             work = simulate_histories.scoring_work(embedder, run.dataset, _size(c), run.sample, model, run.expand,
@@ -69,12 +68,12 @@ def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER
         else:
             work = missing(run, model, c, embedder)
         pairs = sum(len(items) for _, items in work)
-        tokens = sum(len(r) for q, items in work for r in pair_ids(q, [d for _, d in items], itext))
+        tokens = sum(len(r) for q, items in work for r in pair_ids(q, [d for _, d in items], spec.template))
         label = f"{run.dataset}/{run.scope}/{run.variant}/{c}{f'+x{run.expand}' if run.expand else ''}"
         print(f"{model} {label}: {pairs} pairs to score, {tokens / 1e6:.2f}M tokens, "
               f"${tokens / 1e6 * (spec.usd_per_mtok or 0.0):.2f}", flush=True)
         if pairs:
-            score(model, work, itext, label, max_usd)
+            score(model, work, label, max_usd)
 
 
 def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:

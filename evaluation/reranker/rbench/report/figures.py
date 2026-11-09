@@ -57,16 +57,17 @@ from rbench.report.stats import interval  # noqa: E402
 from rbench.rerankers import RERANKERS  # noqa: E402
 
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
-SERIES = {"first_stage": "#2a78d6", "q06": "#eb6834", "q4": "#1baf7a", "q8": "#eda100", "q06-local": "#e87ba4"}
+# Models take their color, marker and label from their registry entry (rerankers.RERANKERS).
+SERIES = {"first_stage": "#2a78d6", **{m: spec.color for m, spec in RERANKERS.items()}}
 ORACLE = "#8f8e89"
 # A marker shape per ranking, so overlapping lines stay identifiable without color. Line-only
 # shapes (caltrops "1"-"4", x, +) cover nothing beneath them, so overlapping points stay
 # readable, and their centre is the data point. Most curves here are flat or stepped, so the
 # caltrops with a vertical prong (up "2", down "1") go to the models that matter most; left
 # "3" (a prong along the line) to the local 0.6B; + (its bar along flat lines) to the gray reference.
-MARKERS = {"first_stage": "x", "q8": "2", "q4": "1", "q06": "3", "q06-local": "3", "oracle": "+"}
-LABEL = {"first_stage": "first stage only", "q06-local": "Qwen3-Reranker-0.6B (local)", "q06": "Qwen3-Reranker-0.6B",
-         "q4": "Qwen3-Reranker-4B", "q8": "Qwen3-Reranker-8B"}
+MARKERS = {"first_stage": "x", "oracle": "+", **{m: spec.marker for m, spec in RERANKERS.items()}}
+LABEL = {"first_stage": "first stage only", **{m: spec.label for m, spec in RERANKERS.items()}}
+CHUNKERS = {"fix": ("#2a78d6", "x", "-"), "rec": ("#eb6834", "1", (0, (5, 3))), "seg": ("#1baf7a", "2", "-")}  # color, marker, line
 RAMP = {3: ("#86b6ef", "#2a78d6", "#104281"), 5: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281")}
 DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34948", "#f2b8b5", "#f0efec", "#9ec5f4",
                                                                   "#3987e5", "#104281"])  # equal steps per arm
@@ -258,8 +259,9 @@ def _rankers(r: Results, c: str, limit: str, bound: bool = False) -> list[tuple[
 def _priced(m: str) -> str:
     """A model's label for charts that put a price on its tokens: a local model has none of its
     own, so it is priced as DeepInfra's model of the same size, and says so."""
-    if RERANKERS[m].backend == "local":
-        return f"{LABEL[m]}, priced as DeepInfra's 0.6B (${price(m):g}/M)"
+    spec = RERANKERS[m]
+    if spec.usd_per_mtok is None:
+        return f"{spec.label}, priced as {RERANKERS[spec.priced_as].label} on DeepInfra (${price(m):g}/M)"
     return f"{LABEL[m]} (DeepInfra ${price(m):g}/M)"
 
 
@@ -515,7 +517,7 @@ def first_stage_sizes(r: Results, out, head: str) -> None:
         return
     budgets = (500, 1000, 2000, 4000)
     fig, axes = _figure(1, len(budgets), panel=(3.4, 3.2), sharey=True)
-    styles = {"fix": (SERIES["first_stage"], "x", "-"), "rec": (SERIES["q06"], "1", DASH), "seg": (SERIES["q4"], "2", "-")}
+    styles = CHUNKERS
     present = set()
     for j, b in enumerate(budgets):
         ax = axes[0][j]

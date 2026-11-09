@@ -40,6 +40,8 @@ uv sync
 .venv/bin/python -m rbench show longmemeval_s --sample tiny --chart coverage,rpf   # zoomable chart windows from saved results
 ```
 
+**Adding a model to compare** takes one entry in `RERANKERS` (`rbench/rerankers.py`): its backend and price, its chart label, color and marker, and its template (what it reads around each pair). Then run any stage with `--models`, e.g. `run lme-core --models q4,q8 --max-usd 2`; the report and charts include every registered model that has scores.
+
 Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` caps total DeepInfra reranker spend across all models and runs, read from the call logs: it stops before a request group would pass the cap, and never changes what runs. Embedding spend is not capped (see the table). Interrupted runs lose almost nothing: reranker scores are saved per request, each history is encoded (embedded) once and one interrupted mid-way is encoded again, and a rerun skips finished work. Preflight first (METHODOLOGY.md §8):
 
 ```sh

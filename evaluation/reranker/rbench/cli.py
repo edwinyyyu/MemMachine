@@ -8,6 +8,7 @@
                                      a dry run of one query through every measurement
   estimate <stage> ...               reranker tokens, DeepInfra dollars and hours per stage
   run <stage> [--only prepare|rerank|report] [--models m,...] [--max-usd X]
+                                     --models runs the stage with these registered models instead of its own
                                      --max-usd caps TOTAL DeepInfra reranker spend, all models and runs so far
   adhoc --datasets a,b --chunkings x,y --models m,n [--variant V] [--scope S] [--sample S]
         [--pool-tokens N] [--min-depth N] [--pool-seeds N] [--expand E] [--only ...]
@@ -28,11 +29,13 @@ gemma300m-di-raw is DeepInfra's).
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 
 from rbench import costs, grid, pipeline, preflight, profile, schema
 from rbench.datasets import DATASETS, prepare
 from rbench.embedding import DEFAULT as EMBEDDER, EMBEDDERS
+from rbench.rerankers import RERANKERS
 
 
 def _estimate(runs: list, embedder: str) -> dict:
@@ -152,13 +155,16 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command in ("run", "adhoc"):
         if args.command == "run":
             runs = grid.STAGES[args.stage]
-            models = set(args.models.split(",")) if args.models else None
+            if args.models:  # the stage's settings with these models: any registered reranker, no code change
+                unknown = set(args.models.split(",")) - set(RERANKERS)
+                if unknown:
+                    raise SystemExit(f"unknown model(s) {sorted(unknown)}; registered: {sorted(RERANKERS)}")
+                runs = [replace(r, models=tuple(args.models.split(","))) for r in runs]
         else:
             runs = grid.adhoc(args.datasets.split(","), args.chunkings.split(","), args.models.split(","),
                               variant=args.variant, scope=args.scope, sample=args.sample, pool_tokens=args.pool_tokens,
                               min_depth=args.min_depth,
                               expand=args.expand, pool_seeds=args.pool_seeds)
-            models = None
             print(json.dumps(_estimate(runs, args.embedder)["summary"], indent=1))
         if args.only in (None, "prepare"):
             for run in runs:
@@ -166,8 +172,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.only in (None, "rerank"):
             for run in runs:
                 for m in run.models:
-                    if models is None or m in models:
-                        pipeline.rerank(run, m, args.max_usd, args.embedder)
+                    pipeline.rerank(run, m, args.max_usd, args.embedder)
         if args.only in (None, "report"):
             for path in pipeline.simulate_and_report(runs, args.embedder):
                 print(path)

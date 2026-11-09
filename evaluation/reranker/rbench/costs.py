@@ -23,11 +23,10 @@ import numpy as np
 from rbench import chunking, retrieval
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.paths import CHUNKS, VECTORS
-from rbench.rerankers import INSTRUCTION, RERANKERS, _fixed_ids, pair_ids, pair_overhead
+from rbench.rerankers import RERANKERS, _fixed_ids, pair_ids, pair_overhead
 from rbench.samples import sample
 from rbench.schema import corpus, queries
 
-MAC_RERANK_TOK_PER_S = {"q06-local": 2500, "q06": 2500}
 MAC_EMBED_TOK_PER_S = 10500
 
 
@@ -47,19 +46,19 @@ class Tally:
         self.prefix_cached += other.prefix_cached
 
 
-def run_tokens(run, chunking_name: str, embedder: str = DEFAULT_EMBEDDER) -> Tally:
+def run_tokens(run, chunking_name: str, model: str, embedder: str = DEFAULT_EMBEDDER) -> Tally:
     """Tokens to score one chunking of a run. Exact (units.pool_items, the same definition
     scoring uses) when the run's pools are built; otherwise every chunk is assumed to be the
     chunking's mean size and every query's pool full."""
     from rbench import units
 
-    itext = INSTRUCTION
-    suffix = len(_fixed_ids()[1])
+    t = RERANKERS[model].template
+    suffix = len(_fixed_ids(t)[1])
     tally = Tally()
     if retrieval.path(embedder, run.dataset, run.scope, chunking_name, run.variant).exists():
-        for query, items in units.pool_items(run, chunking_name, embedder):
-            lengths = [len(r) for r in pair_ids(query, [d for _, d in items], itext)]
-            overhead = pair_overhead(query, itext)
+        for query, items in units.pool_items(run, chunking_name, embedder, model):
+            lengths = [len(r) for r in pair_ids(query, [d for _, d in items], t)]
+            overhead = pair_overhead(query, t)
             tally.queries += 1
             tally.pairs += len(lengths)
             tally.billed += sum(lengths)
@@ -76,7 +75,7 @@ def run_tokens(run, chunking_name: str, embedder: str = DEFAULT_EMBEDDER) -> Tal
             names = [rows[i]["doc_id"]] if run.scope == "doc" else rows[i]["scope_docs"]
             cands = int(sum(per_doc[docs.index[n]] for n in names))
         n = min(cands, max(run.min_depth, math.ceil(run.pool_tokens / unit)))
-        overhead = pair_overhead(rows[i]["variants"][run.variant], itext)
+        overhead = pair_overhead(rows[i]["variants"][run.variant], t)
         tally.queries += 1
         tally.pairs += n
         tally.billed += n * (overhead + suffix + qunit)
@@ -117,11 +116,11 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER) -> dict:
 
     for (m, d, s, v, c, e), (pool_tokens, min_depth, sample_name) in jobs.items():
         job = Run(d, s, v, (c,), (m,), sample_name, pool_tokens, min_depth, expand=e)
-        t = run_tokens(job, c, embedder)
-        per_model.setdefault(m, Tally()).add(t)
+        tally = run_tokens(job, c, m, embedder)
+        per_model.setdefault(m, Tally()).add(tally)
         per_job.append({"model": m, "dataset": d, "scope": s, "variant": v, "chunking": c, "expand": e, "sample": sample_name,
-                        "pool_tokens": pool_tokens, "queries": t.queries, "pairs": t.pairs, "billed_M": t.billed / 1e6,
-                        "prefix_cached_M": t.prefix_cached / 1e6})
+                        "pool_tokens": pool_tokens, "queries": tally.queries, "pairs": tally.pairs, "billed_M": tally.billed / 1e6,
+                        "prefix_cached_M": tally.prefix_cached / 1e6})
     summary = {}
     for m, t in per_model.items():
         price = RERANKERS[m].usd_per_mtok
@@ -129,7 +128,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER) -> dict:
             "billed_M": t.billed / 1e6,
             "prefix_cached_M": t.prefix_cached / 1e6,
             "deepinfra_usd": t.billed / 1e6 * price if price else None,
-            "mac_hours": t.billed / MAC_RERANK_TOK_PER_S[m] / 3600 if m in MAC_RERANK_TOK_PER_S else None,
+            "mac_hours": t.billed / RERANKERS[m].local_tok_per_s / 3600 if RERANKERS[m].local_tok_per_s else None,
         }
     etok = sum(embed.values())
     from rbench.embedding import EMBEDDERS
@@ -178,11 +177,11 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
     for (dataset, size, expand, model), members in groups.items():
         sample_name = max((r.sample for r in members), key=ORDER.index)  # the largest holds the others
         pool_seeds = max(r.pool_seeds for r in members)
-        itext = INSTRUCTION
+        tmpl = RERANKERS[model].template
         rows = queries(dataset)
         if all(encoded(dataset, size, rows[i]["qid"]) for i in sample_of(dataset, sample_name)):
             work = simulate_histories.scoring_work(embedder, dataset, size, sample_name, model, expand, pool_seeds)
-            tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], itext)))
+            tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], tmpl)))
             basis[model].add("exact (histories encoded; cached pairs excluded)")
         else:
             rows = queries(dataset)
@@ -195,7 +194,7 @@ def estimate_histories(runs, embedder: str = DEFAULT_EMBEDDER, histories: int = 
                 before, after = expand // 3, expand - expand // 3
                 texts = [EventMemory.string_from_segment_context(segments[max(0, s - before) : s + after + 1],
                                                                  format_options=RERANK_FORMAT) for s in seeds]
-                pair_tok.append(sum(len(x) for x in pair_ids(q["variants"]["question"], texts, itext)))
+                pair_tok.append(sum(len(x) for x in pair_ids(q["variants"]["question"], texts, tmpl)))
             tokens = float(np.mean(pair_tok)) * len(picked)
             basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")

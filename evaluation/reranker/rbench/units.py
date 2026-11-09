@@ -12,7 +12,7 @@ import numpy as np
 
 from rbench import chunking, retrieval
 from rbench.expansion import Windows
-from rbench.rerankers import INSTRUCTION, ScoreCache, depth, prompt_key
+from rbench.rerankers import RERANKERS, ScoreCache, depth, prompt_key
 from rbench.samples import sample
 from rbench.schema import queries
 
@@ -29,13 +29,14 @@ def keys(prompt: str, mode: str, query: str, unit_texts: list[str]) -> list[str]
     return [ScoreCache.key(prompt, mode, query, u) for u in unit_texts]
 
 
-def pool_items(run, chunking_name: str, embedder: str) -> list[tuple[str, list[tuple[str, str]]]]:
-    """(query, [(key, rendered unit)]) for every sampled query, to the run's depth, unique by key."""
+def pool_items(run, chunking_name: str, embedder: str, model: str) -> list[tuple[str, list[tuple[str, str]]]]:
+    """(query, [(key, unit)]) for every sampled query, to the run's depth, unique by key, keyed
+    for one model (its template's fingerprint)."""
     table = chunking.build(run.dataset, chunking_name)
     chunk_texts = table.texts(run.dataset)
     pools = retrieval.build(embedder, run.dataset, run.scope, chunking_name, run.variant)
     windows = Windows(run.dataset, table, run.expand) if run.expand else None
-    prompt = prompt_key(INSTRUCTION)
+    prompt = prompt_key(RERANKERS[model].template)
     out, seen = [], set()
     for qi in sample(run.dataset, run.sample):
         head, _ = pools.head(qi)

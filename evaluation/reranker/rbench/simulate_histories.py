@@ -46,7 +46,7 @@ from rbench import metrics, rankers
 from rbench.memory import RENDER, RERANK_FORMAT, CachedReranker, Memory
 from rbench.paths import SIM
 from rbench.reading import admission, reading
-from rbench.rerankers import INSTRUCTION, ScoreCache, pair_overhead, prompt_key
+from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key
 from rbench.samples import sample
 from rbench.schema import queries
 from rbench.simulate import COLUMNS, scored_prefix
@@ -129,8 +129,7 @@ async def first_stage(embedder: str, dataset: str, size: int, qid: str, query: s
 async def _run(embedder: str, dataset: str, size: int, sample_name: str, models: list[str],
                expansions: tuple[int, ...]) -> pd.DataFrame:
     rows = queries(dataset)
-    itext = INSTRUCTION
-    prompt = prompt_key(itext)
+    prompts = {m: prompt_key(RERANKERS[m].template) for m in models}
     caches = {m: ScoreCache(m) for m in models}
     all_rankers = rankers.for_models(models, expansions, rankers.HISTORY_DEPTHS, limited_first_stage=True)
     records: dict[str, list] = {r.id: [] for r in all_rankers}
@@ -141,10 +140,9 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
         query = q["variants"]["question"]
         seg, head, sims, units, texts = await first_stage(embedder, dataset, size, q["qid"], query, expansions)
         g = gold_for(dataset, q["qid"], seg)
-        overhead = pair_overhead(query, itext) if models else 0
+        overheads = {m: pair_overhead(query, RERANKERS[m].template) for m in models}
         chars = np.asarray([len(t) for t in seg.texts])
-        keys = {e: keys_for(query, prompt, texts[e]) for e in units}
-        scores = {(m, e): scored_prefix(caches[m], m, keys[e]) for m in models for e in units}
+        scores = {(m, e): scored_prefix(caches[m], m, keys_for(query, prompts[m], texts[e])) for m in models for e in units}
         seed_tokens = seg.tokens[head]
         priority = {e: np.asarray([2 if any(i in g.union for i in u) else 0 for u in units[e]]) for e in units}
         for r in all_rankers:
@@ -165,7 +163,7 @@ async def _run(embedder: str, dataset: str, size: int, sample_name: str, models:
             contexts = [units[r.expand][i] for i in perm]
             admitted, cum, ctx = read(contexts, seeds, seg, lazy=r.kind == "first_stage" and r.depth is None)
             values = metrics.evaluate(admitted, cum, chars, g)
-            prefix = cost - max(0, n - 1) * overhead if r.model is not None else 0.0
+            prefix = cost - max(0, n - 1) * overheads[r.model] if r.model is not None else 0.0
             records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values,
                                   len(admitted), *counts(values, cum, ctx)])
     frames = []
@@ -216,7 +214,7 @@ def scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model
 async def _scoring_work(embedder: str, dataset: str, size: int, sample_name: str, model: str, expand: int,
                         pool_seeds: int):
     rows = queries(dataset)
-    reranker = CachedReranker(model, INSTRUCTION, mode="record")
+    reranker = CachedReranker(model, mode="record")
     for qi in sample(dataset, sample_name):
         q = rows[qi]
         async with Memory(embedder, dataset, size) as m:

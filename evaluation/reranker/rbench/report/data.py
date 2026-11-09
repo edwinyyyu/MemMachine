@@ -16,7 +16,6 @@ from rbench.paths import SIM
 from rbench.rerankers import RERANKERS
 
 CONFIG = ["chunking", "ranker"]
-MODEL_ORDER = ["q06-local", "q06", "q4", "q8"]
 
 
 @dataclass
@@ -40,7 +39,7 @@ class Results:
     @property
     def models(self) -> list[str]:
         found = set(self.df.loc[self.df.kind == "rerank", "model"].dropna())
-        return [m for m in MODEL_ORDER if m in found]
+        return [m for m in RERANKERS if m in found]
 
     def rows(self, chunking: str, ranker: str) -> pd.DataFrame:
         """One configuration's rows, sorted by qid so configurations align query by query."""
@@ -63,7 +62,7 @@ class Results:
         """Models with plain reranked rows at this chunking (sweeps score only some models)."""
         d = self.select(kind="rerank")
         found = set(d.loc[d.chunking == chunking, "model"])
-        return [m for m in MODEL_ORDER if m in found]
+        return [m for m in RERANKERS if m in found]
 
     def common_depth(self, chunking: str, models: list[str] | None = None) -> str | None:
         """The deepest depth every model scored at this chunking was scored to (models without
@@ -121,10 +120,8 @@ def coverage(costs: np.ndarray, budgets: np.ndarray) -> np.ndarray:
 
 
 def price(model: str | None) -> float:
-    """$ per million reranker tokens; the local 0.6B is priced as DeepInfra's 0.6B."""
-    if model is None:
-        return 0.0
-    return RERANKERS[model].usd_per_mtok or RERANKERS["q06"].usd_per_mtok
+    """$ per million reranker tokens (a local model: its stand-in's, rerankers.Reranker.priced_as)."""
+    return 0.0 if model is None else RERANKERS[model].price
 
 
 def query_labels(r: Results, chunking: str) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
