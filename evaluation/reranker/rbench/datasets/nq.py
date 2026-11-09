@@ -17,7 +17,6 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from rbench.datasets import _dapr
-from rbench.schema import hash_split
 
 NQ_SAMPLE = 1000  # beside NQ-hard; enough for tight intervals at a bounded embedding cost
 DOC_FILES = [f"test-0000{i}-of-00003.parquet" for i in range(3)]
@@ -42,7 +41,7 @@ def prepare(raw: Path) -> tuple[list[dict], list[dict], dict]:
             continue
         used[qid] = docs[qid]
         gold = [[[qid, *docs[qid][2][p]]] for p in passages]
-        rows.append({"qid": qid, "split": hash_split(qid), "doc_id": qid, "variants": {"question": text},
+        rows.append({"qid": qid, "doc_id": qid, "variants": {"question": text},
                      "gold": gold, "features": {"nq_hard": qid in hard, "n_gold_spans": 1}})
     out_docs = [{"doc_id": d, "title": t, "text": x} for d, (t, x, _) in used.items()]
     return out_docs, rows, {"questions": len(chosen), "kept": len(rows), "missing_doc": missing,

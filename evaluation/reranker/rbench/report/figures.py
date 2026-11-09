@@ -76,10 +76,8 @@ ORACLE = "#8f8e89"
 # "3" (a prong along the line) to the local 0.6B; + (its bar along flat lines) to the gray reference.
 MARKERS = {"first_stage": "x", "oracle": "+", **{m: spec.marker for m, spec in RERANKERS.items()}}
 LABEL = {"first_stage": "first stage only", **{m: spec.label for m, spec in RERANKERS.items()}}
-CHUNKERS = {"fix": ("#2a78d6", "x", "-"), "rec": ("#eb6834", "1", (0, (5, 3))), "seg": ("#1baf7a", "2", "-"),
-            "cut": ("#2a78d6", "x", (0, (5, 3)))}  # color, marker, line per chunker family
-CHUNKER_NAMES = {"fix": "fixed token windows", "rec": "recursive, size-matched", "seg": "EventMemory segments (TextSegmenter)",
-                 "cut": "simple chunker (a cut every N characters)"}
+CHUNKERS = {"seg": ("#1baf7a", "2", "-"), "cut": ("#2a78d6", "x", (0, (5, 3)))}  # color, marker, line per chunker
+CHUNKER_NAMES = {"seg": "EventMemory segments (TextSegmenter)", "cut": "simple chunker (a cut every N characters)"}
 RAMP = {3: ("#86b6ef", "#2a78d6", "#104281"), 5: ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281")}
 DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34948", "#f2b8b5", "#f0efec", "#9ec5f4",
                                                                   "#3987e5", "#104281"])  # equal steps per arm
@@ -463,7 +461,7 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
 
 
 def _families(chunkings: list[str]) -> dict[str, list[str]]:
-    """Chunkings by chunker family (fix, rec, seg, cut), each sorted by size limit."""
+    """Chunkings by chunker family (seg, cut), each sorted by size limit."""
     out: dict[str, list[str]] = {}
     for c in sorted(chunkings, key=lambda c: int(c[3:])):
         out.setdefault(c[:3], []).append(c)

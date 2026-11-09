@@ -14,7 +14,6 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from rbench.datasets._download import hf_files
-from rbench.schema import hash_split
 
 REPO = "deepset/covid_qa_deepset"
 
@@ -42,7 +41,7 @@ def prepare(raw: Path) -> tuple[list[dict], list[dict], dict]:
             missing += 1
             continue
         question = row["question"].strip()
-        rows.append({"qid": str(row["id"]), "split": hash_split(doc_id), "doc_id": doc_id,
+        rows.append({"qid": str(row["id"]), "doc_id": doc_id,
                      "variants": {"question": question, "scoped": f'In the article "{title}": {question}'},
                      "gold": gold, "features": {"n_gold_spans": 1}})
     return list(docs.values()), rows, {"questions": len(table), "kept": len(rows), "spans_missing": missing}

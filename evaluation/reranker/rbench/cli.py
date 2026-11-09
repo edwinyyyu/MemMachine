@@ -4,18 +4,18 @@
   validate [dataset ...]             check prepared datasets against the format
   profile                            measure the datasets and write DATASETS.md
   examples [-n N]                    sampled queries, documents and gold per dataset -> EXAMPLES.md
-  explain <dataset> <chunking> <qid> [--model M] [--pool-seeds N | --pool-tokens N --min-depth N]
+  explain <dataset> <chunking> <qid> [--model M] [--pool-seeds N]
                                      a dry run of one query through every measurement
   estimate <stage> ...               reranker tokens, DeepInfra dollars and hours per stage
   run <stage> [--only prepare|rerank|report] [--models m,...] [--max-usd X]
                                      --models runs the stage with these registered models instead of its own
                                      --max-usd caps TOTAL DeepInfra reranker spend, all models and runs so far
   adhoc --datasets a,b --chunkings x,y --models m,n [--variant V] [--scope S] [--sample S]
-        [--pool-tokens N] [--min-depth N] [--pool-seeds N] [--expand E] [--only ...]
-        [--max-usd X]
+        [--pool-seeds N] [--expand E] [--only ...] [--max-usd X]
+                                     chunkings: seg<N> (EventMemory's TextSegmenter) or cut<N> (the simple chunker)
                                      any combination on request (same caching and spend cap)
   smoke [--models q06,q4,q8]         preflight: what DeepInfra returns and bills
-  fidelity <dataset> <scope> <variant> <chunking> <sample>   preflight: local vs DeepInfra 0.6B
+  fidelity <dataset> <chunking> <sample>   preflight: local vs DeepInfra 0.6B on the same pairs
   show <dataset> [--sample S] [--chart coverage,rpf,...] [--scope S] [--variant V]
                                      open a run's charts in zoomable windows, from its saved results
   compare-embedders [--server S] [--questions N]   first stage under each embedding prompt setup (no reranker)
@@ -41,15 +41,7 @@ from rbench.rerankers import RERANKERS
 
 
 def _estimate(runs: list, embedder: str) -> dict:
-    """costs.estimate for flat datasets, costs.estimate_histories for history datasets."""
-    from rbench.datasets import info
-
-    flat = [r for r in runs if not info(r.dataset).partitioned]
-    result = costs.estimate(flat, embedder) if flat else {"summary": {}, "jobs": []}
-    history_runs = [r for r in runs if info(r.dataset).partitioned]
-    if history_runs:
-        result["summary"]["histories (estimate)"] = costs.estimate_histories(history_runs, embedder)["summary"]
-    return result
+    return costs.estimate(runs, embedder)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -65,14 +57,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("chunking")
     p.add_argument("qid")
     p.add_argument("--model", default="q06-local")
-    p.add_argument("--pool-seeds", type=int, help="history datasets: seeds in the rerank pool (default: the core stage's)")
-    p.add_argument("--pool-tokens", type=int, help="other datasets: rerank pool depth in seed tokens")
-    p.add_argument("--min-depth", type=int)
+    p.add_argument("--pool-seeds", type=int, default=50, help="seeds in the rerank pool (the core stage's)")
+    p.add_argument("--expand", type=int, default=3, help="expand_context of the windows traced")
     p = sub.add_parser("examples")
     p.add_argument("-n", type=int, default=3)
     p = sub.add_parser("estimate")
     p.add_argument("stages", nargs="+", choices=grid.STAGES)
-    p.add_argument("--jobs", action="store_true", help="also list every scoring job")
     p = sub.add_parser("run")
     p.add_argument("stage", choices=grid.STAGES)
     p.add_argument("--only", choices=("prepare", "rerank", "report"))
@@ -83,10 +73,8 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument(f"--{name}", required=True)
     for name, default in (("variant", None), ("scope", None), ("sample", "large"), ("only", None)):
         p.add_argument(f"--{name}", default=default)
-    p.add_argument("--pool-tokens", type=int, default=8192)
-    p.add_argument("--min-depth", type=int, default=16)
-    p.add_argument("--expand", type=int, default=0, help="history datasets: score each seed's window (expand_context)")
-    p.add_argument("--pool-seeds", type=int, default=50, help="history datasets: seeds scored per question")
+    p.add_argument("--expand", type=int, default=0, help="score each seed's window (expand_context)")
+    p.add_argument("--pool-seeds", type=int, default=50, help="seeds scored per query")
     p.add_argument("--max-usd", type=float)
     p = sub.add_parser("show")
     p.add_argument("dataset")
@@ -109,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("smoke")
     p.add_argument("--models", default="q06,q4,q8")
     p = sub.add_parser("fidelity")
-    for name in ("dataset", "scope", "variant", "chunking", "sample"):
+    for name in ("dataset", "chunking", "sample"):
         p.add_argument(name)
     ints = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
     for name in ("run", "adhoc", "show"):  # the values reports are drawn at (rbench/config.py)
@@ -152,8 +140,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "explain":
         from rbench import explain
 
-        print(explain.run(args.dataset, args.chunking, args.qid, args.model, args.pool_tokens, args.min_depth, args.embedder,
-                          args.pool_seeds))
+        print(explain.run(args.dataset, args.chunking, args.qid, args.model, args.pool_seeds, args.expand, args.embedder))
     elif args.command == "examples":
         from rbench import examples
 
@@ -161,9 +148,6 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "estimate":
         result = _estimate([r for s in args.stages for r in grid.STAGES[s]], args.embedder)
         print(json.dumps(result["summary"], indent=1))
-        if args.jobs:
-            for job in result["jobs"]:
-                print(job)
     elif args.command in ("run", "adhoc"):
         if args.command == "run":
             runs = grid.STAGES[args.stage]
@@ -174,9 +158,8 @@ def main(argv: list[str] | None = None) -> None:
                 runs = [replace(r, models=tuple(args.models.split(","))) for r in runs]
         else:
             runs = grid.adhoc(args.datasets.split(","), args.chunkings.split(","), args.models.split(","),
-                              variant=args.variant, scope=args.scope, sample=args.sample, pool_tokens=args.pool_tokens,
-                              min_depth=args.min_depth,
-                              expand=args.expand, pool_seeds=args.pool_seeds)
+                              variant=args.variant, scope=args.scope, sample=args.sample, expand=args.expand,
+                              pool_seeds=args.pool_seeds)
             print(json.dumps(_estimate(runs, args.embedder)["summary"], indent=1))
         if args.only in (None, "prepare"):
             for run in runs:
@@ -207,4 +190,4 @@ def main(argv: list[str] | None = None) -> None:
         problems = preflight.smoke(args.models.split(","))
         print("smoke ok" if not problems else "\n".join(problems))
     elif args.command == "fidelity":
-        print(json.dumps(preflight.fidelity(args.dataset, args.scope, args.variant, args.chunking, args.sample), indent=1))
+        print(json.dumps(preflight.fidelity(args.dataset, args.chunking, args.sample), indent=1))

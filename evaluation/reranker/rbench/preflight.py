@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from rbench import chunking, retrieval, rerankers
+from rbench import rerankers
 from rbench.embedding import DEFAULT as EMBEDDER
-from rbench.rerankers import RERANKERS, ScoreCache, pair_ids, prompt_key
-from rbench.samples import sample
+from rbench.rerankers import RERANKERS, ScoreCache, pair_ids
 from rbench.schema import queries
 
 # Another instruction, only to check that DeepInfra applies the instruction field (smoke).
@@ -74,19 +73,17 @@ def smoke(models: list[str]) -> list[str]:
     return problems
 
 
-def fidelity(dataset: str, scope: str, variant: str, chunking_name: str, sample_name: str,
-             local: str = "q06-local", api: str = "q06", max_usd: float = 0.10) -> dict:
-    """Score through `api` the pairs `local` has scored, then compare the two."""
-    table = chunking.load(dataset, chunking_name)
-    texts = table.texts(dataset)
-    pools = retrieval.load(EMBEDDER, dataset, scope, chunking_name, variant)
+def fidelity(dataset: str, chunking_name: str, sample_name: str, local: str = "q06-local", api: str = "q06",
+             pool_seeds: int = 50, max_usd: float = 0.10, scope: str | None = None, variant: str | None = None) -> dict:
+    """Score through `api` the pairs `local` has scored (what EventMemory.query sends its
+    reranker for the sample at vector search limit pool_seeds), then compare the two."""
+    from rbench import simulation
+
+    asked = simulation.pool_pairs(EMBEDDER, dataset, chunking_name, sample_name, local, 0, pool_seeds, scope, variant)
     a, b = ScoreCache(local), ScoreCache(api)
     per_query, work = [], []
-    for qi in sample(dataset, sample_name):
-        ids, _ = pools.head(qi)
-        query = queries(dataset)[qi]["variants"][variant]
-        prompt = prompt_key(RERANKERS[api].template)
-        docs = {ScoreCache.key(prompt, "plain", query, texts[c]): texts[c] for c in ids}
+    for query, items in asked.items():
+        docs = dict(items)
         have = a.get(list(docs))
         keys = [k for k in docs if k in have]
         missing = [(k, docs[k]) for k in keys if k not in b.get(keys)]
@@ -117,24 +114,19 @@ def embed_fidelity(dataset: str = "longmemeval_m", chunking_name: str = "seg500"
                    a: str = "gemma300m-raw", b: str = "gemma300m-di-raw") -> dict:
     """Embed the same texts and queries with two embedders and compare (a fraction of a cent).
 
-    For a history dataset the texts are what EventMemory embeds (derivative text: date,
-    producer, JSON text) for segments drawn from three histories. Pass means the hosted model
+    The texts are what EventMemory embeds (derivative text: for chat histories date, producer
+    and JSON text; for documents the JSON text) for segments drawn from up to three partitions. Pass means the hosted model
     can replace the local one: per-text cosine near 1, and the same top texts for the
     dataset's queries over the sampled ones."""
-    from rbench.datasets import info
     from rbench.embedding import EMBEDDERS, embed
 
-    rng = np.random.default_rng(0)
-    if info(dataset).partitioned:
-        from rbench import histories as hs
+    from rbench import partitions as pt
 
-        docs = []
-        for q in queries(dataset)[:3]:
-            _, _, texts = hs.offline(dataset, q["qid"], chunking_name)
-            docs += [texts[int(i)] for i in rng.choice(len(texts), n // 3, replace=False)]
-    else:
-        texts = chunking.load(dataset, chunking_name).texts(dataset)
-        docs = [texts[i] for i in rng.choice(len(texts), min(n, len(texts)), replace=False)]
+    rng = np.random.default_rng(0)
+    docs: list[str] = []
+    for k in list(dict.fromkeys(pt.key(dataset, q) for q in queries(dataset)))[:3]:
+        _, _, texts = pt.offline(dataset, k, chunking_name)
+        docs += [texts[int(i)] for i in rng.choice(len(texts), min(len(texts), n // 3), replace=False)]
     qs = [q["variants"][next(iter(q["variants"]))] for q in queries(dataset)[:50]]
     va, vb = (embed(EMBEDDERS[e], docs, EMBEDDERS[e].doc_prompt) for e in (a, b))
     qa, qb = (embed(EMBEDDERS[e], qs, EMBEDDERS[e].query_prompt) for e in (a, b))

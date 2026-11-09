@@ -19,7 +19,6 @@ import re
 from pathlib import Path
 
 from rbench.datasets._download import extract, fetch
-from rbench.schema import hash_split
 
 # The README's Dropbox folder (https://github.com/zeroentropy-ai/legalbenchrag), as a zip.
 URL = ("https://www.dropbox.com/scl/fo/r7xfa5i3hdsbxex1w6amw/AID389Olvtm-ZLTKAPrw6k4"
@@ -56,7 +55,7 @@ def prepare(raw: Path) -> tuple[list[dict], list[dict], dict]:
                 continue
             doc_id = paths.pop()
             _, ask = re.fullmatch(r"(Consider [^;]*;)\s*(.*)", test["query"], flags=re.DOTALL).groups()
-            rows.append({"qid": f"{subset}-{index}", "split": hash_split(doc_id), "doc_id": doc_id,
+            rows.append({"qid": f"{subset}-{index}", "doc_id": doc_id,
                          "variants": {"question": test["query"], "ask": ask}, "gold": [spans],
                          "features": {"subset": subset, "n_gold_spans": len(spans)}})
     stats["kept"] = len(rows)

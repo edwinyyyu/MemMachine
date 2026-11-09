@@ -15,22 +15,19 @@
                 evidence turn first), for touched readings, for recall and precision, or with
                 windows (a reranker can cover the evidence with fewer, non-overlapping windows).
 
-With context expansion (expand = e > 0, see expansion.py) the head's items are seeds and
-each is read with its window:
+With context expansion (expand = e > 0: EventMemory's expand_context) the head's items are
+seeds and each is read with its window:
   first_stage+x   seeds in first-stage order, expanded
   rerank+x        rerank the seeds themselves, then expand the order ("rerank, then expand")
   xrerank+x       rerank each seed's whole window, then read the windows ("expand, then
-                  rerank"; what EventMemory's query does when expand_context > 0). In the
-                  history simulation its token depths count seed tokens, like every ranker's,
-                  so both scoring positions rerank the same seeds (the same vector search
-                  limit); the flat simulation counts window tokens, since windows are scored.
+                  rerank"; what EventMemory's query does when expand_context > 0). Its depth
+                  counts seeds, like every ranker's, so both scoring positions rerank the
+                  same seeds (the same vector search limit).
   oracle+x        seeds whose window holds gold first (cheapest answer's seeds first)
 
-A depth is a count of chunks ("n20") or of first-stage tokens ("t4096": the head chunks
-within 4,096 tokens, at least one). Count depths are how systems are configured (EventMemory's
-vector_search_limit is a count of seeds), and the history simulation uses only them (HISTORY_DEPTHS);
-equal reranker input is compared through each configuration's measured reranker tokens. Token
-depths remain for the flat datasets.
+A depth is a count of seeds ("n20"): EventMemory's vector_search_limit, how systems are
+configured. Equal reranker input is compared through each configuration's measured reranker
+tokens.
 """
 
 from __future__ import annotations
@@ -40,27 +37,24 @@ from dataclasses import dataclass
 import numpy as np
 
 COUNT_DEPTHS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300)
-TOKEN_DEPTHS = (1024, 2048, 4096, 8192, 16384)
 
 
 @dataclass(frozen=True)
 class Depth:
-    kind: str  # "n" or "t"
+    """A vector search limit: how many of the first stage's seeds a ranker reorders."""
+
     value: int
 
     @property
     def label(self) -> str:
-        return f"{self.kind}{self.value}"
+        return f"n{self.value}"
 
-    def chunks(self, head_tokens: np.ndarray) -> int:
-        """How many head chunks this depth reranks, capped by the head."""
-        if self.kind == "n":
-            return min(self.value, len(head_tokens))
-        return max(1, int(np.searchsorted(np.cumsum(head_tokens), self.value, "right")))
+    def chunks(self, head: np.ndarray) -> int:
+        """How many head seeds this depth reranks, capped by the head."""
+        return min(self.value, len(head))
 
 
-DEPTHS = tuple(Depth("n", v) for v in COUNT_DEPTHS) + tuple(Depth("t", v) for v in TOKEN_DEPTHS)
-HISTORY_DEPTHS = tuple(Depth("n", v) for v in COUNT_DEPTHS)
+DEPTHS = tuple(Depth(v) for v in COUNT_DEPTHS)
 
 
 @dataclass(frozen=True)

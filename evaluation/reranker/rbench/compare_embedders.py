@@ -28,7 +28,7 @@ import random
 import numpy as np
 
 from rbench import embedding as emb
-from rbench import histories as hs
+from rbench import partitions as pt
 from rbench.datasets.longmemeval import history
 from rbench.paths import FIGURES, SUMMARY, VECTORS
 from rbench.report.stats import delta
@@ -44,15 +44,18 @@ LABEL = {"": "both prompts (model card)", "-q": "query prompt only (MemMachine s
 def haystack(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int]]]:
     """(embedding texts in EventMemory's order, segment ids of each gold turn) for one question's
     reduced haystack: its evidence sessions plus EXTRA others, as MemMachine segments and derives
-    the whole history (histories.offline)."""
+    the whole history (partitions.offline)."""
     sessions = history(dataset, q["qid"])["sessions"]
     evidence = sorted({s for s, _ in q["gold_turns"][0]} | set(q["gold_sessions"]))
     others = [s for s in range(len(sessions)) if s not in evidence]
     keep = set(evidence) | set(random.Random(f"haystack:{q['qid']}").sample(others, min(EXTRA, len(others))))
-    seg, _, texts = hs.offline(dataset, q["qid"], f"seg{size}")
-    picked = [i for i in range(len(seg)) if int(seg.session[i]) in keep]
+    p = pt.part(dataset, q)
+    seg, _, texts = pt.offline(dataset, p.key, f"seg{size}")
+    session = [int(p.labels[e].split(",")[0].removeprefix("session ")) for e in seg.event]
+    picked = [i for i in range(len(seg)) if session[i] in keep]
     position = {i: k for k, i in enumerate(picked)}
-    gold = [[position[i] for i in ids] for ids in hs.gold_segments(dataset, q["qid"], seg)]
+    turns = pt.gold(pt.gold_spans(dataset, q, p), p, seg).alternatives[0]
+    gold = [[position[i] for i, _ in span] for span in turns]
     return [texts[i] for i in picked], gold
 
 

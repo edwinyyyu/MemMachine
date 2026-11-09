@@ -7,10 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get("RBENCH_DATA", ROOT / "data"))
 RAW = DATA / "raw"  # downloads, untrusted: parsed as data only
 PREPARED = DATA / "prepared"  # <dataset>/{docs.jsonl, queries.jsonl, stats.json}
-CHUNKS = DATA / "chunks"  # <dataset>/<chunking>.npz, fit.json
-VECTORS = DATA / "vectors"  # <embedder>/<dataset>/<chunking>.npy, query_<variant>.npy
-POOLS = DATA / "pools"  # <embedder>/<dataset>/<scope>/<chunking>__<variant>.npz
+VECTORS = DATA / "vectors"  # the embedder checks' vectors (compare-embedders, query_<variant>.npy)
 SCORES = DATA / "scores"  # <reranker>.sqlite
+# data/memory/<embedder>/<dataset>/<chunking>/: EventMemory's stores (memory.MEMORY). data/chunks and
+# data/pools hold the retired flat pipeline's caches; nothing here reads them.
 RESULTS = ROOT / "results"
 SIM = RESULTS / "sim"  # tidy per-query results, parquet
 SUMMARY = RESULTS / "summary"  # markdown

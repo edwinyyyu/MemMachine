@@ -4,13 +4,16 @@ A prepared dataset is three files under data/prepared/<name>/:
 
   docs.jsonl     {"doc_id", "title", "text"}, one per line. A document's position in the
                  file is its index everywhere else (chunk tables refer to it).
-  queries.jsonl  {"qid", "split", "variants", "gold", ["doc_id"], ["scope_docs"], ["features"]}
+  queries.jsonl  {"qid", "variants", "gold", ["split"], ["doc_id"], ["scope_docs"], ["features"]}
   stats.json     counts and the preparer's decisions (what was dropped and why)
 
 Gold is a list of alternatives; any one alternative fully answers the query. An
 alternative is a list of spans [doc_id, start, end] (character offsets, end exclusive)
 that are all needed. "First gold" is reached when any span of any alternative has been
 read in full; "every gold" when every span of one alternative has.
+
+`split`, where present, is the source dataset's split a query comes from: provenance only.
+Nothing is held out (decided 2026-11-06): every sampled query is evaluated.
 
 `variants` holds the same information need phrased in different ways, all taken from the
 source data (never written by a model). `doc_id` names the query's own document (needed
@@ -20,7 +23,6 @@ candidates are a fixed set (SWE-bench's files of one repository snapshot).
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from functools import cache, cached_property
@@ -60,11 +62,6 @@ def read_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in file]
 
 
-def hash_split(key: str, dev_fraction: float = 0.3, salt: str = "split") -> str:
-    """A stable dev/test assignment for datasets without an official split."""
-    return "dev" if hashlib.sha256(f"{salt}:{key}".encode()).digest()[0] / 256 < dev_fraction else "test"
-
-
 def validate(docs: list[dict], rows: list[dict]) -> list[str]:
     """Problems with a prepared dataset; empty when it follows the format."""
     problems = []
@@ -79,8 +76,6 @@ def validate(docs: list[dict], rows: list[dict]) -> list[str]:
         if q["qid"] in seen:
             problems.append(f"duplicate qid {q['qid']}")
         seen.add(q["qid"])
-        if q.get("split") not in ("dev", "test"):
-            problems.append(f"{where}: split {q.get('split')!r}")
         if not q.get("variants") or not all(isinstance(v, str) and v.strip() for v in q["variants"].values()):
             problems.append(f"{where}: empty variant")
         if not q.get("gold") or not all(q["gold"]):

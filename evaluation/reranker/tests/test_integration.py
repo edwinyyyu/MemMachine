@@ -1,28 +1,26 @@
-"""End to end on real prepared data (skipped when the data is not present): simulate and report."""
+"""End to end on the lme-test stage's stored partitions (skipped when they are not encoded):
+the unified simulation replays the first stage and the perfect reranker from EventMemory."""
 
 import numpy as np
 import pytest
 
-from rbench import retrieval, simulate
-from rbench.paths import CHUNKS, PREPARED
+from rbench import simulation
+from rbench.memory import MEMORY
 
-READY = (PREPARED / "conditionalqa" / "queries.jsonl").exists() and (CHUNKS / "conditionalqa" / "rec64.npz").exists() \
-    and retrieval.path("gemma300m", "conditionalqa", "corpus", "rec64", "scenario_question").exists()
+READY = (MEMORY / "gemma300m-raw" / "longmemeval_s" / "seg500" / "done").exists()
 
 
-@pytest.mark.skipif(not READY, reason="needs prepared ConditionalQA with rec64 pools")
-def test_simulate_first_stage_and_references_end_to_end(tmp_path, monkeypatch):
-    monkeypatch.setattr(simulate, "SIM", tmp_path)
-    df = simulate.run("gemma300m", "conditionalqa", "corpus", "scenario_question", "tiny", "rec64", [])
-    kinds = set(df.kind)
-    assert {"first_stage", "oracle"} <= kinds and set(df.expand) == {0, 3}
+@pytest.mark.skipif(not READY, reason="needs the lme-test stage's encoded histories")
+def test_simulation_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(simulation, "SIM", tmp_path)
+    df = simulation.run("gemma300m-raw", "longmemeval_s", "seg500", "tiny", [], (3,))
+    assert {"first_stage", "oracle"} <= set(df.kind) and set(df.expand) == {0, 3}
     one = df[df.ranker == "first_stage"]
-    assert len(one) == 8 and one.cluster.notna().all()
-    # within its pool (8,192 head tokens) the gold-first reference never does worse than the first
-    # stage; it reads nothing beyond the pool, so compare where the first stage finds gold inside it
-    ref = df[df.ranker == "oracle@t8192"].sort_values("qid")["first"].to_numpy()
-    base = one.sort_values("qid")["first"].to_numpy()
-    inside = base <= 8192
-    assert np.all(ref[inside] <= base[inside])
-    # expanded reading yields defined recall for every query
+    assert len(one) == 8 and one.cluster.notna().all() and (one.seg_tokens > 0).all()
+    # with seeds alone the perfect reranker is a bound for every gold read in full: no first
+    # stage over the same top L reads all the evidence with fewer tokens
+    for limit in ("n10", "n20", "n30"):
+        ref = df[df.ranker == f"oracle@{limit}"].sort_values("qid")["every"].to_numpy()
+        base = df[df.ranker == f"first_stage@{limit}"].sort_values("qid")["every"].to_numpy()
+        assert np.all(ref <= base)
     assert np.isfinite(df[df.ranker == "first_stage+x3"]["recall_t1000"]).all()

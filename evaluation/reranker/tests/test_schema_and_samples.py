@@ -1,6 +1,6 @@
 """The prepared-data format catches bad gold, and samples nest."""
 
-from rbench.schema import hash_split, validate
+from rbench.schema import validate
 
 
 def test_validate_flags_out_of_bounds_and_unknown_docs():
@@ -13,7 +13,10 @@ def test_validate_flags_out_of_bounds_and_unknown_docs():
     assert len(problems) == 2
 
 
-def test_hash_split_is_stable():
-    assert hash_split("doc-1") == hash_split("doc-1")
-    shares = [hash_split(str(i)) == "dev" for i in range(2000)]
-    assert 0.25 < sum(shares) / len(shares) < 0.35
+def test_samples_nest_in_one_hash_order():
+    from rbench.samples import ORDER, sample
+
+    for dataset in ("longmemeval_s",):
+        picked = [set(sample(dataset, name)) for name in ORDER]
+        assert all(a <= b for a, b in zip(picked, picked[1:], strict=False))
+        assert len(picked[0]) == 8

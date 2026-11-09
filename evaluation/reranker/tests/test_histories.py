@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from rbench import histories as hs
+from rbench import partitions as pt
 from rbench.paths import PREPARED, SIM
 from rbench.schema import queries
 
@@ -24,19 +25,23 @@ def test_segments_are_in_eventmemory_order_and_gold_maps_to_segments():
     from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: I001
 
     for q in _tiny():
-        seg, segments, texts = hs.offline("longmemeval_s", q["qid"], "seg500")
+        p = hs.part("longmemeval_s", q["qid"])
+        seg, segments, texts = pt.offline("longmemeval_s", q["qid"], "seg500")
+        session = [int(p.labels[e].split(",")[0].removeprefix("session ")) for e in seg.event]
         keys = [(s.timestamp, s.event_uuid, s.index, s.offset) for s in segments]
         assert keys == sorted(keys)  # ids are EventMemory's (timestamp, event, index, offset) order
         assert np.all(np.diff(seg.event) >= 0) and all(t.strip() for t in seg.texts)
         firsts = np.flatnonzero(np.r_[True, np.diff(seg.event) > 0])
         assert len({segments[i].timestamp for i in firsts}) == len(firsts)  # every turn has its own timestamp
-        turns = hs.gold_segments("longmemeval_s", q["qid"], seg)
+        turns = pt.gold(pt.gold_spans("longmemeval_s", q, p), p, seg).alternatives[0]
         assert len(turns) == len(q["gold_turns"][0]) and all(turns)
+        for span, (e, _, _) in zip(turns, pt.gold_spans("longmemeval_s", q, p)[0], strict=True):  # whole turns
+            assert sorted(i for i, _ in span) == np.flatnonzero(seg.event == e).tolist()
         # the increments never show: rendered and embedded timestamps are the session's own
         h = history("longmemeval_s", q["qid"])["sessions"]
         for i in firsts[:: max(1, len(firsts) // 50)]:
             x = segments[int(i)]
-            date = session_datetime(h[int(seg.session[i])]["date"])
+            date = session_datetime(h[session[int(i)]]["date"])
             plain = x.model_copy(update={"timestamp": date})
             assert EventMemory.string_from_segment_context([x]) == EventMemory.string_from_segment_context([plain])
             assert texts[int(i)].split("]")[0] == f"[{date:%A, %B} {date.day}, {date.year}"
@@ -52,8 +57,9 @@ def test_sessions_out_of_file_order_are_sorted_by_date():
         order = hs.chronological(sessions)
         if order != list(range(len(sessions))) and found < 3:
             found += 1
-            seg = hs.offline("longmemeval_s", q["qid"], "seg500")[0]
-            seen = list(dict.fromkeys(seg.session.tolist()))
+            p = hs.part("longmemeval_s", q["qid"])
+            seg = pt.offline("longmemeval_s", q["qid"], "seg500")[0]
+            seen = list(dict.fromkeys(int(p.labels[e].split(",")[0].removeprefix("session ")) for e in seg.event))
             assert seen == [s for s in order if any(t["content"].strip() for t in sessions[s]["turns"])]
     assert found  # the files do have histories out of date order
 
@@ -98,7 +104,7 @@ def test_the_prompt_comparison_haystack_keeps_every_gold_turn_in_eventmemory_for
 
     for q in _tiny()[:3]:
         texts, gold = ce.haystack("longmemeval_s", q, 500)
-        full = set(hs.offline("longmemeval_s", q["qid"], "seg500")[2])
+        full = set(pt.offline("longmemeval_s", q["qid"], "seg500")[2])
         assert len(gold) == len(q["gold_turns"][0]) and all(gold)
         assert set(texts) <= full  # the same embedding texts as the whole history
         assert all(texts[i].split("] ", 1)[1].startswith(("User:", "Assistant:")) for turn in gold for i in turn)

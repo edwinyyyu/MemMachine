@@ -50,16 +50,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from rbench.chunking import ChunkTable
-from rbench.schema import corpus, queries
 
-BUDGETS = (250, 500, 1000, 2000, 4000, 8000, 16000)  # table columns (500-4,000 is the realistic range)
-KS = (1, 2, 3, 5, 10, 20, 30, 50)
 # Recall and precision are stored on regular grids for charts: every 250 reader tokens and
-# every k up to 50. Every BUDGETS and KS value is included.
+# every k up to 50.
 CURVE_BUDGETS = tuple(range(250, 16000 + 1, 250))
 CURVE_KS = tuple(range(1, 51))
-assert set(BUDGETS) <= set(CURVE_BUDGETS) and set(KS) <= set(CURVE_KS)
 INF = math.inf
 FIELDS = (["first", "every", "rank", "first_k", "every_k", "first_touch", "every_touch", "first_touch_k", "every_touch_k"]
           + [f"recall_t{b}" for b in CURVE_BUDGETS] + [f"precision_t{b}" for b in CURVE_BUDGETS]
@@ -102,7 +97,7 @@ def trim(text: str, start: int, end: int) -> tuple[int, int]:
     return (s, e) if s < e else (start, end)
 
 
-def _merged_length(intervals: list[tuple[int, int]]) -> int:
+def merged_length(intervals: list[tuple[int, int]]) -> int:
     total, last = 0, -1
     for s, e in sorted(intervals):
         if e <= last:
@@ -110,32 +105,6 @@ def _merged_length(intervals: list[tuple[int, int]]) -> int:
         total += e - max(s, last)
         last = e
     return total
-
-
-def gold(dataset: str, table: ChunkTable) -> list[Gold]:
-    docs = corpus(dataset)
-    by_doc = table.by_doc(len(docs.doc_ids))
-    out = []
-    for q in queries(dataset):
-        alternatives, pieces = [], {}
-        for alternative in q["gold"]:
-            spans = []
-            for doc_id, s, e in alternative:
-                s, e = trim(docs.texts[docs.index[doc_id]], s, e)
-                rows = by_doc[docs.index[doc_id]]
-                hit = rows[(table.start[rows] < e) & (table.end[rows] > s)]
-                span = []
-                for c in hit:
-                    a, b = max(s, int(table.start[c])), min(e, int(table.end[c]))
-                    span.append((int(c), b - a))
-                    pieces.setdefault(int(c), []).append((a, b))
-                spans.append(tuple(span))
-            alternatives.append(tuple(spans))
-        cost = [sum(int(table.tokens[c]) for c in {c for span in alt for c, _ in span}) for alt in alternatives]
-        best = alternatives[int(np.argmin(cost))]
-        out.append(Gold(tuple(alternatives), {c: _merged_length(v) for c, v in pieces.items()},
-                        tuple(sorted({c for span in best for c, _ in span}))))
-    return out
 
 
 def evaluate(order: np.ndarray, cum: np.ndarray, chars: np.ndarray, g: Gold) -> list[float]:

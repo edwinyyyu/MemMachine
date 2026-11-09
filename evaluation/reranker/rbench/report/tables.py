@@ -30,7 +30,7 @@ import numpy as np
 from rbench.paths import SUMMARY
 from rbench import config
 from rbench.report import frontier
-from rbench.report.data import Results, coverage, query_labels, size_label
+from rbench.report.data import Results, coverage, query_labels, size_label, unit_tokens
 from rbench.report.stats import delta
 
 EVENTS = ("first", "every", "first_touch", "every_touch")  # complete and touched readings (metrics.py)
@@ -42,17 +42,27 @@ def _cov(rows, event: str, budgets) -> list[str]:
     return [f"{x:.3f}" for x in coverage(rows[event].to_numpy(), np.asarray(budgets))]
 
 
-def _pairs(r: Results) -> list[str]:
-    """Fixed-window chunkings that have a size-matched recursive one (flat datasets)."""
-    return [c for c in r.chunkings if c.startswith("fix") and "rec" + c[3:] in r.chunkings]
+def _pairs(r: Results) -> list[tuple[str, str]]:
+    """(seg<N>, cut<N>): EventMemory's TextSegmenter and the simple chunker at the same limit."""
+    return [(c, "cut" + c[3:]) for c in r.chunkings if c.startswith("seg") and "cut" + c[3:] in r.chunkings]
+
+
+def _sizes(r: Results, a: str, b: str) -> str:
+    """Two chunkings' measured mean segments (retrieved seeds), flagged when not size-matched."""
+    x, y = unit_tokens(r, a), unit_tokens(r, b)
+    if not x or not y:
+        return "sizes not measured"
+    flag = "" if abs(y / x - 1) <= config.EVAL.size_tolerance else f", NOT size-matched ({y / x:.2f}×)"
+    return f"{x:,.0f} vs {y:,.0f} tokens{flag}"
 
 
 def first_stage(r: Results, event: str) -> list[str]:
     out = ["## 1. First stage alone (embedding and chunking)\n",
            f"{event}-gold coverage by reader budget, no reranker"
-           + (". Δ rows: recursive minus fixed at matched size.\n" if _pairs(r) else
-              "; `+xE` reads each seed's EventMemory window (expand_context E).\n"),
-           "Measured unit: for EventMemory segments, the chunker's limit, the history's mean segment and the mean of the seeds "
+           + "; `+xE` reads each seed's EventMemory window (expand_context E)"
+           + (". Δ rows: the simple chunker minus EventMemory's TextSegmenter at the same character limit, with both "
+              "measured sizes (the limit is not the size).\n" if _pairs(r) else ".\n"),
+           "Measured unit: the chunker's limit, the mean segment of the partitions searched and of the seeds "
            "retrieved; for windows, the mean window of the seeds retrieved (segment-text tokens).\n"
            if any(c.startswith(("seg", "cut")) for c in r.chunkings) else "",
            "| chunking | measured unit | " + " | ".join(map(str, config.EVAL.columns)) + " |", "|---|---|" + "---|" * len(config.EVAL.columns)]
@@ -63,12 +73,11 @@ def first_stage(r: Results, event: str) -> list[str]:
             if not rows.empty:
                 out.append(f"| {c}{name.removeprefix('first_stage')} | {size_label(r, c, e)} | "
                            + " | ".join(_cov(rows, event, config.EVAL.columns)) + " |")
-    for c in r.chunkings:
-        if c.startswith("fix") and "rec" + c[3:] in r.chunkings:
-            a, b = r.rows(c, "first_stage"), r.rows("rec" + c[3:], "first_stage")
-            out.append(f"| Δ rec−fix {c[3:]} | | " + " | ".join(
-                delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
-                for x in config.EVAL.columns) + " |")
+    for seg, cut in _pairs(r):
+        a, b = r.rows(seg, "first_stage"), r.rows(cut, "first_stage")
+        out.append(f"| Δ cut−seg {seg[3:]} | {_sizes(r, seg, cut)} | " + " | ".join(
+            delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
+            for x in config.EVAL.columns) + " |")
     return out + [""]
 
 
@@ -255,21 +264,20 @@ def worth_it(r: Results, event: str) -> list[str]:
 
 def chunkers(r: Results, event: str) -> list[str]:
     if not _pairs(r):
-        return []  # history datasets have one segmenter (EventMemory's)
-    out = ["## 8. Chunkers with a reranker: recursive minus fixed\n",
-           "| size | ranker | " + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|---|---|"]
-    for c in r.chunkings:
-        other = "rec" + c[3:]
-        if not c.startswith("fix") or other not in r.chunkings:
-            continue
-        depth = r.common_depth(c)
+        return []
+    out = ["## 8. Chunkers with a reranker: the simple chunker minus EventMemory's TextSegmenter\n",
+           "At the same character limit; measured mean segments (retrieved seeds) are given per pair, since the "
+           "recursive splitter's segments run well under its limit.\n",
+           "| limit | measured sizes (seg vs cut) | ranker | " + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |",
+           "|---|---|---|" + "---|" * len(config.EVAL.budgets)]
+    for c, other in _pairs(r):
         shared = [m for m in r.models_at(c) if m in r.models_at(other)]
         depth = r.common_depth(c, shared) if shared else None
         for name in ["first_stage"] + ([f"rerank:{m}@{depth}" for m in shared] if depth else []):
             a, b = r.rows(c, name), r.rows(other, name)
             if a.empty or b.empty:
                 continue
-            out.append(f"| {c[3:]} | {name} | " + " | ".join(
+            out.append(f"| {c[3:]} | {_sizes(r, c, other)} | {name} | " + " | ".join(
                 delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
                 for x in config.EVAL.budgets) + " |")
     return out + [""]
@@ -419,7 +427,7 @@ def equal_counts(r: Results, event: str) -> list[str]:
 def settings(r: Results, event: str) -> list[str]:
     """What each configuration needs EventMemory set to at a reader budget: max_num_segments
     (segments read within it) and, for the first stage, vector_search_limit (seeds reached)."""
-    budgets = [b for b in config.EVAL.budgets if f"segs_t{b}" in r.df]  # counts are stored at metrics.BUDGETS only
+    budgets = [b for b in config.EVAL.budgets if f"segs_t{b}" in r.df]  # counts are stored at the budgets configured when simulated
     if not budgets:
         return []
     skipped = [b for b in config.EVAL.budgets if b not in budgets]
@@ -428,7 +436,7 @@ def settings(r: Results, event: str) -> list[str]:
            "questions. Segment counts vary with the text, so a limit that keeps 90% of questions within the budget is "
            "the 10th percentile. Without a reranker, the seeds read are the vector_search_limit to set; with one, the "
            "vector_search_limit is the depth in the name (every one of those seeds is reranked)."
-           + (f" Not shown: {', '.join(map(str, skipped))} (segment counts are stored at metrics.BUDGETS only)." if skipped else "")
+           + (f" Not shown: {', '.join(map(str, skipped))} (segment counts are stored only at the budgets configured when simulated)." if skipped else "")
            + "\n",
            "| chunking | ranker | " + " | ".join(f"@{b}" for b in budgets) + " |",
            "|---|---|" + "---|" * len(budgets)]

@@ -1,4 +1,6 @@
-"""First-stage embedders: chunk and query vectors.
+"""First-stage embedders: their endpoints and prompts, and direct embedding for the checks
+(compare-embedders, embed-fidelity). The benchmark itself embeds through MemMachine's
+OpenAIEmbedder inside EventMemory (memory.QueryCachingEmbedder).
 
 An embedder is an OpenAI-compatible embeddings endpoint plus the model's prompts and
 context limit. Two serve google/embeddinggemma-300m:
@@ -6,16 +8,17 @@ context limit. Two serve google/embeddinggemma-300m:
   gemma300m-di  DeepInfra's hosted model, $0.002 per million tokens (checked 2026-11-05)
 each with four prompt setups (SETUPS: "", "-q", "-raw", "-d"); the benchmark uses "-raw".
 The client adds the model's prompts itself, as sentence-transformers does. Vectors live
-under the embedder's name, so the two never mix; `preflight embed-fidelity` compares them. Adding an embedder (another server, an API) adds a first stage
-whose results come out of the same pipeline: the benchmark's first-stage tables are an
-embedding and chunking benchmark in their own right.
+under the embedder's name, so the two never mix; `preflight embed-fidelity` compares them.
+Adding an embedder (another server, an API) adds a first stage whose results come out of the
+same pipeline: the benchmark's first-stage tables are an embedding and chunking benchmark in
+their own right.
 
 Inputs longer than the embedder's context are averaged as MemMachine's embedders do
 (#1449): the text is cut greedily into `max_input_chars` pieces, each piece is embedded
 with the prompt, and the vectors are averaged weighted by piece length, then normalized
 (the vector store scores by cosine). A piece still over the context is cut at the
-context, as sentence-transformers truncates. Only 2,048-token chunks and long queries
-(SWE-bench issues) take this path.
+context, as sentence-transformers truncates. Only long texts and queries (SWE-bench issues)
+take this path.
 """
 
 from __future__ import annotations
@@ -29,7 +32,6 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from rbench import chunking
 from rbench.paths import SECRETS, VECTORS
 from rbench.schema import queries
 from rbench.text import GEMMA, token_starts
@@ -84,14 +86,6 @@ ATTEMPTS = 10
 
 def path(embedder: str, dataset: str, name: str) -> Path:
     return VECTORS / embedder / dataset / f"{name}.npy"
-
-
-def chunk_vectors(embedder: str, dataset: str, chunking_name: str) -> np.ndarray:
-    target = path(embedder, dataset, chunking_name)
-    if not target.exists():
-        texts = chunking.load(dataset, chunking_name).texts(dataset)
-        _run(EMBEDDERS[embedder], texts, EMBEDDERS[embedder].doc_prompt, target)
-    return np.load(target)
 
 
 def query_vectors(embedder: str, dataset: str, variant: str) -> np.ndarray:

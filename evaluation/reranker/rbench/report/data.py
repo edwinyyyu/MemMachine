@@ -65,10 +65,8 @@ class Results:
         return [m for m in RERANKERS if m in found]
 
     def common_depth(self, chunking: str, models: list[str] | None = None) -> str | None:
-        """The deepest depth every model scored at this chunking was scored to (models without
-        scores there are left out rather than hiding the others): a token depth where there are
-        any (the flat datasets), else a count depth (the history datasets: a vector search
-        limit)."""
+        """The deepest vector search limit every model scored at this chunking was scored to
+        (models without scores there are left out rather than hiding the others)."""
         d = self.select(kind="rerank")
         d = d[d.chunking == chunking]
         shared = None
@@ -77,8 +75,7 @@ class Results:
             shared = depths if shared is None else shared & depths
         if not shared:
             return None
-        kind = "t" if any(x.startswith("t") for x in shared) else "n"
-        return max((x for x in shared if x.startswith(kind)), key=lambda x: int(x[1:]))
+        return max(shared, key=lambda x: int(x[1:]))
 
     def limits(self, chunking: str, wanted: tuple[int, ...] | None = None) -> list[str]:
         """Vector search limits to show for a chunking, as depth labels ("n20"): the wanted ones
@@ -162,37 +159,22 @@ def _measured(r: Results, chunking_name: str, column: str, expand: int = 0) -> f
 
 
 def segment_size(r: Results, chunking_name: str) -> tuple[float, float] | None:
-    """A history chunking's measured mean segment size over the whole history (characters,
-    tokens), averaged over questions; None for results simulated before sizes were recorded."""
+    """A chunking's measured mean segment size over the partitions searched (characters,
+    tokens), averaged over queries; None for results simulated before sizes were recorded."""
     chars, tokens = _measured(r, chunking_name, "seg_chars"), _measured(r, chunking_name, "seg_tokens")
     return None if chars is None or tokens is None else (chars, tokens)
 
 
 def unit_tokens(r: Results, chunking_name: str, expand: int = 0) -> float | None:
     """Measured mean segment-text tokens one retrieved seed's context holds at an expand_context
-    (the seed alone at 0); for flat datasets, the chunking's mean chunk tokens at 0 and None
-    above (windows not measured there)."""
-    from rbench.datasets import info
-
-    if info(r.dataset).partitioned:
-        return _measured(r, chunking_name, "unit_tokens", expand)
-    if expand:
-        return None
-    from rbench import chunking
-
-    return float(chunking.load(r.dataset, chunking_name).tokens.mean())
+    (the seed alone at 0)."""
+    return _measured(r, chunking_name, "unit_tokens", expand)
 
 
 def size_label(r: Results, chunking_name: str, expand: int = 0) -> str:
-    """What one unit of a configuration measures: for history datasets the chunker's limit (seg:
-    at most N characters; cut: every N) with the history's measured mean segment, or the
-    measured mean window when expanded; for flat
-    datasets the mean chunk tokens."""
-    from rbench.datasets import info
-
-    if not info(r.dataset).partitioned:
-        tokens = unit_tokens(r, chunking_name, expand)
-        return "not measured" if tokens is None else f"{tokens:,.0f} tokens"
+    """What one unit of a configuration measures: the chunker's limit (seg: at most N
+    characters; cut: every N) with the measured mean segment of the partitions searched and of
+    the seeds retrieved, or the measured mean window when expanded."""
     if expand:
         tokens = unit_tokens(r, chunking_name, expand)
         return "not measured" if tokens is None else f"window: {tokens:,.0f} tokens"
@@ -201,5 +183,5 @@ def size_label(r: Results, chunking_name: str, expand: int = 0) -> str:
     if size is None:
         return f"{limit} (not measured)"
     seeds = unit_tokens(r, chunking_name)
-    return (f"{limit}; history {size[0]:,.0f} chars, {size[1]:,.0f} tokens"
+    return (f"{limit}; searched {size[0]:,.0f} chars, {size[1]:,.0f} tokens"
             + (f"; seeds {seeds:,.0f} tokens" if seeds else ""))

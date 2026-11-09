@@ -3,66 +3,42 @@
 Every step skips what is already cached, so a stage can be rerun after an interruption or
 extended later, and only new work is done.
 
+Every dataset runs through MemMachine's EventMemory (partitions.py, simulation.py).
 Simulation always uses every reranker (rerankers.RERANKERS) and every expansion that has
-scores, whichever stage scored them: a configuration is kept only when every query of
-the sample was scored deep enough (simulate.py). So running one stage never hides another
-stage's results.
+scores, whichever stage scored them: a configuration is kept only when every query of the
+sample was scored deep enough. So running one stage never hides another stage's results.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-from rbench import chunking, config, retrieval, simulate, simulate_histories, units
-from rbench import histories as hs
-from rbench.datasets import info
+from rbench import config, simulation
+from rbench import partitions as pt
 from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.grid import Run
 from rbench.report import figures, tables
 from rbench.report.data import load
-from rbench.rerankers import RERANKERS, ScoreCache, pair_ids, score
+from rbench.rerankers import RERANKERS, pair_ids, score
+from rbench.samples import sample
 
-
-_PREPARED: set[tuple] = set()  # (embedder, dataset, chunking, sample) done in this process
+_PREPARED: set[tuple] = set()  # (embedder, dataset, scope, chunking, sample) done in this process
 
 
 def prepare(run: Run, embedder: str = EMBEDDER) -> None:
-    if info(run.dataset).partitioned:  # each history encoded into its EventMemory partition once (kept)
-        from rbench.samples import sample
-        from rbench.schema import queries
-
-        rows = queries(run.dataset)
-        for c in run.chunkings:
-            if (embedder, run.dataset, c, run.sample) in _PREPARED:
-                continue  # the same stage's other scoring position
-            _PREPARED.add((embedder, run.dataset, c, run.sample))
-            hs.ingest(embedder, run.dataset, c, [rows[i]["qid"] for i in sample(run.dataset, run.sample)])
-        return
+    """Encode the partitions the run's queries search (each embedded once; the stores are kept)."""
     for c in run.chunkings:
-        chunking.build(run.dataset, c)
-        retrieval.build(embedder, run.dataset, run.scope, c, run.variant)
-
-
-def missing(run: Run, model: str, chunking_name: str, embedder: str = EMBEDDER):
-    """The run's pairs not yet in the model's cache, as rerankers.Work."""
-    cache = ScoreCache(model)
-    out = []
-    for query, items in units.pool_items(run, chunking_name, embedder, model):
-        have = cache.get([k for k, _ in items])
-        todo = [(k, d) for k, d in items if k not in have]
-        if todo:
-            out.append((query, todo))
-    return out
+        if (embedder, run.dataset, run.scope, c, run.sample) in _PREPARED:
+            continue  # the same stage's other scoring position
+        _PREPARED.add((embedder, run.dataset, run.scope, c, run.sample))
+        pt.ingest(embedder, run.dataset, c, sample(run.dataset, run.sample), run.scope)
 
 
 def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER) -> None:
     spec = RERANKERS[model]
     for c in run.chunkings:
-        if info(run.dataset).partitioned:
-            work = simulate_histories.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand,
-                                                   run.pool_seeds)
-        else:
-            work = missing(run, model, c, embedder)
+        work = simulation.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand, run.pool_seeds,
+                                       run.scope, run.variant)
         pairs = sum(len(items) for _, items in work)
         tokens = sum(len(r) for q, items in work for r in pair_ids(q, [d for _, d in items], spec.template))
         label = f"{run.dataset}/{run.scope}/{run.variant}/{c}{f'+x{run.expand}' if run.expand else ''}"
@@ -73,27 +49,17 @@ def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER
 
 
 def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
-    """Simulate every (dataset, scope, variant, sample, chunking) the runs
-    touch, with all rerankers, then write each (dataset, scope, variant, sample) report."""
-    groups: dict[tuple, set] = defaultdict(set)
-    reported = set()
-    history_jobs: dict[tuple, set[int]] = defaultdict(lambda: set(config.EVAL.expansions))
+    """Simulate every (dataset, scope, variant, sample, chunking) the runs touch, with all
+    rerankers and the replayed expansions plus any whose windows a run scored, then write each
+    (dataset, scope, variant, sample) report."""
+    jobs: dict[tuple, set[int]] = defaultdict(lambda: set(config.EVAL.expansions))
     for run in runs:
-        if info(run.dataset).partitioned:  # both scoring positions replay in one simulation
-            for c in run.chunkings:  # the replayed expansions, plus any whose windows this run scores
-                history_jobs[(run.dataset, c, run.sample)] |= {run.expand} - {0}
-            reported.add((run.dataset, "history", run.variant, run.sample))
-            continue
         for c in run.chunkings:
-            groups[(run.dataset, run.scope, run.variant, run.sample)].add(c)
-    for (dataset, c, sample_name), expansions in sorted(history_jobs.items()):
-        simulate_histories.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)))
-    for (dataset, scope, variant, sample_name), chunkings in sorted(groups.items()):
-        for c in sorted(chunkings):
-            simulate.run(embedder, dataset, scope, variant, sample_name, c, list(RERANKERS))
-        reported.add((dataset, scope, variant, sample_name))
+            jobs[(run.dataset, run.scope, run.variant, run.sample, c)] |= {run.expand} - {0}
+    for (dataset, scope, variant, sample_name, c), expansions in sorted(jobs.items()):
+        simulation.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)), scope, variant)
     written = []
-    for dataset, scope, variant, sample_name in sorted(reported):
+    for dataset, scope, variant, sample_name in sorted({k[:4] for k in jobs}):
         results = load(embedder, dataset, scope, variant, sample_name)
         written += [tables.write(results, e) for e in tables.EVENTS] + [figures.write(results)]
     return written

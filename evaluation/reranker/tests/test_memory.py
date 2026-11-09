@@ -17,7 +17,7 @@ import uuid
 import numpy as np
 import pytest
 
-from rbench import histories as hs
+from rbench import partitions as pt
 from rbench.memory import RERANK_FORMAT, ExactSearchEngine, Memory
 from rbench.reading import Reader, admission
 from rbench.text import GEMMA, count
@@ -87,7 +87,7 @@ def stored(tmp_path):
             part = await segment_store.open_partition("h")
             by_event = await part.get_segment_uuids_by_event_uuids([e.uuid for e in events])
             ids = [u for e in events for u in by_event.get(e.uuid, [])]
-            segments = hs._ordered([v[0] for v in (await part.get_segment_contexts(ids)).values()])
+            segments = pt._ordered([v[0] for v in (await part.get_segment_contexts(ids)).values()])
             return segments, partition
 
     return events, tmp_path, _run(go())
@@ -154,7 +154,7 @@ def test_reader_cost_tracks_string_from_query_result(stored):
     first stage (only the contexts reached), within a few percent of real tokenization."""
     _, _, (segments, partition) = stored
     index = {s.uuid: i for i, s in enumerate(segments)}
-    _, inner, run = hs._costs(segments)
+    _, inner, run = pt._costs(segments, None)
     block = np.asarray([hash(s.event_uuid) for s in segments])
     from memmachine_server.episodic_memory.event_memory.data_types import QueryResult
 
@@ -180,16 +180,18 @@ def test_reader_cost_tracks_string_from_query_result(stored):
 
 def test_a_new_encoding_refreshes_the_segment_table(tmp_path, monkeypatch):
     events = _events(12)
-    monkeypatch.setattr(hs, "events", lambda dataset, qid: (tuple(events), {e.uuid: (0, i, i) for i, e in enumerate(events)}))
+    monkeypatch.setattr(pt, "formats", lambda dataset: pt.CHAT)
+    p = pt.Part("h", tuple(events), tuple(f"turn {i}" for i in range(len(events))),
+                tuple(e.blocks[0].text for e in events))
 
     async def go():
         async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
             await m.ingest("h", events)
-            first = await hs.table(m, "synthetic", "h")
-            assert (await hs.table(m, "synthetic", "h")).uuid == first.uuid  # cached
+            first = await pt.table(m, "synthetic", p)
+            assert (await pt.table(m, "synthetic", p)).uuid == first.uuid  # cached
             m.done("h").unlink()  # as if the encoding had been interrupted: encoded again
             assert await m.ingest("h", events)
-            again = await hs.table(m, "synthetic", "h")
+            again = await pt.table(m, "synthetic", p)
             assert again.texts == first.texts and again.uuid != first.uuid  # new uuids, table refreshed
 
     _run(go())

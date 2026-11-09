@@ -9,7 +9,7 @@ import uuid
 
 import numpy as np
 
-from rbench import histories as hs
+from rbench import partitions as pt
 from rbench.reading import Reader, admission, constants
 
 from memmachine_server.episodic_memory.event_memory.data_types import ProducerContext, Segment, TextBlock  # noqa: E402, I001
@@ -72,7 +72,7 @@ def random_case(rng):
 
 def test_costs_count_json_text_and_rendered_headers():
     segs, _ = history(random.Random(0), 3)
-    _, inner, run = hs._costs(segs)
+    _, inner, run = pt._costs(segs, None)
     assert all(i > 0 for i in inner) and all(r > 2 for r in run)
     assert json.dumps(segs[0].block.text)  # inner counts the JSON-escaped text, without its quotes
 
@@ -81,7 +81,7 @@ def test_incremental_equals_model_from_scratch():
     rng = random.Random(1)
     for _ in range(60):
         segs, block, contexts, seeds = random_case(rng)
-        _, inner, run = hs._costs(segs)
+        _, inner, run = pt._costs(segs, None)
         reader, admitted = Reader(contexts, block, inner, run), set()
         for s, _ in admission(contexts, seeds):
             admitted.add(s)
@@ -95,7 +95,7 @@ def test_lazy_contexts_enter_the_query_result_only_once_admission_reaches_them()
     differs = 0
     for _ in range(60):
         segs, block, contexts, seeds = random_case(rng)
-        _, inner, run = hs._costs(segs)
+        _, inner, run = pt._costs(segs, None)
         lazy, eager, admitted = Reader(contexts, block, inner, run, lazy=True), Reader(contexts, block, inner, run), set()
         for s, k in admission(contexts, seeds):
             admitted.add(s)

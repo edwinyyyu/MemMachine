@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from rbench.metrics import BUDGETS, CURVE_BUDGETS, CURVE_KS, FIELDS, KS, Gold, evaluate
+from rbench.metrics import CURVE_BUDGETS, CURVE_KS, FIELDS, Gold, evaluate
 
 TOKENS = np.array([100, 100, 100, 100])
 CHARS = np.array([400, 400, 400, 400])
@@ -49,7 +49,10 @@ def test_gold_outside_the_head_is_inf():
 
 def test_field_lists_match():
     assert len(FIELDS) == 9 + 2 * len(CURVE_BUDGETS) + 2 * len(CURVE_KS)
-    assert set(BUDGETS) <= set(CURVE_BUDGETS) and set(KS) <= set(CURVE_KS)  # table columns stay available
+    from rbench import config
+
+    # every budget the report reads curves at is on the stored grid
+    assert set(config.EVAL.budgets) | set(config.EVAL.columns) <= set(CURVE_BUDGETS)
 
 
 def test_precision_counts_overlapping_gold_once_and_all_spans_in_a_chunk():
@@ -68,9 +71,9 @@ def test_trim_drops_edge_whitespace_only():
 
 
 def test_merged_union_of_overlapping_spans():
-    from rbench.metrics import _merged_length
+    from rbench.metrics import merged_length
 
-    assert _merged_length([(0, 10), (5, 15), (20, 25)]) == 20
+    assert merged_length([(0, 10), (5, 15), (20, 25)]) == 20
 
 
 def test_touched_needs_any_chunk_of_a_span_complete_needs_all():

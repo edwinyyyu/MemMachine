@@ -20,7 +20,7 @@ interfaces:
                      treats a missing score as an error, so replays never spend; record mode
                      collects the misses (scored 0) as the work a paid run scores.
 
-One partition per history, keyed by the question id. Stores live under
+One partition per history or document set (partitions.py). Stores live under
 data/memory/<embedder>/<dataset>/<chunking>/ (seg<N> or cut<N>) and are kept.
 """
 
@@ -224,19 +224,23 @@ class QueryCachingEmbedder(Embedder):
 
 class CachedReranker(Reranker):
     """A Qwen3 reranker's scores, from the score cache. mode "replay": a missing score is an
-    error. mode "record": misses are collected in `work` (scored 0) for a paid run to score."""
+    error. mode "record": misses are collected in `work` (scored 0) for a paid run to score.
+    Either way, every pair asked for is kept in `asked`, in order."""
 
     def __init__(self, model: str, mode: str = "replay") -> None:
         self.model, self.mode = model, mode
         self.cache = ScoreCache(model)
         self.prompt = prompt_key(RERANKERS[model].template)
-        self.work: dict[str, list[tuple[str, str]]] = {}  # question -> [(cache key, rendered context)]
+        self.work: dict[str, list[tuple[str, str]]] = {}  # question -> [(cache key, rendered context)] not scored
+        self.asked: dict[str, list[tuple[str, str]]] = {}  # question -> every (cache key, rendered context)
 
     def keys(self, query: str, candidates: list[str]) -> list[str]:
         return [ScoreCache.key(self.prompt, RENDER, query, c) for c in candidates]
 
     async def score(self, query: str, candidates: list[str]) -> list[float]:
         keys = self.keys(query, candidates)
+        known = {k for k, _ in self.asked.setdefault(query, [])}
+        self.asked[query] += [(k, c) for k, c in zip(keys, candidates, strict=True) if k not in known]
         got = self.cache.get(keys)
         missing = [(k, c) for k, c in zip(keys, candidates, strict=True) if k not in got]
         if missing and self.mode == "replay":
@@ -252,9 +256,9 @@ class Memory:
     """One chunking's EventMemory stores for an embedder and dataset, and EventMemory
     instances over them (with or without a reranker; they share the stores).
 
-    Use one per history (`async with Memory(...)`): the SQLite vector store keeps every opened
-    partition's index in memory until it shuts down, so closing after each history keeps
-    memory flat. A history's events are encoded in one call, so its index is saved once."""
+    Use one per partition (`async with Memory(...)`): the SQLite vector store keeps every opened
+    partition's index in memory until it shuts down, so closing after each partition keeps
+    memory flat. A partition's events are encoded in one call, so its index is saved once."""
 
     def __init__(self, embedder: str, dataset: str, chunking: str, root: Path | None = None,
                  backend: Embedder | None = None) -> None:
@@ -298,15 +302,17 @@ class Memory:
     def done(self, key: str) -> Path:
         return self.root / "done" / key
 
-    async def ingest(self, key: str, events: list[Event]) -> bool:
-        """Encode a history's events into its partition once; False if it was already in. A
-        partition left half-written by an interrupted run is deleted and encoded again."""
+    async def ingest(self, key: str, events: list[Event], format_options: FormatOptions | None = None) -> bool:
+        """Encode a partition's events once; False if it was already in. A partition left
+        half-written by an interrupted run is deleted and encoded again. format_options: what
+        encode_events gives the deriver (partitions.formats: None for chat histories, MemMachine's
+        default; no dates for documents)."""
         if self.done(key).exists():
             return False
         memory = await self.event_memory()
         await memory.delete_partition(key)
         partition = await memory.open_or_create_partition(key)
-        await partition.encode_events(events)
+        await partition.encode_events(events, format_options=format_options)
         self.done(key).parent.mkdir(parents=True, exist_ok=True)
         self.done(key).write_text(str(uuid.uuid4()))  # an encoding's stamp: its segment uuids are new each time
         return True

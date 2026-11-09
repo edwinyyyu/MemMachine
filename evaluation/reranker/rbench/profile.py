@@ -48,7 +48,7 @@ def profile(name: str) -> dict:
     paragraphs = [p for t in docs.texts for p in re.split(r"\n\s*\n", t) if p.strip()]
     picked = np.random.default_rng(0).choice(len(paragraphs), min(3000, len(paragraphs)), replace=False)
     para_tokens = count([paragraphs[i] for i in picked])
-    rows = [q for q in queries(name) if q["split"] == "test"]
+    rows = list(queries(name))
     texts = [q["variants"][ds.default_variant] for q in rows]
     q_tokens = count(texts)
     forms = collections.Counter(form(t) for t in texts)
@@ -90,14 +90,14 @@ def _pct(x: float) -> str:
 
 def profile_histories(name: str, every: int = 10, size: int = 500) -> dict:
     """Measured profile of a history dataset on every `every`-th history (segments at `size`)."""
-    from rbench import histories as hs
+    from rbench import partitions as pt
     from rbench.datasets.longmemeval import history
 
     rows = queries(name)
     types = collections.Counter(q["features"]["question_type"] for q in rows)
     segments, tokens, sessions = [], [], []
     for q in rows[::every]:
-        seg = hs.offline(name, q["qid"], f"seg{size}")[0]
+        seg = pt.offline(name, pt.key(name, q), f"seg{size}")[0]
         segments.append(len(seg))
         tokens.append(int(seg.tokens.sum()))
         sessions.append(q["features"]["n_sessions"])
