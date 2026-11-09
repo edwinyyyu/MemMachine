@@ -33,5 +33,6 @@ select = ["E", "F", "W", "B"]
 ignore = ["B905"]  # zip() without strict=: lengths are checked where it matters
 
 [tool.uv.sources]
-memmachine-server = { git = "https://github.com/MemMachine/MemMachine", subdirectory = "packages/server", rev = "043fb75380b07f787d7571b910cded6ce181fd74" }
-memmachine-common = { git = "https://github.com/MemMachine/MemMachine", subdirectory = "packages/common", rev = "043fb75380b07f787d7571b910cded6ce181fd74" }
+# MemMachine itself, from this repository (the benchmark is based on the branch it evaluates)
+memmachine-server = { path = "../../packages/server", editable = true }
+memmachine-common = { path = "../../packages/common", editable = true }

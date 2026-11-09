@@ -25,9 +25,11 @@ The first-stage results come from the same runs, so the benchmark doubles as an 
 | simulate | `rbench/simulate_histories.py`, `rbench/reading.py`, `rbench/metrics.py` | one row per question × ranker × depth × expansion; a reranked row reads only its pool; reader cost = tokens of EventMemory's rendered context |
 | report | `rbench/report/` | `results/summary/…md`, `results/figures/…png` |
 
-The benchmark runs MemMachine's EventMemory itself, a dependency pinned to its `feat/horizontal-scaling` branch (`043fb7538`, pyproject.toml). `rbench/memory.py` supplies only what a deployment supplies, as implementations of MemMachine's interfaces: an exact vector search engine, the embedder (MemMachine's `OpenAIEmbedder`, against the local server or DeepInfra) and a Qwen3 reranker that reads the score cache. `tests/test_memory.py` checks that replaying reranked configurations from cached scores gives exactly the order of `EventMemory.query` at every vector search limit, and that the admission replay and reader-cost model match `build_query_result_context` and `string_from_query_result`.
+The benchmark lives in MemMachine's repository (`evaluation/reranker/`, on a branch based on `feat/horizontal-scaling`) and runs that branch's own EventMemory: `packages/server` and `packages/common` are path dependencies, so any change to EventMemory the benchmark needs is in the same diff. `rbench/memory.py` supplies only what a deployment supplies, as implementations of MemMachine's interfaces: an exact vector search engine, the embedder (MemMachine's `OpenAIEmbedder`, against the local server or DeepInfra) and a Qwen3 reranker that reads the score cache. `tests/test_memory.py` checks that replaying reranked configurations from cached scores gives exactly the order of `EventMemory.query` at every vector search limit, and that the admission replay and reader-cost model match `build_query_result_context` and `string_from_query_result`.
 
 ## Running
+
+From `evaluation/reranker/`:
 
 ```sh
 uv sync
@@ -38,7 +40,7 @@ uv sync
 .venv/bin/python -m rbench show longmemeval_s --sample tiny --chart coverage,rpf   # zoomable chart windows from saved results
 ```
 
-Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` caps total DeepInfra reranker spend across all models and runs, read from the call logs: it stops before a request group would pass the cap, and never changes what runs. Embedding spend is not capped (see the table). Interrupted runs lose almost nothing: reranker scores are saved per request and embeddings per 1,024 segments, and a rerun skips finished work. Preflight first (METHODOLOGY.md §8):
+Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` caps total DeepInfra reranker spend across all models and runs, read from the call logs: it stops before a request group would pass the cap, and never changes what runs. Embedding spend is not capped (see the table). Interrupted runs lose almost nothing: reranker scores are saved per request, each history is encoded (embedded) once and one interrupted mid-way is encoded again, and a rerun skips finished work. Preflight first (METHODOLOGY.md §8):
 
 ```sh
 .venv/bin/python -m rbench smoke

@@ -1,6 +1,6 @@
 """EventMemory as MemMachine runs it, over this benchmark's backends.
 
-MemMachine is a dependency pinned to its feat/horizontal-scaling branch (pyproject.toml). Its
+MemMachine is this repository's own packages/server and packages/common (path dependencies). Its
 own code does everything retrieval depends on: segmenting events (TextSegmenter), deriving the
 text to embed (WholeTextDeriver), storing segments (SQLAlchemySegmentStore on SQLite) and
 vectors (SQLiteVectorStore), vector search, context expansion, reranking, and rendering. The
