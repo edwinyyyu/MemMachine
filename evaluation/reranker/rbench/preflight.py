@@ -202,8 +202,17 @@ def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
     ours = int(count(texts, spec.tokenizer).sum()) + spec.special_tokens * len(texts)
     out["4 billed tokens"] = {"billed": usage.get("prompt_tokens"), "ours": ours, "pass": usage.get("prompt_tokens") == ours}
 
+    arrived: set[str] = set()  # how the vectors come back on MemMachine's path
+
+    async def note_format(response) -> None:
+        if response.url.path.endswith("/embeddings"):
+            await response.aread()
+            first = response.json()["data"][0]["embedding"]
+            arrived.add("base64 float32" if isinstance(first, str) else "JSON floats")
+
     async def through_memmachine() -> np.ndarray:
         embedder_ = QueryCachingEmbedder(embedder)
+        embedder_._client._client.event_hooks["response"].append(note_format)
         try:  # through the API every time: the documents' cached vectors are dropped before and after
             keys = [EmbeddingCache.key(t) for t in CARD_DOCUMENTS]
             embedder_._cache.drop(keys)
@@ -215,5 +224,8 @@ def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
 
     via = asyncio.run(through_memmachine())
     cos = (unit(via) * unit(short)).sum(1)
-    out["5 MemMachine path"] = {"cosine": np.round(cos, 6).tolist(), "pass": bool(cos.min() >= 0.9999)}
+    exact = bool(np.array_equal(via, via.astype(np.float32).astype(np.float64)))  # the cache keeps float32: lossless
+    out["5 MemMachine path"] = {"cosine": np.round(cos, 6).tolist(), "arrived as": sorted(arrived),
+                                "every value exact in float32 (the cache stores the API's output losslessly)": exact,
+                                "pass": bool(cos.min() >= 0.9999 and exact)}
     return out

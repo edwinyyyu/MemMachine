@@ -61,13 +61,15 @@ The pools are fixed: the reranker scores the top 200 seeds, or the top 100 windo
 
 Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-sizes lme-cut`), before the paid embeddings exist: pair tokens probed on 8 LongMemEval-M histories per chunking; `estimate` re-prices exactly once the histories are embedded.
 
-| stage | reranking (8B) | embedding (Qwen3-Embedding-8B) | total |
-|---|---|---|---|
-| lme-pilot + lme-core, the minimal run (seg500, seeds only: 8B $0.84, 4B $0.42) | $1.26 | $6.29 | **$7.55** |
-| lme-windows (expand, then rerank at x3, 8B) | $0.94 | (shared) | $0.94 |
-| lme-sizes (seg250, seg1000, seg2000) | $7.17 | $18.75 | $25.92 |
-| lme-cut (cut355) | $1.80 | $6.48 | $8.28 |
-| all three | $10.75 | $31.52 | $42.27 |
+| stage | reranking | embedding (Qwen3-Embedding-8B) | total | disk |
+|---|---|---|---|---|
+| lme-pilot + lme-core, the minimal run (seg500, seeds: 8B $0.84, 4B $0.42) | $1.26 | $6.29 | **$7.55** | 58 GB |
+| lme-windows (expand, then rerank at x3, 8B) | $0.94 | shared with the core | $0.94 | 0 |
+| lme-sizes (seg250, seg1000, seg2000; 8B seeds and windows) | $7.17 | $18.75 | $25.92 | 166 GB |
+| lme-cut (cut355; 8B seeds and windows) | $1.80 | $6.48 | $8.28 | 58 GB |
+| all four | $11.17 | $31.52 | $42.69 | 282 GB |
+
+Disk counts the index, the stores, the segment tables and the kept embedding cache (float32, as the API returns it). Every stage together needs about 282 GB, more than the 264 GB free on 2026-11-10: the minimal run fits; the others need space freed first (`run` refuses to start when the new stores would not fit).
 
 On 8 locally embedded LongMemEval-M histories at seg500, reading 200 seeds reaches 16,000 tokens for all 8 and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
 
