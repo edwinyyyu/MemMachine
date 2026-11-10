@@ -60,10 +60,10 @@ class Depth:
 DEPTHS = tuple(Depth(v) for v in COUNT_DEPTHS)
 
 
-def depths(deepest: int) -> tuple[Depth, ...]:
-    """The vector search limits replayed for pools up to `deepest` seeds: COUNT_DEPTHS up to it,
-    and the pool itself (a measured depth need not be on the grid)."""
-    return tuple(Depth(v) for v in sorted({v for v in COUNT_DEPTHS if v <= deepest} | {deepest}))
+def depths(deepest: int, pools: tuple[int, ...] = ()) -> tuple[Depth, ...]:
+    """The vector search limits replayed: COUNT_DEPTHS up to `deepest`, the deepest itself, and
+    the runs' pool depths (a measured depth need not be on the grid)."""
+    return tuple(Depth(v) for v in sorted({v for v in COUNT_DEPTHS if v <= deepest} | {deepest} | set(pools)))
 
 
 @dataclass(frozen=True)

@@ -634,6 +634,9 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
                     if not chunkings:
                         continue
                     means, los, his = [], [], []
+                    chunkings = [c for c in chunkings if not r.rows(c, f"rerank:{m}@{d}").empty]  # scored this deep
+                    if not chunkings:
+                        continue
                     for c in chunkings:
                         rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
                         gain = rd.hit(rd.costs(rows, reading), b) - rd.hit(rd.costs(base, reading), b)
@@ -738,17 +741,20 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
               for v in sorted(set(labels[f])) if (labels[f] == v).sum() >= 10]
     if not groups:
         return
+    models = [m for m in r.models if not r.rows(c, f"rerank:{m}@{limit}").empty]  # those scored this deep
+    if not models:
+        return
     budgets = config.EVAL.budgets
     fig, axes = _figure(1, len(budgets), panel=(3.4, 0.34 * len(groups) + 1.2), sharey=True)
     for j, b in enumerate(budgets):
         ax = axes[0][j]
         hit = rd.hit(rd.costs(base, reading), b)
-        for k, m in enumerate(r.models):
+        for k, m in enumerate(models):
             gain = rd.hit(rd.costs(r.rows(c, f"rerank:{m}@{limit}"), reading), b) - hit
             for g, (f, v) in enumerate(groups):
                 mask = labels[f] == v
                 lo, hi = interval(gain[mask], base.cluster.to_numpy()[mask])
-                y = g + (k - (len(r.models) - 1) / 2) * 0.22
+                y = g + (k - (len(models) - 1) / 2) * 0.22
                 if not np.isnan(lo):
                     ax.plot([lo, hi], [y, y], color=SERIES[m], linewidth=LINE)
                 ax.plot([gain[mask].mean()], [y], "o", color=SERIES[m], markersize=5.5)
@@ -759,7 +765,7 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
         ax.set_title(f"reader budget {b:,}", loc="left")
         ax.set_xlabel("gain in coverage")
     _save(fig, out / _file("query_types", reading), f"Reranker gain by question type ({c}, L {limit[1:]}) — {head}",
-          [_key(SERIES[m], marker="o") for m in r.models], [LABEL[m] for m in r.models],
+          [_key(SERIES[m], marker="o") for m in models], [LABEL[m] for m in models],
           note=f"Held equal: the reader budget (panel) and the vector search limit ({limit[1:]}): gain = {_coverage(reading)} "
                "reranked minus the first stage over the same seeds. Dot: mean; line: 95% interval. Seeds only.")
 

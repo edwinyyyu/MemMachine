@@ -158,23 +158,24 @@ async def first_stage(partition, seg: pt.Segments, query: str, expansions: tuple
 
 def run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
         expansions: tuple[int, ...] | None = None, scope: str | None = None, variant: str | None = None,
-        limit: int | None = None) -> pd.DataFrame:
+        limit: int | None = None, pools: tuple[int, ...] = ()) -> pd.DataFrame:
     """expansions: expand_context values to replay (default: config.EVAL.expansions); scope and
     variant default to the dataset's own; limit: the first stage's vector search limit (the
-    deepest pool scored; default FIRST_STAGE_LIMIT)."""
+    deepest pool scored; default FIRST_STAGE_LIMIT); pools: the runs' pool depths, replayed as
+    limits beside the grid (a measured depth is rarely on it)."""
     expansions = config.EVAL.expansions if expansions is None else expansions
     return asyncio.run(_run(embedder, dataset, chunking, sample_name, models, expansions,
                             pt.scope_of(dataset, scope), variant or info(dataset).default_variant,
-                            max(FIRST_STAGE_LIMIT, limit or 0)))
+                            max(FIRST_STAGE_LIMIT, limit or 0), tuple(pools)))
 
 
 async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
-               expansions: tuple[int, ...], scope: str, variant: str, limit: int) -> pd.DataFrame:
+               expansions: tuple[int, ...], scope: str, variant: str, limit: int, pools: tuple[int, ...]) -> pd.DataFrame:
     rows = queries(dataset)
     fmt = pt.formats(dataset)
     prompts = {m: prompt_key(RERANKERS[m].template) for m in models}
     caches = {m: ScoreCache(m) for m in models}
-    all_rankers = rankers.for_models(models, expansions, rankers.depths(limit), limited_first_stage=True)
+    all_rankers = rankers.for_models(models, expansions, rankers.depths(limit, pools), limited_first_stage=True)
     records: dict[str, list] = {r.id: [] for r in all_rankers}
     dropped: dict[str, str] = {}
     order: list[int] = []

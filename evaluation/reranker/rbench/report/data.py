@@ -79,25 +79,30 @@ class Results:
 
     def limits(self, chunking: str, wanted: tuple[int, ...] | None = None) -> list[str]:
         """Vector search limits to show for a chunking, as depth labels ("n20"): the wanted ones
-        every model there was scored to (all of them when no model was), plus the deepest every
-        model was scored to. wanted defaults to config.EVAL.limits (EventMemory's default limit is 20)."""
+        some model there was scored to (all of them when no model was), plus each model's
+        deepest pool, of seeds and of windows (a model scored less deep is simply absent there).
+        wanted defaults to config.EVAL.limits (EventMemory's default limit is 20)."""
         from rbench import config
 
         wanted = config.EVAL.limits if wanted is None else wanted
         models = self.models_at(chunking)
-        if models:
-            shared = set.intersection(*(set(self.depths_at(chunking, m)) for m in models))
-        else:
-            shared = {f"n{v}" for v in wanted}
-        out = {f"n{v}" for v in wanted if f"n{v}" in shared}
-        deepest = self.common_depth(chunking)
-        if deepest and deepest.startswith("n"):
-            out.add(deepest)
+        if not models:
+            return [f"n{v}" for v in sorted(wanted)]
+        have: set[str] = set()
+        out: set[str] = set()
+        for m in models:
+            for kind in ("rerank", "xrerank"):
+                depths = self.depths_at(chunking, m, kind)
+                have |= set(depths)
+                if depths:
+                    out.add(depths[-1])
+        out |= {f"n{v}" for v in wanted if f"n{v}" in have}
         return sorted(out, key=lambda d: int(d[1:]))
 
-    def depths_at(self, chunking: str, model: str) -> list[str]:
-        """Count depths (vector search limits) a model's reranked rows exist at, shallowest first."""
-        d = self.select(kind="rerank", model=model)
+    def depths_at(self, chunking: str, model: str, kind: str = "rerank") -> list[str]:
+        """Count depths (vector search limits) a model's reranked rows (kind rerank: seeds;
+        xrerank: windows) exist at, shallowest first."""
+        d = self.select(kind=kind, model=model, expand=None)
         return sorted({x for x in d.loc[d.chunking == chunking, "depth"] if x.startswith("n")}, key=lambda x: int(x[1:]))
 
 

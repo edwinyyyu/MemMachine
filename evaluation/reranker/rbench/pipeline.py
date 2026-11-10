@@ -55,16 +55,16 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     rerankers and the replayed expansions plus any whose windows a run scored, then write each
     (dataset, scope, variant, sample) report."""
     jobs: dict[tuple, set[int]] = defaultdict(lambda: set(config.EVAL.expansions))
-    limits: dict[tuple, int] = defaultdict(int)  # the first stage searches as deep as the deepest pool
+    pools: dict[tuple, set[int]] = defaultdict(set)  # the runs' pools; the first stage searches as deep as the deepest
     for run in runs:
         for c in run.chunkings:
             key = (run.dataset, run.scope, run.variant, run.sample, c)
             jobs[key] |= {run.expand} - {0}
-            limits[key] = max(limits[key], depth.pool(run, c, embedder))
+            pools[key].add(depth.pool(run, c, embedder))
     for key, expansions in sorted(jobs.items()):
         dataset, scope, variant, sample_name, c = key
         simulation.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)), scope, variant,
-                       limits[key])
+                       max(pools[key]), tuple(sorted(pools[key])))
     written = []
     for dataset, scope, variant, sample_name in sorted({k[:4] for k in jobs}):
         results = load(embedder, dataset, scope, variant, sample_name)
