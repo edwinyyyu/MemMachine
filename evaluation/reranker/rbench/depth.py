@@ -112,9 +112,13 @@ def needed(order: list[int], g) -> tuple[float, float]:
 
 async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope: str, variant: str,
                    expansions: tuple[int, ...]) -> dict:
+    from rbench.progress import Progress
+
     rows, fmt = queries(dataset), pt.formats(dataset)
     out = {}
-    for k, members in pt.groups(dataset, sample(dataset, sample_name), scope).items():
+    keyed = pt.groups(dataset, sample(dataset, sample_name), scope)
+    progress = Progress(f"{dataset} {chunking} depth", sum(len(v) for v in keyed.values()), "queries")
+    for k, members in keyed.items():
         p = pt.part(dataset, rows[members[0]], scope)
         async with Memory(embedder, dataset, chunking) as m:
             seg = await pt.table(m, dataset, p)
@@ -140,6 +144,7 @@ async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str,
                     fill[str(e)] = {str(b): fill_depth(costs, b) for b in budgets()}
                     holds[str(e)] = windows_hold(contexts, g)
                 out[q["qid"]] = {"every": every, "first": first, "segments": len(seg), "fill": fill, "holds": holds}
+                progress.step()
     return out
 
 

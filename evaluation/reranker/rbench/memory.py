@@ -209,6 +209,9 @@ def _read_questions(path: Path) -> dict[str, list[float]]:
     return out
 
 
+EMBEDDED_TOKENS: dict[str, int] = {}  # document tokens sent per embedder in this process (the run summary prices them)
+
+
 class QueryCachingEmbedder(Embedder):
     """MemMachine's OpenAIEmbedder with bounded concurrency, and question embeddings cached on
     disk by text (replays query the same questions many times). Documents are sent as they
@@ -247,6 +250,12 @@ class QueryCachingEmbedder(Embedder):
         return vectors
 
     async def _ingest_embed(self, inputs: list, max_attempts: int = 1) -> list[list[float]]:
+        from rbench.text import count
+
+        texts = [str(x) for x in inputs]
+        EMBEDDED_TOKENS[self._spec.name] = (EMBEDDED_TOKENS.get(self._spec.name, 0)
+                                            + int(count(texts, self._spec.tokenizer).sum())
+                                            + self._spec.special_tokens * len(texts))
         return await self._batches(inputs, self._inner._ingest_embed)
 
     async def _search_embed(self, queries: list, max_attempts: int = 1) -> list[list[float]]:

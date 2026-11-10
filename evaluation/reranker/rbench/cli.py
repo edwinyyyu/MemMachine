@@ -197,6 +197,12 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps(_estimate(runs, _embedder(args, runs))["summary"], indent=1))
         embedder = _embedder(args, runs)
         print(f"first stage: {embedder}", flush=True)
+        import time
+
+        from rbench import rerankers
+        from rbench.memory import EMBEDDED_TOKENS
+
+        started, spent = time.monotonic(), rerankers.total_spent_usd()
         if args.only in (None, "prepare"):
             for run in runs:
                 pipeline.prepare(run, embedder)
@@ -207,6 +213,12 @@ def main(argv: list[str] | None = None) -> None:
         if args.only in (None, "report"):
             for path in pipeline.simulate_and_report(runs, embedder):
                 print(path)
+        from rbench.progress import elapsed
+
+        embedded = EMBEDDED_TOKENS.get(embedder, 0)
+        print(f"done in {elapsed(started)}: DeepInfra reranking ${rerankers.total_spent_usd() - spent:.2f} (call logs); "
+              f"embedding {embedded / 1e6:.2f}M tokens, ${embedded / 1e6 * EMBEDDERS[embedder].usd_per_mtok:.2f} "
+              "(counted as sent)", flush=True)
     elif args.command == "show":
         from rbench.report import figures
         from rbench.report.data import load

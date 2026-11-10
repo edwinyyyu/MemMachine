@@ -43,6 +43,8 @@ Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>.p
                                            context holds at the row's expand_context (the seed
                                            alone, or its window), over every seed retrieved
   bound_exact                              bound rows: whether the bound is exact (bounds.py)
+  share_full_k, share_touch_k              per evidence turn: the seeds read when it is read in full /
+                                           touched (recall at k seeds kept: report/topk.py)
   share_full, share_touch                  per evidence turn (span) of the answer read in full first:
                                            the reader cost at which it is read in full / touched
                                            (lists; report/readings.py's share readings)
@@ -85,7 +87,8 @@ def stored_budgets() -> tuple[int, ...]:
 
 def extra() -> list[str]:
     budgets = stored_budgets()
-    return (["admitted", "seg_chars", "seg_tokens", "unit_tokens", "share_full", "share_touch", "bound_exact"]
+    return (["admitted", "seg_chars", "seg_tokens", "unit_tokens", "share_full", "share_touch", "share_full_k",
+             "share_touch_k", "bound_exact"]
             + [f"{e}_ctx" for e in EVENTS]
             + [f"segs_t{b}" for b in budgets] + [f"ctx_t{b}" for b in budgets])
 
@@ -179,7 +182,11 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
     records: dict[str, list] = {r.id: [] for r in all_rankers}
     dropped: dict[str, str] = {}
     order: list[int] = []
-    for k, members in pt.groups(dataset, sample(dataset, sample_name), scope).items():
+    from rbench.progress import Progress
+
+    keyed = pt.groups(dataset, sample(dataset, sample_name), scope)
+    progress = Progress(f"{dataset} {chunking} simulation", sum(len(v) for v in keyed.values()), "queries")
+    for k, members in keyed.items():
         p = pt.part(dataset, rows[members[0]], scope)
         async with Memory(embedder, dataset, chunking) as m:
             seg = await pt.table(m, dataset, p)
@@ -194,6 +201,7 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
                 _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, prompts, caches,
                         all_rankers, records, dropped)
                 order.append(qi)
+                progress.step()
     frames = []
     for r in all_rankers:
         if r.id not in records:
@@ -229,7 +237,8 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
             b = bounds.bound(g, pool, seg.inner, seg.run, r.expand)
             values = [b.get(f, np.nan) for f in metrics.FIELDS]
             records[r.id].append([0, 0.0, 0.0, 0, *values, np.nan, *sizes, unit_tokens[r.expand], b["share_full"],
-                                  b["share_touch"], b["exact"], *([np.nan] * (len(EVENTS) + 2 * len(stored_budgets())))])
+                                  b["share_touch"], [], [], b["exact"],
+                                  *([np.nan] * (len(EVENTS) + 2 * len(stored_budgets())))])
             continue
         logits = None
         cost = 0.0
@@ -246,9 +255,10 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
         admitted, cum, ctx = read(contexts, seeds, seg, lazy=r.kind == "first_stage" and r.depth is None)
         values = metrics.evaluate(admitted, cum, chars, g)
         prefix = cost - max(0, n - 1) * overheads[r.model] if r.model is not None else 0.0
-        full, touched = metrics.span_costs(admitted, cum, g)
+        seen = np.maximum.accumulate(ctx) + 1 if len(ctx) else ctx  # seeds reached after each admitted segment
+        full, touched, full_k, touched_k = metrics.span_costs(admitted, cum, g, seen)
         records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values,
-                              len(admitted), *sizes, unit_tokens[r.expand], full, touched, np.nan,
+                              len(admitted), *sizes, unit_tokens[r.expand], full, touched, full_k, touched_k, np.nan,
                               *counts(values, cum, ctx)])
 
 

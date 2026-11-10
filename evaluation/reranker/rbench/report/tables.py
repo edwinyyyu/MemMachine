@@ -582,6 +582,66 @@ def best_settings(r: Results, event: str) -> list[str]:
     return out + [""]
 
 
+def _topk_cell(g: dict, i: int | None, j: int) -> str:
+    """One cell of the top-k table: reranked recall at pool L (row i) and k (column j), with its
+    gain over the first stage; k = L says it equals the first stage by construction."""
+    if i is None or np.isnan(g["reranked"][i, j]):
+        return "–"
+    if g["limits"][i] == g["ks"][j]:
+        return f"{g['reranked'][i, j]:.3f} (= first stage: k = L)"
+    return f"{g['reranked'][i, j]:.3f}: {g['gain'][i, j]:+.3f} [{g['low'][i, j]:+.3f}, {g['high'][i, j]:+.3f}]"
+
+
+def topk_recall(r: Results) -> list[str]:
+    """Recall with and without reranking across top-k, read both ways (report/topk.py)."""
+    from rbench.report import topk
+
+    if not r.models or not topk.available(r):
+        return []
+    core = frontier.setting(r)
+    out = ["## 16. Recall at top-k, with and without reranking (the asker's metric)\n",
+           f"{core[0]}, expand_context 0. Top-k read both ways: **L**, the vector search limit (seeds retrieved, all "
+           "reranked), and **k**, the seeds kept after (re)ranking. Recall: the share of a question's evidence turns found "
+           "within the first k seeds, in full or touched (LongMemEval's turn recall), and every-gold (all turns in full), "
+           "averaged over questions. Without a reranker top-k is both (the first k seeds). **At k = L everything "
+           "retrieved is kept, so reranking cannot change recall, only order: the gain there is 0 by construction**, "
+           "and reading top-k as L alone the two coincide at every k. L and k are chosen once for all questions. "
+           "Δ: reranked minus the first stage [95% interval].\n"]
+    for m in r.models:
+        for reading in topk.READINGS:
+            g = topk.grid(r, m, reading)
+            if not g["limits"]:
+                continue
+            bests = topk.best_limit(g)
+            limits, ks = g["limits"], g["ks"]
+            pool = len(limits) - 1
+            at20 = limits.index(20) if 20 in limits else None
+            out += [f"**{m}: {topk.NAMES[reading]}, recall at k seeds kept**\n",
+                    "| k | first stage (= top-k as L) | L 20, reranked | best L, reranked | pool, reranked |",
+                    "|---|---|---|---|---|"]
+            for j, k in enumerate(ks):
+                best_i = limits.index(bests[j]) if bests[j] is not None else None
+                out.append(f"| {k} | {g['first'][j]:.3f} | {_topk_cell(g, at20, j)} | "
+                           + (f"L {bests[j]}: " if best_i is not None else "") + f"{_topk_cell(g, best_i, j)} | "
+                           f"L {limits[pool]}: {_topk_cell(g, pool, j)} |")
+            out.append("")
+        g = topk.grid(r, m, "share")
+        if g["limits"]:
+            cols = [k for k in topk.SLICE_KS if k in g["ks"]]
+            out += [f"**{m}: evidence turns found in full, recall vs L at fixed k**\n",
+                    "| L | " + " | ".join(f"k {k}: reranked (Δ)" for k in cols) + " |", "|---|" + "---|" * len(cols)]
+            for i, L in enumerate(g["limits"]):
+                cells = []
+                for k in cols:
+                    j = g["ks"].index(k)
+                    v = g["reranked"][i, j]
+                    cells.append("–" if np.isnan(v) else f"{v:.3f} ({g['gain'][i, j]:+.3f})"
+                                 + (" k = L" if L == k else ""))
+                out.append(f"| {L} | " + " | ".join(cells) + " |")
+            out.append("")
+    return out
+
+
 SUMMARY_TARGETS = (0.5, 0.7, 0.9)  # coverage targets the summary gives the break-even price at
 
 
@@ -646,6 +706,22 @@ def summary(r: Results, event: str) -> list[str]:
             prices.append(f"{t:.0%}: {text}")
         out.append(f"Break-even LLM input price (reranking is cheaper above it; {core[0]}, expand_context {core[1]}, "
                    f"{m} at ${price(m):g}/M): " + "; ".join(prices) + ". Section 7 and cost_saving.png give every target.\n")
+    from rbench.report import topk
+
+    if topk.available(r):
+        for m in r.models:
+            g = topk.grid(r, m, "share")
+            if not g["limits"]:
+                continue
+            parts = []
+            for k in topk.SLICE_KS:
+                if k in g["ks"] and 20 in g["limits"] and k < 20:
+                    i, j = g["limits"].index(20), g["ks"].index(k)
+                    parts.append(f"k {k}: {g['first'][j]:.2f} → {g['reranked'][i, j]:.2f} ({g['gain'][i, j]:+.2f} "
+                                 f"[{g['low'][i, j]:+.2f}, {g['high'][i, j]:+.2f}] {_verdict(g['low'][i, j], g['high'][i, j])})")
+            out.append(f"Recall at top-k ({m}; evidence turns found in full; section 16). Top-k as the vector search "
+                       "limit, everything kept: reranking cannot change recall (only order), a gain of 0 by construction. "
+                       "Top-k as the seeds kept after reranking the default 20: " + ("; ".join(parts) or "–") + ".\n")
     pool = r.pool_depth(core[0], r.models[0], "rerank")
     bound = r.rows(core[0], f"bound@{pool}") if pool else None
     ceiling = (f" The reranker's pool ({pool[1:]} seeds) holds all the evidence for "
@@ -665,8 +741,36 @@ def write(r: Results, event: str = "first") -> str:
             + overfetch(r, event) + equal_reranker_tokens(r, event) + (worth_it(r, event) if event == "every" else [])
             + chunkers(r, event) + query_types(r, event) + help_harm(r, event) + expansion(r, event)
             + equal_counts(r, event) + settings(r, event) + best_settings(r, event)
+            + (topk_recall(r) if event == "every" else [])
             + (latency(r) if event == "every" else []))
     path = SUMMARY / r.embedder / f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}__{event}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(head + body) + "\n")
+    return str(path)
+
+
+def index() -> str:
+    """results/README.md: every simulated run's reports (one per reading, each opening with its
+    summary) and its charts folder, regenerated after each report run."""
+    from rbench.paths import FIGURES, RESULTS
+
+    lines = ["# Results\n",
+             "Generated after each report run (`python -m rbench run <stage>`). Each report opens with a summary of the "
+             "questions it answers (the gain at EventMemory's defaults and at the best settings, the break-even LLM "
+             "price, the caveats), then the sections; the every-gold report also holds the asker's metric, recall at "
+             "top-k (section 16). Charts are in each run's folder.\n"]
+    for embedder in sorted(p.name for p in SUMMARY.iterdir() if p.is_dir()):
+        runs = sorted({f.name.rsplit("__", 1)[0] for f in (SUMMARY / embedder).glob("*__*.md")})
+        if not runs:
+            continue
+        lines.append(f"## First stage {embedder}\n")
+        for run in runs:
+            reports = sorted((SUMMARY / embedder).glob(f"{run}__*.md"))
+            links = ", ".join(f"[{f.stem.rsplit('__', 1)[1]}](summary/{embedder}/{f.name})" for f in reports)
+            charts = FIGURES / embedder / run
+            lines.append(f"- **{run.replace('__', ' · ')}**: reports {links}"
+                         + (f"; [charts](figures/{embedder}/{run}/)" if charts.exists() else ""))
+        lines.append("")
+    path = RESULTS / "README.md"
+    path.write_text("\n".join(lines) + "\n")
     return str(path)

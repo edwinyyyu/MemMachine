@@ -916,10 +916,89 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
                + ". Held equal: reader tokens (x). Not equal: reranker tokens and vector search limit.")
 
 
-ALL_READINGS = ("coverage", "rpf")  # drawn for every reading or measure at once
+def topk_recall(r: Results, out, head: str) -> None:
+    """Recall with and without reranking across top-k, the asker's metric (report/topk.py):
+    per model, a column per recall reading; the reranker's gain over (L, k), recall vs k at
+    fixed L, and recall vs L at fixed k."""
+    from rbench.report import topk
+
+    if not r.models or not topk.available(r):
+        return
+    for m in r.models:
+        grids = {x: topk.grid(r, m, x) for x in topk.READINGS}
+        if not any(g["limits"] for g in grids.values()):
+            continue
+        fig, axes = _figure(3, len(grids), panel=(4.4, 3.4))
+        for j, (reading, g) in enumerate(grids.items()):
+            limits, ks = g["limits"], g["ks"]
+            ax = axes[0][j]
+            clear = ~((g["low"] <= 0) & (g["high"] >= 0))
+            shown = np.where(clear, g["gain"], np.nan)
+            im = ax.pcolormesh(np.arange(len(ks) + 1), np.arange(len(limits) + 1), shown, cmap=DIVERGING,
+                               norm=TwoSlopeNorm(0, -0.3, 0.3))
+            muted = np.where(np.isfinite(g["gain"]) & ~clear, 1.0, np.nan)
+            ax.pcolormesh(np.arange(len(ks) + 1), np.arange(len(limits) + 1), muted,
+                          cmap=LinearSegmentedColormap.from_list("muted", [MUTED, MUTED]))
+            for a, L in enumerate(limits):  # k = L: everything retrieved is kept, a gain of 0 by construction
+                if L in ks:
+                    ax.text(ks.index(L) + 0.5, a + 0.5, "=", ha="center", va="center", fontsize=8, color=INK2)
+            ax.set_xticks(np.arange(len(ks)) + 0.5, [str(k) for k in ks], fontsize=7)
+            ax.set_yticks(np.arange(len(limits)) + 0.5, [str(L) for L in limits], fontsize=7)
+            ax.grid(False)
+            ax.set_title(f"{topk.NAMES[reading]}: gain", loc="left")
+            ax.set_xlabel("k seeds kept")
+            if j == 0:
+                ax.set_ylabel("L (vector search limit)")
+            ax = axes[1][j]
+            bests = topk.best_limit(g)
+            series = [("first stage (top-k as L)", g["first"], SERIES["first_stage"], "x")]
+            if 20 in limits:
+                series.append(("reranked, L 20", g["reranked"][limits.index(20)], SERIES[m], RERANKERS[m].markers[0]))
+            series.append(("reranked, best L per k", np.asarray([g["reranked"][limits.index(b), jj] if b else np.nan
+                                                                 for jj, b in enumerate(bests)]), INK, "+"))
+            series.append((f"reranked, pool (L {limits[-1]})", g["reranked"][-1], SERIES[m], RERANKERS[m].markers[1]))
+            for label, ys, color, marker in series:
+                _plot(ax, np.arange(len(ks)), ys, color=color, marker=marker, label=label)
+            ax.set_xticks(np.arange(len(ks)), [str(k) for k in ks], fontsize=7)
+            _share_y(ax)
+            ax.set_title(f"{topk.NAMES[reading]} vs k", loc="left")
+            ax.set_xlabel("k seeds kept")
+            if j == 0:
+                ax.set_ylabel("recall")
+            ax = axes[2][j]
+            for k, color in zip(topk.SLICE_KS, RAMP[3], strict=True):
+                if k in ks:
+                    col = ks.index(k)
+                    _plot(ax, limits, g["reranked"][:, col], color=color, marker=RERANKERS[m].markers[0])
+                    _plot(ax, limits, np.full(len(limits), g["first"][col]), color=color, marker="x")  # first stage
+            pool = limits[-1]  # labelled ticks: round limits, and the pool (rounder ones too close to it dropped)
+            _log_x(ax, 10, sorted({L for L in limits if L in (5, 10, 20, 50, 100, 200, 500, 1000) and pool / L >= 1.3}
+                                  | {pool}))
+            _share_y(ax)
+            ax.set_title(f"{topk.NAMES[reading]} vs L", loc="left")
+            ax.set_xlabel("L (vector search limit); x: the first stage at that k (the same at every L)")
+            if j == 0:
+                ax.set_ylabel("recall")
+        fig.colorbar(im, ax=axes[0].tolist(), label="recall gain (reranked minus first stage)")
+        handles = [_key(c, marker=mk) for _, _, c, mk in series] + [Patch(color=MUTED)] + \
+                  [_key(c, marker=RERANKERS[m].markers[0]) for c in RAMP[3]]
+        labels = [lab for lab, _, _, _ in series] + ["no clear difference (95% interval includes 0)"] + \
+                 [f"k = {k} (bottom row; x: first stage)" for k in topk.SLICE_KS]
+        _save(fig, out / f"topk_recall_{m}.png",
+              f"Recall with and without reranking across top-k (the asker's metric), {LABEL[m]} — {head}",
+              handles, labels, ncol=3,
+              note=f"{frontier.setting(r)[0]}, expand_context 0. Top-k read both ways: L, the vector search limit (all "
+                   "reranked), and k, the seeds kept after (re)ranking. Without a reranker top-k is both. Top row: the "
+                   "reranker's recall gain over (L, k), colored only where its 95% interval excludes 0; '=' marks k = L, "
+                   "where everything retrieved is kept, so reranking cannot change recall (0 by construction). L and k "
+                   "are chosen once for all questions. Recall: the share of a question's evidence turns found within k "
+                   "seeds (in full, or touched), and every-gold.")
+
+
+ALL_READINGS = ("coverage", "rpf", "topk")  # drawn for every reading or measure at once
 CHARTS = {"coverage": "coverage_by_tokens", "rpf": "recall_precision_f1", "counts": "coverage_counts",
           "rerank_cost": "rerank_cost", "gain_sizes": "gain_sizes", "cost_saving": "cost_saving",
-          "query_types": "query_types", "sizes": "first_stage_sizes", "expansion": "expansion"}
+          "query_types": "query_types", "sizes": "first_stage_sizes", "expansion": "expansion", "topk": "topk_recall"}
 
 
 def _head(r: Results) -> str:

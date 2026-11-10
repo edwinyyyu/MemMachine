@@ -166,11 +166,12 @@ def evaluate(order: np.ndarray, cum: np.ndarray, chars: np.ndarray, g: Gold) -> 
             *(r for r, _ in by_budget), *(p for _, p in by_budget), *(r for r, _ in by_k), *(p for _, p in by_k)]
 
 
-def span_costs(order: np.ndarray, cum: np.ndarray, g: Gold) -> tuple[list[float], list[float]]:
+def span_costs(order: np.ndarray, cum: np.ndarray, g: Gold, seen: np.ndarray | None = None) -> tuple:
     """(in full, touched): the reader cost at which each span of one answer is read in full and
     touched (inf where not), for the share readings (report/readings.py). The answer is the one
     read in full first (as every counts it); when none is, the one with the most spans read in
-    full, then the first."""
+    full, then the first. With `seen` (seeds reached after each admitted segment), also the
+    seeds read when each span is read in full and when it is touched."""
     cum = np.maximum.accumulate(np.asarray(cum, dtype=np.float64))
     position = {int(c): i for i, c in enumerate(order)}
     cost = lambda p: float(cum[int(p)]) if p < INF else INF  # noqa: E731
@@ -184,9 +185,14 @@ def span_costs(order: np.ndarray, cum: np.ndarray, g: Gold) -> tuple[list[float]
         return min(ps) if ps else INF
 
     if not g.alternatives:
-        return [], []
+        return ([], []) if seen is None else ([], [], [], [])
     lasts = [[last(s) for s in alt] for alt in g.alternatives]
     every = [max(alt) if alt else INF for alt in lasts]
     best = int(np.argmin(every)) if np.isfinite(min(every)) else int(np.argmax([sum(np.isfinite(alt)) for alt in lasts]))
     alt = g.alternatives[best]
-    return [cost(p) for p in lasts[best]], [cost(first_of(s)) for s in alt]
+    touched = [first_of(s) for s in alt]
+    full, touch = [cost(p) for p in lasts[best]], [cost(p) for p in touched]
+    if seen is None:
+        return full, touch
+    seeds = lambda p: float(seen[int(p)]) if p < INF else INF  # noqa: E731
+    return full, touch, [seeds(p) for p in lasts[best]], [seeds(p) for p in touched]

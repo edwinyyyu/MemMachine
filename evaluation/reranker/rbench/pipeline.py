@@ -71,4 +71,6 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
         results = load(embedder, dataset, scope, variant, sample_name)
         tables.clear(results)
         written += [tables.write(results, e) for e in readings.available(results.df)] + [figures.write(results)]
+    if written:
+        written.append(tables.index())
     return written

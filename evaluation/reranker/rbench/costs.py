@@ -22,7 +22,7 @@ from rbench import partitions as pt
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.embedding import EMBEDDERS
 from rbench.memory import store_root
-from rbench.rerankers import RERANKERS, pair_ids
+from rbench.rerankers import RERANKERS, ScoreCache, pair_ids
 from rbench.samples import ORDER
 from rbench.samples import sample as sample_of
 from rbench.schema import queries
@@ -30,6 +30,22 @@ from rbench.schema import queries
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: I001
 
 MAC_EMBED_TOK_PER_S = 10500
+
+
+IN_FLIGHT = 16  # DeepInfra requests at a time (rerankers.score)
+
+
+def _hours(model: str, tokens: float) -> float | str:
+    """Wall time to score `tokens` on DeepInfra, projected from the model's measured requests
+    (its call log: median tokens per second per request, times the requests in flight); a note
+    when nothing has been timed yet (preflight smoke times the first)."""
+    if RERANKERS[model].backend != "deepinfra":
+        return "local"
+    calls = ScoreCache(model).db.execute("SELECT tokens, seconds FROM calls WHERE seconds > 0").fetchall()
+    if not calls:
+        return "not measured yet (run smoke)"
+    rate = float(np.median([t / s for t, s in calls]))
+    return round(tokens / (rate * IN_FLIGHT) / 3600, 2)
 
 
 def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
@@ -114,7 +130,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     embed_tok = sum(per_partition[x[:3]] for x in to_embed)  # each partition without vectors is embedded once
     summary = {m: {"billed_M": t / 1e6, "deepinfra_usd": t / 1e6 * (RERANKERS[m].usd_per_mtok or 0.0),
                    "local_hours": t / RERANKERS[m].local_tok_per_s / 3600 if RERANKERS[m].local_tok_per_s else None,
-                   "basis": sorted(basis[m])} for m, t in per_model.items()}
+                   "deepinfra_hours": _hours(m, t), "basis": sorted(basis[m])} for m, t in per_model.items()}
     summary["embedding"] = {"embedder": embedder, "tokens_M": embed_tok / 1e6,
                             "usd": embed_tok / 1e6 * EMBEDDERS[embedder].usd_per_mtok,
                             "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600, "estimate": True}

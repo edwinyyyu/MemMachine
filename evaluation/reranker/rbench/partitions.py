@@ -258,14 +258,16 @@ def ingest(embedder: str, dataset: str, chunking: str, picked: list[int], scope:
     """Encode each sampled query's partition (embedding it), skipping those already in."""
     rows = queries(dataset)
 
+    from rbench.progress import Progress
+
     async def go() -> None:
-        done = 0
-        for k, members in groups(dataset, picked, scope).items():
+        keyed = groups(dataset, picked, scope)
+        progress, encoded = Progress(f"{dataset} {chunking} ingest", len(keyed), "partitions"), 0
+        for k, members in keyed.items():
             p = part(dataset, rows[members[0]], scope)
             async with Memory(embedder, dataset, chunking) as m:
-                done += await m.ingest(k, list(p.events), formats(dataset).embed)
-            if done and done % 25 == 0:
-                print(f"{dataset} {chunking}: {done} partitions encoded", flush=True)
+                encoded += await m.ingest(k, list(p.events), formats(dataset).embed)
+            progress.step(note=f"{encoded} embedded now, the rest already were")
 
     asyncio.run(go())
 
