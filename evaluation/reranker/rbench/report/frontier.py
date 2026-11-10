@@ -259,3 +259,96 @@ def saved_interval(results: Results, model: str, llm_prices: list[float], rr_pri
     with np.errstate(invalid="ignore"):
         lo, hi = np.nanpercentile(draws, [2.5, 97.5], axis=0, method="nearest")
     return lo, hi
+
+
+# ------------------------------------------------------------------- equal spend per question
+
+SPEND_PRICES = np.logspace(np.log10(0.05), np.log10(50), 61)  # LLM input price, $ per million tokens
+SPENDS = np.unique(np.round(np.geomspace(500, 16000, 46)))  # spend per question, as reader-token equivalents C / p
+
+
+def per_question(costs: np.ndarray, budgets: np.ndarray) -> np.ndarray:
+    """[question, budget]: each question's value (1/0 for events, its share of evidence turns for
+    shares) at each budget, vectorized (readings.hit at many budgets)."""
+    budgets = np.asarray(budgets, dtype=np.float64)
+    if costs.dtype == object:
+        return np.stack([np.searchsorted(np.sort(x), budgets, "right") / len(x) if len(x) else np.zeros(len(budgets))
+                         for x in costs])
+    return (np.asarray(costs, dtype=np.float64)[:, None] <= budgets[None, :]).astype(np.float64)
+
+
+@dataclass
+class EqualSpend:
+    """Reranking against the first stage at the same money per question (the user's headline
+    cost view, 2026-11-10): at LLM price p and spend C (shown as its reader-token equivalent
+    T = C / p), the first stage reads T tokens and the reranked side reads T - (r / p) R, R its
+    mean reranker tokens and r the reranker's price; gain = coverage reranked minus coverage
+    of the first stage, a mean of paired per-question differences. [price, spend] arrays; nan
+    where the reranker alone costs more than the spend."""
+
+    gain: np.ndarray
+    lo: np.ndarray  # 95% bootstrap interval over question clusters (nan with too few clusters)
+    hi: np.ndarray
+    tokens: float  # R
+    prices: np.ndarray
+    spends: np.ndarray
+
+
+def equal_spend(results: Results, model: str, rr_price: float, limit: int, event: str = EVENT,
+                fixed: tuple[str, int] | None = None, prices: np.ndarray = SPEND_PRICES,
+                spends: np.ndarray = SPENDS) -> EqualSpend | None:
+    """EqualSpend at one vector search limit on both sides (the user's rule): the reranker over
+    the top `limit` seeds against the first stage over the same seeds, at the cost setting."""
+    from rbench.report.stats import MIN_CLUSTERS
+
+    c, e = fixed or setting(results)
+    tail = f"+x{e}" if e else ""
+    rows, base = results.rows(c, f"rerank:{model}@n{limit}{tail}"), results.rows(c, f"first_stage@n{limit}{tail}")
+    if rows.empty or base.empty:
+        return None
+    rows, base = rows.sort_values("qid"), base.sort_values("qid")
+    R = float(rows.rr_tokens.mean())
+    first = per_question(rd.costs(base, event), spends)  # [q, T]
+    costs = rd.costs(rows, event)
+    shift = rr_price * R / np.asarray(prices)  # reader tokens the reranker's cost takes, per price
+    diffs = []
+    for p_shift in shift:
+        b1 = spends - p_shift
+        d = per_question(costs, np.maximum(b1, 0)) - first
+        diffs.append(np.where(b1[None, :] >= 0, d, np.nan))
+    d = np.stack(diffs, 1)  # [q, price, spend]
+    gain = np.nanmean(d, 0) if d.size else np.full((len(prices), len(spends)), np.nan)
+    gain = np.where(np.isnan(d).all(0), np.nan, gain)
+    labels, inverse = np.unique(base.cluster.to_numpy(), return_inverse=True)
+    lo = hi = np.full_like(gain, np.nan)
+    if len(labels) >= MIN_CLUSTERS:
+        sums = np.zeros((len(labels), *gain.shape))
+        np.add.at(sums, inverse, np.nan_to_num(d))
+        counts = np.bincount(inverse, minlength=len(labels)).astype(np.float64)
+        draws = np.random.default_rng(0).multinomial(len(labels), np.full(len(labels), 1 / len(labels)), RESAMPLES)
+        means = np.tensordot(draws, sums, axes=1) / (draws @ counts)[:, None, None]  # [resample, price, spend]
+        lo, hi = np.percentile(means, [2.5, 97.5], axis=0)
+        lo, hi = np.where(np.isnan(gain), np.nan, lo), np.where(np.isnan(gain), np.nan, hi)
+    return EqualSpend(gain, lo, hi, R, np.asarray(prices), np.asarray(spends))
+
+
+def same_everywhere(es: EqualSpend, spend: float) -> bool:
+    """Whether reranking changes nothing at this spend at any price: both sides read the whole
+    pool (the spend covers it), so the gain is exactly 0."""
+    j = int(np.argmin(np.abs(es.spends - spend)))
+    g = es.gain[:, j]
+    return bool(np.isfinite(g).any() and np.all(np.nan_to_num(g) == 0))
+
+
+def equal_break_even(es: EqualSpend, spend: float) -> tuple[float, float]:
+    """At one spend level (reader-token equivalent): the lowest LLM price from which reranking
+    gains coverage for the same money (point estimate), and from which it clearly does (the
+    95% lower bound above 0; nan without an interval); inf where it never does in the range."""
+    j = int(np.argmin(np.abs(es.spends - spend)))
+
+    def first(mask: np.ndarray) -> float:  # the lowest price from which it holds at every higher price shown
+        from_here = np.logical_and.accumulate(mask[::-1])[::-1]
+        return float(es.prices[np.argmax(from_here)]) if from_here.any() else float("inf")
+
+    point = first(np.nan_to_num(es.gain[:, j], nan=-1.0) > 0)
+    return point, (first(np.nan_to_num(es.lo[:, j], nan=-1.0) > 0) if np.isfinite(es.lo[:, j]).any() else float("nan"))

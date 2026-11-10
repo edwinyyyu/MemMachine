@@ -106,10 +106,13 @@ class Results:
         without the windows' pools (the seeds are replayed there too, as other scoring
         positions' pools, but they are no setting of the seeds): config limits, the simulated
         grid and the seeds' own pool."""
+        from rbench.rankers import COUNT_DEPTHS
+
         seeds = self.depths_at(chunking, model, "rerank")
-        windows = set(self.depths_at(chunking, model, "xrerank"))
-        pool = seeds[-1] if seeds else None
-        return [d for d in seeds if d not in windows or d == pool]
+        windows = self.depths_at(chunking, model, "xrerank")
+        pool, window_pool = (seeds[-1] if seeds else None), (windows[-1] if windows else None)
+        grid = {f"n{v}" for v in COUNT_DEPTHS}  # the regular limits; a windows' pool off it is no seed setting
+        return [d for d in seeds if d != window_pool or d in grid or d == pool]
 
     def pool_depth(self, chunking: str, model: str, kind: str = "rerank") -> str | None:
         """A model's deepest pool at a chunking for one scoring position (rerank: the seeds;

@@ -45,6 +45,12 @@ def _name(event: str) -> str:
         event, f"{event}-gold")
 
 
+def _intro(*lines: str) -> str:
+    """A section's introduction: one short bullet per idea, most important first (the user's
+    rule, 2026-11-10: no nested asides; details go to METHODOLOGY)."""
+    return "\n".join(f"- {x}" for x in lines if x) + "\n"
+
+
 def _cov(rows, event: str, budgets) -> list[str]:
     return [f"{x:.3f}" for x in rd.coverage(rd.costs(rows, event), budgets)]
 
@@ -67,14 +73,12 @@ def _sizes(r: Results, a: str, b: str) -> str:
 
 def first_stage(r: Results, event: str) -> list[str]:
     out = ["## 1. First stage alone (embedding and chunking)\n",
-           f"{_name(event)} coverage by reader budget, no reranker"
-           + "; `+xE` reads each seed's EventMemory window (expand_context E)"
-           + (". Δ rows: the simple chunker minus EventMemory's TextSegmenter, size-matched (the cut's length fitted so "
-              "its mean segment matches TextSegmenter's: sizes.py), with both measured sizes. " + SPLITTING
-              + " Section 8 gives the touched readings beside this one.\n" if _pairs(r) else ".\n"),
-           "Measured unit: the chunker's limit, the mean segment of the partitions searched and of the seeds "
-           "retrieved; for windows, the mean window of the seeds retrieved (segment-text tokens).\n"
-           if any(c.startswith(("seg", "cut")) for c in r.chunkings) else "",
+           _intro(f"{_name(event)} coverage by reader budget, with no reranker.",
+                  "A row marked +xE reads each seed with its window of E neighbouring segments.",
+                  "Measured unit: the mean segment searched and retrieved, or the mean window.",
+                  ("Δ rows: the simple chunker minus TextSegmenter, at the same mean segment size." if _pairs(r) else ""),
+                  ("The simple chunker splits more evidence turns, so it loses on readings in full: section 8 gives the "
+                   "touched readings too." if _pairs(r) else "")),
            "| chunking | measured unit | " + " | ".join(map(str, config.EVAL.columns)) + " |", "|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
         for e in (0, *r.expansions):
@@ -98,9 +102,9 @@ HEADROOM = {"first": "some gold span complete", "every": "every gold span of one
 
 def headroom(r: Results, event: str) -> list[str]:
     out = ["## 2. Headroom: the gold among the seeds retrieved\n",
-           "A reranker can only reorder the seeds the vector search returned. At each vector search limit L, the share of "
-           f"questions for which the top L seeds hold {HEADROOM[event]} (so a reranker could deliver it), with the "
-           "reranker's pairs per question; and the share whose first-ranked segment already overlaps gold.\n",
+           _intro("A reranker can only reorder the seeds the vector search returned.",
+                  f"Per vector search limit L: the share of questions whose top L seeds hold {HEADROOM[event]}.",
+                  "Also: the reranker's pairs per question, and how often the first seed already holds evidence."),
            "| chunking | L | " + " | ".join(f"{m}: pairs / {event} among the L seeds" for m in r.models)
            + " | first segment overlaps gold |", "|---|---|" + "---|" * (len(r.models) + 1)]
     for c in r.chunkings:
@@ -135,11 +139,11 @@ def _chooser(r: Results) -> str:
 
 def equal_reader_tokens(r: Results, event: str) -> list[str]:
     out = ["## 3. Equal reader tokens, at equal vector search limits\n",
-           "At each vector search limit L, every row reads only the top L seeds of the same vector search: in vector "
-           "order (`first_stage@nL`) or reranked (`rerank`: the seeds; `xrerank`: their windows, expand then rerank). "
-           "`+xE`: read with EventMemory windows of expand_context E. Δ: minus the first stage at the same L and expansion "
-           "[95%]. `bound` rows are the cheapest reading of the same pool any ranking could achieve, for this reading, with "
-           "seeds alone (bounds.py); there is none with windows, since an exact one isn't computable here.\n",
+           _intro("Same for every row of a block: the vector search limit L and the reader budget (columns).",
+                  "Rows: the first stage in vector order; rerank the seeds; or expand, then rerank the windows.",
+                  "+xE: each seed read with its window of E neighbouring segments.",
+                  "Δ: minus the first stage at the same L and expand_context, with its 95% interval.",
+                  "bound: the best any order of the same seeds could do, with seeds alone."),
            "| chunking | ranker | pairs | " + " | ".join(map(str, config.EVAL.columns)) + " | "
            + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|" + "---|" * (len(config.EVAL.columns) + len(config.EVAL.budgets))]
     for c in r.chunkings:
@@ -166,8 +170,10 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
 
 def token_savings(r: Results, event: str) -> list[str]:
     grid = frontier.BUDGET_GRID
-    out = ["## 4. Token savings\n", "At each vector search limit L: reader tokens the first stage over the same L seeds "
-           "needs to match the reranked coverage (× the reranked budget); 'never' if it does not.\n",
+    out = ["## 4. Token savings\n",
+           _intro("How many reader tokens does the first stage need to match the reranked coverage?",
+                  "Same for both: the vector search limit L.",
+                  "Cells: that budget as a multiple of the reranked budget; 'never' if it does not get there."),
            "| chunking | model | L | " + " | ".join(f"at {b}" for b in config.EVAL.columns) + " |", "|---|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
         for limit in r.limits(c, kinds=("rerank",)):
@@ -186,9 +192,11 @@ def token_savings(r: Results, event: str) -> list[str]:
 
 def overfetch(r: Results, event: str) -> list[str]:
     budgets = config.EVAL.budgets
-    out = ["## 5. Overfetch\n", f"Coverage at {' / '.join(f'{b:,}' for b in budgets)} reader tokens as the vector search "
-           "limit (the rerank depth) grows: reranked, then the first stage over the same seeds; reranker tokens per query "
-           "in parentheses; '=' where the pool is exhausted.\n"]
+    out = ["## 5. Overfetch\n",
+           _intro("What does a deeper vector search buy?",
+                  f"Coverage at {' / '.join(f'{b:,}' for b in budgets)} reader tokens as the limit grows.",
+                  "Each cell: reranked, then the first stage over the same seeds, then the reranker's tokens per question.",
+                  "'=': every seed has been read.")]
     for m in r.models:
         d = r.select(kind="rerank", model=m)
         depths = sorted({x for x in d.depth if x.startswith("n")}, key=lambda x: int(x[1:]))
@@ -215,8 +223,9 @@ def overfetch(r: Results, event: str) -> list[str]:
 
 def equal_reranker_tokens(r: Results, event: str) -> list[str]:
     out = ["## 6. Equal reranker tokens: candidates vs chunk size\n",
-           f"Best chunking and reranked configuration (seeds or windows, any expansion, any depth) whose mean reranker "
-           f"tokens fit each budget, chosen on {_chooser(r)}; cells are coverage.\n"]
+           _intro("For a given reranker budget, which chunking and setting reads the most evidence?",
+                  "Rows: reranker tokens per question. Cells: coverage of the best setting that fits.",
+                  f"Chosen on {_chooser(r)}.")]
     test = r.select(expand=None)
     families = sorted({c[:3] for c in r.chunkings})
     for m in r.models:
@@ -246,45 +255,54 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
     return out
 
 
+PRICES_SHOWN = (1.0, 3.0, 10.0, 30.0)  # LLM input prices ($/M) section 7 gives the gain at
+
+
 def worth_it(r: Results, event: str) -> list[str]:
-    pick = ("the same questions they are measured on (no dev split), so the best L leans optimistic for the reranker; "
-            "the 95% interval resamples questions with each block's L fixed")
-    out = ["## 7. Worth the money: break-even price ratio\n",
-           f"{_name(event)} coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
-           "exceeds r* (chart: the break-even lines in cost_saving.png). Both sides at one setting "
-           f"({frontier.setting(r)[0]}, expand_context {frontier.setting(r)[1]}; config.EVAL.cost_chunking / cost_expand): "
-           "one vector search limit L on both sides, held fixed for every target: the reranker over the top L seeds against "
-           "the first stage over the same seeds in vector order, each reading as far as the target needs (one block per L: "
-           "EventMemory's default, the L whose reranked coverage averaged over the realistic budgets is highest, and the "
-           "pool; chosen on "
-           f"{pick}). '–': reranking at that L is not cheaper; 'only': only reranking reaches the target (cheaper at any "
-           "price); 'n/a': neither reaches it (above the L's ceiling, given per block).\n"]
+    """Section 7 from the equal-spend computation (frontier.equal_spend, cost_equal.png)."""
+    from rbench.report.data import price
+
     fixed = frontier.setting(r)
+    spends = sorted({*config.EVAL.budgets, config.EVAL.token_top})
+    out = ["## 7. Worth the money: the same money per question\n",
+           _intro("Does reranking get more evidence for the same money per question?",
+                  "Same for both: the money per question, and the vector search limit (one block per limit).",
+                  "Without reranking all of it buys reader tokens; with reranking, part pays the reranker.",
+                  "Spend: the money as reader tokens at that price. Gain: coverage reranked minus without, with its 95% "
+                  "interval.",
+                  "Break-even: the lowest price from which reranking gets more for the money; 'clearly': its interval "
+                  "is above 0.",
+                  "Chart: cost_equal.png.")]
 
     def fmt(x: float) -> str:
-        return "n/a" if np.isnan(x) else "–" if np.isinf(x) or x >= 1e12 else "only" if x == 0 else f"{x:,.1f}"
+        return "n/a" if np.isnan(x) else "–" if np.isinf(x) else f"${x:,.2f}/M"
 
     for m in r.models:
         for L, what in frontier.cost_limits(r, m, event):
-            api = frontier.break_even(r, m, "rr_tokens", event=event, fixed=fixed, limit=L)
-            cached = frontier.break_even(r, m, "rr_prefix_tokens", False, event=event, fixed=fixed, limit=L)
-            top = frontier.ceiling(r, L, event)
-            out += [f"**{m} at L {L} on both sides ({what}"
-                    + (f"; ceiling {top:.2f}: no reading of the top {L} seeds passes it" if top is not None else "") + ")**\n",
-                    "| target | r* API [95%] | r* prefix-cached |", "|---|---|---|"]
-            for t in SHOW_TARGETS:
-                i = int(np.argmin(np.abs(frontier.TARGETS - t)))
-                point, lo, hi, _, _ = api
-                out.append(f"| {t} | {fmt(point[i])} [{fmt(lo[i])}, {fmt(hi[i])}] | {fmt(cached[0][i])} |")
+            es = frontier.equal_spend(r, m, price(m), L, event, fixed)
+            if es is None:
+                continue
+            out += [f"**{m} at L {L} on both sides ({what}; {es.tokens:,.0f} reranker tokens per question)**\n",
+                    "| spend (reader tokens) | break-even | clearly from | "
+                    + " | ".join(f"gain at ${p:g}/M" for p in PRICES_SHOWN) + " |",
+                    "|---|---|---|" + "---|" * len(PRICES_SHOWN)]
+            for T in spends:
+                if frontier.same_everywhere(es, T):
+                    out.append(f"| {T:,} | no difference: both read all {L} seeds | | " + " | ".join(
+                        "0" for _ in PRICES_SHOWN) + " |")
+                    continue
+                point, clear = frontier.equal_break_even(es, T)
+                j = int(np.argmin(np.abs(es.spends - T)))
+                cells = []
+                for p in PRICES_SHOWN:
+                    i = int(np.argmin(np.abs(es.prices - p)))
+                    g, lo, hi = es.gain[i, j], es.lo[i, j], es.hi[i, j]
+                    cells.append("–" if np.isnan(g) else f"{g:+.3f}" + ("" if np.isnan(lo) else f" [{lo:+.3f}, {hi:+.3f}]"))
+                out.append(f"| {T:,} | {fmt(point)} | {fmt(clear)} | " + " | ".join(cells) + " |")
             out.append("")
     return out + [""]
 
 
-SPLITTING = ("Equal mean segment size does not mean equal splitting of evidence turns: a cut every M characters "
-             "splits every turn longer than M, where TextSegmenter keeps turns up to its limit whole (on LongMemEval-S, "
-             "cut354 splits 23% of the evidence turns into several segments, seg500 5%: METHODOLOGY section 3), so "
-             "readings in full (every piece of a turn read) favour TextSegmenter and touched readings (any piece) do "
-             "not: both are given.")
 
 
 def chunkers(r: Results, event: str) -> list[str]:
@@ -292,9 +310,10 @@ def chunkers(r: Results, event: str) -> list[str]:
         return []
     readings = list(dict.fromkeys([event, *rd.available(r.df, ("every_touch", "share_touch"))]))
     out = ["## 8. Chunkers with a reranker: the simple chunker minus EventMemory's TextSegmenter\n",
-           "Size-matched: the cut's length is fitted so its mean segment over the partitions searched matches "
-           "TextSegmenter's (sizes.py), since the recursive splitter's segments run well under its limit. Measured mean "
-           f"segments of the seeds retrieved are given per pair. {SPLITTING}\n",
+           _intro("The simple chunker minus EventMemory's TextSegmenter, at the same mean segment size.",
+                  "The simple chunker splits more evidence turns, so readings in full favour TextSegmenter.",
+                  "The touched readings count a turn once any piece is read: compare both.",
+                  "Measured segment sizes per pair. Details: METHODOLOGY section 3."),
            "| pair | measured sizes (seg vs cut) | reading | ranker | " + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |",
            "|---|---|---|---|" + "---|" * len(config.EVAL.budgets)]
     for c, other in _pairs(r):
@@ -314,12 +333,12 @@ def chunkers(r: Results, event: str) -> list[str]:
 def query_types(r: Results, event: str) -> list[str]:
     budgets = config.EVAL.budgets
     out = ["## 9. Query types: reranker gain\n",
-           "Labels are the dataset's own question types and rule-based features (features.py). Gain: coverage reranked "
-           "minus the first stage over the same seeds, at "
-           f"{', '.join(f'{b:,}' for b in budgets)} reader tokens. Seeds reranked: at the best vector search limit chosen "
-           "once overall (the L whose reranked coverage averaged over these budgets is highest, as in the summary and "
-           "query_types.png); the deepest pool would mix in deep-overfetch harm. Windows reranked: at their pool. Cells: "
-           "first-stage coverage, Δ [95%].\n"]
+           _intro("Which kinds of question does reranking help?",
+                  "Labels: the dataset's question types, plus simple features of the question.",
+                  f"Gain: coverage reranked minus the first stage over the same seeds, at {', '.join(f'{b:,}' for b in budgets)} "
+                  "reader tokens.",
+                  "Seeds: at the best vector search limit overall. Windows: at their pool.",
+                  "Cells: the first stage's coverage, then Δ with its 95% interval.")]
     for c in r.chunkings:
         limits = r.limits(c)
         if not limits:
@@ -359,9 +378,11 @@ def query_types(r: Results, event: str) -> list[str]:
 
 def help_harm(r: Results, event: str) -> list[str]:
     budgets = config.EVAL.budgets
-    out = ["## 10. Help and harm\n", f"At each vector search limit L: the share of questions whose {event} cost the reranker "
-           "lowers or raises against the first stage over the same seeds, and that it makes cross each reader budget either "
-           "way (lost: within the budget before reranking, not after; gained: the reverse).\n",
+    out = ["## 10. Help and harm\n",
+           _intro("For how many questions does reranking help, and for how many does it hurt?",
+                  "Same for both: the vector search limit L.",
+                  "Helped / hurt: reranking lowers / raises the reader tokens the question needs.",
+                  "Lost / gained at a budget: the question was within it before reranking and not after, or the reverse."),
            "| chunking | model | L | helped | hurt | " + " | ".join(f"lost / gained @{b:,}" for b in budgets) + " |",
            "|---|---|---|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
@@ -387,11 +408,10 @@ def expansion(r: Results, event: str) -> list[str]:
     if not panels:
         return []
     out = ["## 11. Expansion: embedded vs reranked vs read unit\n",
-           f"Seeds are {panels[0].seed}'s segments, embedded small and read as EventMemory windows; 'plain' chunks are "
-           "embedded, reranked and read whole. Sizes are measured (mean segment-text tokens per retrieved seed, or its "
-           "window); the plain chunking is the one of the same chunker closest to the window's measured size. Reader cost "
-           "counts overlapping "
-           "windows once.\n",
+           _intro(f"Read {panels[0].seed}'s seeds with their windows, or plain chunks of the same size?",
+                  "Same for all: reader tokens.",
+                  "Plain chunks are embedded, reranked and read whole; the closest measured size is used.",
+                  "Sizes are measured. Overlapping windows are read once."),
            "| model | expand_context | approach | measured unit (tokens) | reranker tokens | "
            + " | ".join(f"@{b}" for b in config.EVAL.budgets) + " |",
            "|---|---|---|---|---|" + "---|" * len(config.EVAL.budgets)]
@@ -414,16 +434,14 @@ def expansion(r: Results, event: str) -> list[str]:
     return out + [""]
 
 
-GLOSSARY = """**Metrics** (full definitions: rbench/metrics.py). Every number is a per-query value averaged over
-the evaluated queries. A gold span is *complete* when every chunk overlapping it has been read and *touched* when any has
-(LongMemEval's notion of a retrieved unit; optimistic on long gold units). *first* / *every*: some span of some
-acceptable answer / every span of one answer, complete (`first`, `every`) or touched (`first_touch`,
-`every_touch`), within B reader tokens (whole chunks in ranked order). *share* / *share_touch*: the share of a
-question's evidence turns (spans of the answer read in full first) complete / touched within B, each turn counted once,
-averaged over questions; with one evidence turn they equal *every* / *every_touch* (rbench/report/readings.py).
-*Recall* is the share of gold characters
-read (between the two readings); *precision* the share of characters read that are gold. Intervals are 95% paired
-bootstraps over the dataset's clusters (questions for LongMemEval; documents, dialogues or issues elsewhere).
+GLOSSARY = """**How to read the numbers** (definitions: METHODOLOGY section 2)
+
+- Every number is a per-question value, averaged over the questions.
+- Evidence: the turns marked as holding the answer.
+- *In full*: every segment of an evidence turn read. *Touched*: any of them read.
+- *every*: all of a question's evidence read. *first*: some of it. *share*: the share of its evidence turns read.
+- *Recall*: the share of the evidence's characters read. *Precision*: the share of what is read that is evidence.
+- Intervals: 95%, from resampling the questions.
 """
 
 
@@ -445,10 +463,11 @@ def expansion_compare(r: Results, event: str) -> list[str]:
         return []
     m, budgets = r.models[0], config.EVAL.budgets
     out = ["## 12. Expand_context compared directly\n",
-           f"{_name(event)} coverage at {', '.join(f'{b:,}' for b in budgets)} reader tokens for each expand_context, at "
-           "the cost comparison's vector search limits (EventMemory's default, the best L overall, the pool), for the first "
-           "stage, rerank then expand, and expand then rerank (where windows were scored; its x0 row is the seeds "
-           f"reranked). {m}. Reader tokens include a window's extra text. Chart: expansion_compare.png.\n",
+           _intro("Which expand_context reads the evidence most cheaply?",
+                  f"{_name(event)} coverage at {', '.join(f'{b:,}' for b in budgets)} reader tokens, one row per "
+                  "expand_context.",
+                  "Same within a block: the vector search limit and how the seeds are ordered.",
+                  f"Reader tokens count a window's extra text. Model: {m}. Chart: expansion_compare.png."),
            "| chunking | L | approach | expand_context | " + " | ".join(f"@{b:,}" for b in budgets) + " |",
            "|---|---|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
@@ -466,10 +485,10 @@ def equal_counts(r: Results, event: str) -> list[str]:
     if f"{event}_ctx" not in r.df:
         return []
     out = ["## 13. Equal counts: vector search limit, seeds kept, segments read\n",
-           f"{_name(event)} coverage normalized by counts instead of tokens. L: vector search limit (seeds retrieved; a "
-           "reranker scores all L, and nothing beyond L is read). k: seeds kept after reranking (contexts given to the "
-           "LLM). m: segments read after expansion (EventMemory's max_num_segments). 'all': every one of the L seeds "
-           "read (up to 16k reader tokens). Without a reranker, the same L seeds in similarity order.\n",
+           _intro(f"{_name(event)} coverage by counts instead of tokens.",
+                  "L: the vector search limit. The reranker scores all L seeds; nothing beyond them is read.",
+                  "k: the seeds kept after reranking. m: the segments read, EventMemory's max_num_segments.",
+                  "'all': every one of the L seeds read. Without a reranker: the same seeds in vector order."),
            "| chunking | L | ranker | " + " | ".join(f"k≤{k}" for k in KEPT) + " | " + " | ".join(f"m≤{m}" for m in SEGMENTS)
            + " | all |", "|---|---|---|" + "---|" * (len(KEPT) + len(SEGMENTS) + 1)]
     for c in r.chunkings:
@@ -529,12 +548,12 @@ def settings(r: Results, event: str) -> list[str]:
         return []
     skipped = [b for b in config.EVAL.budgets if b not in budgets]
     out = ["## 14. EventMemory settings at each reader budget\n",
-           f"Each cell: {_name(event)} coverage · max_num_segments · seeds read, as the median (10th percentile) over "
-           "questions. Segment counts vary with the text, so a limit that keeps 90% of questions within the budget is "
-           "the 10th percentile. Without a reranker, the seeds read are the vector_search_limit to set; with one, the "
-           "vector_search_limit is the depth in the name (every one of those seeds is reranked)."
-           + (f" Not shown: {', '.join(map(str, skipped))} (segment counts are stored only at the budgets configured when simulated)." if skipped else "")
-           + "\n",
+           _intro("What to set EventMemory to, at each reader budget.",
+                  f"Each cell: {_name(event)} coverage, then max_num_segments and seeds read: the median, and in "
+                  "brackets the 10th percentile.",
+                  "A max_num_segments that keeps 90% of questions within the budget is the 10th percentile.",
+                  "The vector search limit: the seeds read without a reranker, the depth in the name with one.",
+                  (f"Not shown: {', '.join(map(str, skipped))}, not stored when this was simulated." if skipped else "")),
            "| chunking | ranker | " + " | ".join(f"@{b}" for b in budgets) + " |",
            "|---|---|" + "---|" * len(budgets)]
     out = out[:1] + recommended(r, event) + out[1:]  # under the section's heading
@@ -575,10 +594,9 @@ def latency(r: Results) -> list[str]:
     if not rows:
         return []
     return ["## 17. Reranker latency (a by-product)\n",
-            "Times of the scoring requests made for this dataset. Not a self-hosted deployment: DeepInfra requests run "
-            "concurrently under an adaptive limit (16 at first, up to 150: limits.py) and include queueing and any retries; "
-            "local ones are this machine. Per question, EventMemory "
-            "would rerank its vector_search_limit seeds in one or a few such requests.\n",
+            _intro("Times of the reranker requests made for this dataset: a by-product, not a deployment's latency.",
+                   "DeepInfra requests run many at once and include queueing and retries; local ones are this machine.",
+                   "Per question, EventMemory would rerank its seeds in one or a few such requests."),
             "| model | requests | pairs per request (median) | tokens per request | seconds (median) | seconds (p90) | "
             "pairs per second (median) |", "|---|---|---|---|---|---|---|", *rows, ""]
 
@@ -604,15 +622,13 @@ def best_settings(r: Results, event: str) -> list[str]:
         return []
     core = frontier.setting(r)
     out = ["## 15. Best settings, one factor at a time\n",
-           f"Each factor varied alone; the others at the core setting ({core[0]}, expand_context {core[1]}, the reranker "
-           "scoring the seeds, at its deepest pool). Per value: the reranked coverage and the first stage's under the "
-           "same value. *Best*: the highest reranked coverage. *Cheapest equivalent*: the cheapest value (fewer seeds or "
-           "segments, or fewer reranker tokens) whose coverage reaches the best's 95% lower bound. The bound comes from "
-           "bootstrap resamples of the questions, each re-choosing the best value: choices are made on the same "
-           "questions they are measured on (no dev split), so the best leans optimistic. Every setting is chosen once for "
-           "all questions at a budget, never per question, since a service runs one configuration (only the bound rows "
-           "are per-question optima, and are labelled so). Factors that need seed counts (k, m) are shown for the event "
-           "readings only.\n"]
+           _intro("Which value of each setting works best?",
+                  f"Each setting varied alone; the others at the core setting: {core[0]}, expand_context {core[1]}, the "
+                  "reranker scoring the seeds at its pool.",
+                  "Best: the highest reranked coverage. Cheapest equivalent: the cheapest value within the best's 95% "
+                  "interval where reranking does not lose.",
+                  "Chosen once for all questions at a budget, on the same questions: the best leans optimistic.",
+                  "Chart: best_settings.png.")]
     for m in r.models:
         for b in config.EVAL.budgets:
             choices = {f: best.choose(r, f, v) for f, v in best.factors(r, m, event, b).items()}
@@ -652,13 +668,12 @@ def topk_recall(r: Results) -> list[str]:
         return []
     core = frontier.setting(r)
     out = ["## 16. Recall at top-k, with and without reranking (the asker's metric)\n",
-           f"{core[0]}, expand_context 0. Top-k read both ways: **L**, the vector search limit (seeds retrieved, all "
-           "reranked), and **k**, the seeds kept after (re)ranking. Recall: the share of a question's evidence turns found "
-           "within the first k seeds, in full or touched (LongMemEval's turn recall), and every-gold (all turns in full), "
-           "averaged over questions. Without a reranker top-k is both (the first k seeds). **At k = L everything "
-           "retrieved is kept, so reranking cannot change recall, only order: the gain there is 0 by construction**, "
-           "and reading top-k as L alone the two coincide at every k. L and k are chosen once for all questions. "
-           "Δ: reranked minus the first stage [95% interval].\n"]
+           _intro("Recall with and without reranking across top-k: the asker's metric.",
+                  "Top-k read two ways: L, the vector search limit with every seed reranked; k, the seeds kept after "
+                  "reranking.",
+                  "Recall: the share of a question's evidence turns found in the first k seeds; also all evidence in full.",
+                  "At k = L everything retrieved is kept, so reranking cannot change recall: the gain there is 0.",
+                  f"{core[0]}, expand_context 0. Δ: reranked minus the first stage, with its 95% interval.")]
     for m in r.models:
         for reading in topk.READINGS:
             g = topk.grid(r, m, reading)
@@ -726,9 +741,10 @@ def summary(r: Results, event: str) -> list[str]:
     default_limit = "n20"
     budgets = config.EVAL.budgets
     out = ["## Summary\n",
-           f"Does reranking improve retrieval enough to justify its cost? {_name(event)} coverage; reader budgets "
-           f"{', '.join(f'{b:,}' for b in budgets)} tokens; Δ = reranked minus the first stage over the same seeds "
-           "[95% interval over questions]; *helps* / *hurts*: the interval excludes 0.\n"]
+           _intro("Does reranking improve retrieval enough to justify its cost?",
+                  f"Measure: {_name(event)} coverage at {', '.join(f'{b:,}' for b in budgets)} reader tokens.",
+                  "Δ: reranked minus the first stage over the same seeds, with its 95% interval.",
+                  "*helps* / *hurts*: the interval excludes 0.")]
     for m in r.models:
         out.append(f"**{m}**\n")
         rows, base = r.rows(core[0], f"rerank:{m}@{default_limit}"), r.rows(core[0], f"first_stage@{default_limit}")
@@ -753,27 +769,26 @@ def summary(r: Results, event: str) -> list[str]:
                          f"({rc[1].split('@')[1]} vs {fc[1].replace('first_stage', 'first stage')})")
         lines.append("| best settings, each side (section 15; leans optimistic) | " + " | ".join(cells) + " |")
         out += lines + [""]
-        from rbench.report.stats import MIN_CLUSTERS
-
-        few = len(np.unique(frontier._clusters(r))) < MIN_CLUSTERS  # no interval, as for the gains
-        targets = list(frontier.TARGETS)
         at = []
         for L, what in frontier.cost_limits(r, m, event):
-            point, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=event, fixed=core, limit=L)
-            prices = []
-            for t in SUMMARY_TARGETS:
-                if t not in targets:
+            es = frontier.equal_spend(r, m, price(m), L, event, core)
+            if es is None:
+                continue
+            parts = []
+            for T in (config.EVAL.budgets[1] if len(config.EVAL.budgets) > 1 else config.EVAL.budgets[0],
+                      config.EVAL.budgets[-1]):
+                if frontier.same_everywhere(es, T):
+                    parts.append(f"money worth {T:,} reader tokens: no difference (both read all {L} seeds)")
                     continue
-                k = targets.index(t)
-                p, a, z = (x[k] * price(m) for x in (point, lo, hi))
-                text = ("never" if not np.isfinite(p) or p >= 1e11 else "at any price" if p == 0 else f"${p:.2f}/M")
-                if text.startswith("$") and np.isfinite(a) and np.isfinite(z) and few is False:
-                    text += f" [{a:.2f}, {'never' if z >= 1e11 * price(m) else f'{z:.2f}'}]"
-                prices.append(f"{t:.0%}: {text}")
-            at.append(f"at L {L} ({what}): " + "; ".join(prices))
-        out.append(f"Break-even LLM input price (reranking is cheaper above it; {core[0]}, expand_context {core[1]}, "
-                   f"{m} at ${price(m):g}/M, the same L on both sides at every target): " + " | ".join(at)
-                   + ". Section 7 and cost_saving.png give every target.\n")
+                point, clear = frontier.equal_break_even(es, T)
+                text = "never in $0.05-$50/M" if np.isinf(point) else f"from ${point:.2f}/M"
+                if not np.isnan(clear):
+                    text += ", clearly " + ("never in range" if np.isinf(clear) else f"from ${clear:.2f}/M")
+                parts.append(f"money worth {T:,} reader tokens: {text}")
+            at.append(f"at L {L} ({what}): " + "; ".join(parts))
+        out.append(f"Break-even for the same money per question (reranking gains coverage above this LLM input price; "
+                   f"{core[0]}, expand_context {core[1]}, {m} at ${price(m):g}/M, the same L on both sides): "
+                   + " | ".join(at) + ". Section 7 and cost_equal.png give every spend.\n")
     from rbench.report import topk
 
     if topk.available(r):
@@ -800,6 +815,11 @@ def summary(r: Results, event: str) -> list[str]:
     ceiling = (f" The reranker's pool ({pool[1:]} seeds, fixed) holds all the evidence for "
                f"{rd.reachable(rd.costs(bound, event)).mean():.0%} of questions (the bound), so no reranker of it can do "
                f"better{fills}." if bound is not None and not bound.empty else "")
+    from rbench.report.figures import not_run
+
+    missing = not_run(r)
+    if missing:
+        out.append("Not shown in this report: " + "; ".join(missing) + ".\n")
     out += ["The best value of each factor per budget, one at a time: section 14. Every setting is chosen once for all questions "
             "(never per question), on the same questions it is measured on (no dev split): the best-settings line leans "
             "optimistic." + ceiling + "\n"]
