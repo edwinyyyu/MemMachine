@@ -59,7 +59,12 @@ class Embedder:
 
 
 QUERY_PROMPT, DOC_PROMPT = "task: search result | query: ", "title: none | text: "  # the model card's recommended prompts
-GEMMA_LIMITS = dict(max_tokens=2048, max_input_chars=6000)
+# max_input_chars is MemMachine's max_input_length (code points per embedded piece). 6,000 let a
+# dense SWE-bench issue reach 2,160 tokens, past the 2,048-token context (llama-server refuses
+# it); 3,000 is the largest round value whose pieces fit for every query of every dataset (at
+# most 1,827 tokens, measured 2026-11-09; 3,500 still gives one of 2,225). Segments (at most
+# 2,000 characters) and LongMemEval's questions are shorter, so nothing else changes.
+GEMMA_LIMITS = dict(max_tokens=2048, max_input_chars=3000)
 SERVERS = {
     "gemma300m": dict(url="http://127.0.0.1:9931"),
     "gemma300m-di": dict(url="https://api.deepinfra.com/v1/openai", route="/embeddings", model="google/embeddinggemma-300m",
