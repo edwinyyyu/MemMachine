@@ -157,7 +157,9 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
             draws.append(_r_star(base, rr, _choose(base, rr, index), index))
         draws = np.asarray(draws)
         with np.errstate(invalid="ignore"):
-            lo, hi = np.nanpercentile(np.where(np.isinf(draws), 1e12, draws), [2.5, 97.5], axis=0)
+            # order statistics, not interpolated: a percentile between a price and the "never"
+            # stand-in (1e12) would be a huge finite price, drawn as a stray line
+            lo, hi = np.nanpercentile(np.where(np.isinf(draws), 1e12, draws), [2.5, 97.5], axis=0, method="nearest")
     names = [(base[k0].name, rr[k1].name if k1 is not None else None) for k0, k1 in chosen]
     return point, lo, hi, [a for a, _ in names], [b for _, b in names]
 
@@ -188,3 +190,34 @@ def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price:
                     yes[i] = best / 1e3
         out[p] = (no, yes)
     return out
+
+
+def saved_interval(results: Results, model: str, llm_prices: list[float], rr_price: float, token_field: str = "rr_tokens",
+                   event: str = EVENT, fixed: tuple[str, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """The 95% bootstrap interval of the % of total cost reranking saves, per (target, price):
+    clusters resampled, each side's cheapest configuration re-chosen in every resample (as
+    break_even does). +100 where only the reranker reaches the target in a resample, -inf where
+    only the first stage does, nan where neither."""
+    base, rr = (configurations(results, None, event=event, fixed=fixed),
+                configurations(results, model, token_field, event, fixed))
+    labels, inverse = np.unique(_clusters(results), return_inverse=True)
+    members = [np.flatnonzero(inverse == k) for k in range(len(labels))]
+    rng = np.random.default_rng(0)
+    p = np.asarray(llm_prices, dtype=np.float64)
+    draws = np.empty((RESAMPLES, len(TARGETS), len(p)))
+    for i in range(RESAMPLES):
+        index = np.concatenate([members[k] for k in rng.integers(0, len(labels), len(labels))])
+        b0 = np.min([min_budgets(c.costs[index]) for c in base], axis=0)  # [target]
+        b1 = np.asarray([min_budgets(c.costs[index]) for c in rr])  # [config, target]
+        tok = np.asarray([c.tokens[index].mean() for c in rr])
+        no = b0[:, None] * p[None, :]
+        with np.errstate(invalid="ignore"):
+            yes = np.min(b1[:, :, None] * p[None, None, :] + rr_price * tok[:, None, None], axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            saved = 100 * (1 - yes / no)
+        saved = np.where(np.isinf(no) & np.isfinite(yes), 100.0, saved)
+        saved = np.where(np.isfinite(no) & np.isinf(yes), -np.inf, saved)
+        draws[i] = np.where(np.isinf(no) & np.isinf(yes), np.nan, saved)
+    with np.errstate(invalid="ignore"):
+        lo, hi = np.nanpercentile(draws, [2.5, 97.5], axis=0, method="nearest")
+    return lo, hi

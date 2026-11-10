@@ -72,6 +72,8 @@ SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 # Models take their color, markers and label from their registry entry (rerankers.RERANKERS).
 SERIES = {"first_stage": "#2a78d6", **{m: spec.color for m, spec in RERANKERS.items()}}
 ORACLE = "#8f8e89"
+MUTED = "#e4e3df"  # cost chart: no clear difference (the grid's gray, lighter than the diverging scale's ends)
+FIRST_ONLY = "#c6b3ea"  # cost chart: only the first stage reaches the target (a hue outside the diverging scale)
 # Line-only marker shapes cover nothing beneath them and their centre is the data point. A
 # model's seeds line takes the first of its registry pair (up caltrop "2"), its windows line the
 # second (down caltrop "1"); the first stage x, the perfect reranker + (its bar along flat lines).
@@ -685,10 +687,16 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
         ax = axes[0][k]
         with np.errstate(invalid="ignore", divide="ignore"):
             saved = 100 * (1 - yes / no)
-        im = ax.pcolormesh(llm, frontier.TARGETS, saved, cmap=DIVERGING, norm=TwoSlopeNorm(0, -50, 50), shading="nearest")
-        only = np.where(np.isnan(no) & np.isfinite(yes), 1.0, np.nan)
-        ax.pcolormesh(llm, frontier.TARGETS, only, cmap=LinearSegmentedColormap.from_list("only", [ORACLE, ORACLE]),
-                      shading="nearest", alpha=0.6)
+        lo_s, hi_s = frontier.saved_interval(r, m, list(llm), price(m), event=reading, fixed=fixed)
+        clear = ~((lo_s <= 0) & (hi_s >= 0))  # the saving's 95% interval excludes 0
+        im = ax.pcolormesh(llm, frontier.TARGETS, np.where(clear, saved, np.nan), cmap=DIVERGING,
+                           norm=TwoSlopeNorm(0, -50, 50), shading="nearest")
+        layers = ((np.isfinite(saved) & ~clear, MUTED, 1.0),  # no clear difference
+                  (np.isnan(no) & np.isfinite(yes), ORACLE, 0.6),  # only the reranker reaches the target
+                  (np.isfinite(no) & np.isnan(yes), FIRST_ONLY, 1.0))  # only the first stage does
+        for mask, color, alpha in layers:
+            ax.pcolormesh(llm, frontier.TARGETS, np.where(mask, 1.0, np.nan), shading="nearest", alpha=alpha,
+                          cmap=LinearSegmentedColormap.from_list("layer", [color, color]))
         api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading, fixed=fixed)
         cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading, fixed=fixed)[0]
         y = frontier.TARGETS
@@ -712,17 +720,21 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
     name = "cost_saving" + ("" if fixed == (default_segment(), 0) else f"_{fixed[0]}_x{fixed[1]}")
     _save(fig, out / _file(name, reading),
           f"Cost saved by reranking, at every LLM price and coverage target ({fixed[0]}, expand_context {fixed[1]}) — {head}",
-          [_key(INK, marker="x"), _key(INK, ":"), _key(INK, marker="+"), Patch(color=ORACLE, alpha=0.6)],
+          [_key(INK, marker="x"), _key(INK, ":"), _key(INK, marker="+"), Patch(color=MUTED),
+           Patch(color=ORACLE, alpha=0.6), Patch(color=FIRST_ONLY)],
           ["break-even LLM price (reranker tokens as an API bills them)", "its 95% interval",
-           "break-even with a prefix cache (prompt and question computed once)", "only the reranker reaches this target"],
+           "break-even with a prefix cache (prompt and question computed once)",
+           "no clear difference (the saving's 95% interval includes 0)", "only the reranker reaches this target",
+           "only the first stage reaches this target"],
           ncol=2,
           note=f"Held equal: the coverage target (y), the LLM input price (x), the chunking ({fixed[0]}) and "
                f"expand_context ({fixed[1]}); config.EVAL.cost_chunking / cost_expand draw other settings. Color: total "
                "cost (reader + reranker tokens) of reaching the target with the reranker, relative to the first stage in "
                "vector order, each at its cheapest vector search limit, chosen on the same questions. Right of the break-even "
                "line reranking is cheaper; no line at a target: never cheaper there (or beyond the price range). Interval "
-               "lines missing on the right: the interval includes never. Blank: neither reaches the target. Exact values: "
-               "report §7.")
+               "lines missing on the right: the interval includes never. Colored only where the saving (or the extra "
+               "cost) is clear: its 95% bootstrap interval over questions, each resample re-choosing both sides' limits, "
+               "excludes 0; light gray where it does not. Blank: neither side reaches the target. Exact values: report §7.")
 
 
 def query_types(r: Results, out, head: str, reading: str) -> None:
