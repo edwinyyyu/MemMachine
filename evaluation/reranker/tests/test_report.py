@@ -10,13 +10,19 @@ SIMULATED = SIM / "gemma300m-raw/longmemeval_s/history/question/tiny/seg500.parq
 
 
 @pytest.mark.skipif(not SIMULATED.exists(), reason="needs the lme-test stage's simulation")
-def test_every_table_has_consistent_columns(tmp_path, monkeypatch):
+@pytest.mark.parametrize("budgets", [None, (500, 2000, 8000)], ids=["default budgets", "other budgets"])
+def test_every_table_has_consistent_columns(tmp_path, monkeypatch, budgets):
+    from rbench import config
     from rbench.report import tables
     from rbench.report.data import load
 
     monkeypatch.setattr(tables, "SUMMARY", tmp_path)
+    monkeypatch.setattr(config, "EVAL", config.EVAL)
+    config.configure(budgets=budgets)
     r = load("gemma300m-raw", "longmemeval_s", "history", "question", "tiny")
-    for event in tables.EVENTS:
+    from rbench.report import readings
+
+    for event in readings.available(r.df):
         lines = open(tables.write(r, event)).read().splitlines()
         i = 0
         while i < len(lines):

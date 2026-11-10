@@ -243,3 +243,12 @@ def evidence_in_pool(run, chunking: str, embedder: str) -> float | None:
                 if "evidence_in_pool" in cell:
                     return cell["evidence_in_pool"]
     return None
+
+
+def measured_pools(embedder: str, dataset: str, chunking: str, sample_name: str) -> set[int]:
+    """Every pool measured for a sample at the axis end (seeds and each expansion's windows),
+    so a re-simulation replays the pools other stages scored to, not only its own runs'."""
+    if not path(embedder, dataset, chunking, sample_name).exists():
+        return set()
+    fill = load(embedder, dataset, chunking, sample_name).get("fill", {})
+    return {int(by[str(config.EVAL.token_top)]["pool"]) for by in fill.values() if str(config.EVAL.token_top) in by}

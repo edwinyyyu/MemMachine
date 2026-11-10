@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 
 from rbench import simulation
-from rbench.memory import MEMORY
+from rbench.memory import store_root
 
-READY = (MEMORY / "gemma300m-raw" / "longmemeval_s" / "seg500" / "done").exists()
+READY = (store_root("gemma300m-raw", "longmemeval_s", "seg500") / "done").exists()
 
 
 @pytest.mark.skipif(not READY, reason="needs the lme-test stage's encoded histories")

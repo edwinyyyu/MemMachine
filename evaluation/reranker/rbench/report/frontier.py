@@ -200,6 +200,9 @@ def saved_interval(results: Results, model: str, llm_prices: list[float], rr_pri
     only the first stage does, nan where neither."""
     base, rr = (configurations(results, None, event=event, fixed=fixed),
                 configurations(results, model, token_field, event, fixed))
+    if not base or not rr:  # nothing to compare at this setting (e.g. the model is scored at other chunkings)
+        empty = np.full((len(TARGETS), len(llm_prices)), np.nan)
+        return empty, empty.copy()
     labels, inverse = np.unique(_clusters(results), return_inverse=True)
     members = [np.flatnonzero(inverse == k) for k in range(len(labels))]
     rng = np.random.default_rng(0)

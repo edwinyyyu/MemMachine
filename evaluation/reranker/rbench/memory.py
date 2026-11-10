@@ -22,12 +22,15 @@ interfaces:
                      collects the misses (scored 0) as the work a paid run scores.
 
 One partition per history or document set (partitions.py). Stores live under
-data/memory/<embedder>/<dataset>/<chunking>/ (seg<N> or cut<N>) and are kept.
+data/memory/<document store>/<dataset>/<chunking>/ (store_root: the embedder's document store, shared by
+embedders that embed documents alike; seg<N> or cut<N>) and are kept; question vectors are cached in
+data/memory/questions/ (questions_path).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -170,6 +173,36 @@ class ExactSearchEngine(VectorSearchEngine):
             self._keys, self._vectors = data["keys"], data["vectors"]
 
 
+def store_root(embedder: str, dataset: str, chunking: str) -> Path:
+    """Where a chunking's EventMemory stores live: under the embedder's document store, so
+    embedders that embed documents the same way (the same model with or without a query
+    instruction) share one encoding instead of paying for it twice."""
+    documents = emb.EMBEDDERS[embedder].documents if embedder in emb.EMBEDDERS else embedder
+    return MEMORY / documents / dataset / chunking
+
+
+def questions_path(embedder: str) -> Path:
+    """The question-embedding cache of an embedder, keyed by everything that changes a query's
+    vector (the model, its URL, the query prompt, the dimensions), so a changed instruction or
+    size never reuses old vectors."""
+    spec = emb.EMBEDDERS.get(embedder)
+    key = json.dumps([spec.model, spec.url, spec.query_prompt, spec.dimensions, spec.request_dimensions]) if spec else embedder
+    return MEMORY / "questions" / f"{embedder}__{hashlib.sha1(key.encode()).hexdigest()[:12]}.jsonl"
+
+
+def _read_questions(path: Path) -> dict[str, list[float]]:
+    """The cached question vectors; a line cut short by a crash is skipped (asked again)."""
+    out: dict[str, list[float]] = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            out[item["q"]] = item["v"]
+    return out
+
+
 class QueryCachingEmbedder(Embedder):
     """MemMachine's OpenAIEmbedder with bounded concurrency, and question embeddings cached on
     disk by text (replays query the same questions many times). Documents are sent as they
@@ -191,8 +224,8 @@ class QueryCachingEmbedder(Embedder):
                                                           dimensions=spec.request_dimensions or spec.dimensions,
                                                           max_input_length=spec.max_input_chars))
         self._gate = asyncio.Semaphore(spec.in_flight)
-        self._path = MEMORY / embedder / "questions.json"
-        self._questions: dict[str, list[float]] = json.loads(self._path.read_text()) if self._path.exists() else {}
+        self._path = questions_path(embedder)
+        self._questions: dict[str, list[float]] = _read_questions(self._path)
 
     async def _batches(self, texts: list, call) -> list[list[float]]:
         size = self._spec.request_inputs
@@ -214,10 +247,12 @@ class QueryCachingEmbedder(Embedder):
         missing = [q for q in dict.fromkeys(queries) if q not in self._questions]
         if missing:
             prompted = [self._spec.query_prompt + q for q in missing]
-            for q, v in zip(missing, await self._batches(prompted, self._inner._search_embed), strict=True):
-                self._questions[q] = [float(x) for x in v]
+            vectors = await self._batches(prompted, self._inner._search_embed)
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(json.dumps(self._questions))
+            with self._path.open("a") as file:  # appended: a crash loses at most the line being written
+                for q, v in zip(missing, vectors, strict=True):
+                    self._questions[q] = [float(x) for x in v]
+                    file.write(json.dumps({"q": q, "v": self._questions[q]}) + "\n")
         return [self._questions[q] for q in queries]
 
     async def aclose(self) -> None:
@@ -280,7 +315,7 @@ class Memory:
         directory and the embedder (tests)."""
         self.embedder, self.dataset, self.chunking = embedder, dataset, chunking
         self.segmenter = segmenter(chunking)
-        self.root = root or MEMORY / embedder / dataset / chunking
+        self.root = root or store_root(embedder, dataset, chunking)
         self.root.mkdir(parents=True, exist_ok=True)
         self._backend = backend
         self._embedder: Embedder | None = None

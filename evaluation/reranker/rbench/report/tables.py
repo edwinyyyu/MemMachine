@@ -216,7 +216,7 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
     families = sorted({c[:3] for c in r.chunkings})
     for m in r.models:
         out += [f"**{m}**\n", "| reranker tokens | chunker | " + " | ".join(f"reader {b}" for b in config.EVAL.budgets) + " |",
-                "|---|---|---|---|---|---|"]
+                "|---|---|" + "---|" * len(config.EVAL.budgets)]
         cands = r.select(model=m, expand=None)
         cands = cands[cands.kind.isin(frontier.RERANKED)]
         cost = cands.groupby(["chunking", "ranker"]).rr_tokens.mean()
@@ -303,12 +303,13 @@ def query_types(r: Results, event: str) -> list[str]:
         limits = r.limits(c)
         if not limits:
             continue
-        limit = limits[-1]  # the deepest: the pool fills the budgets
         for e, kind, what in ((0, "rerank", "seeds reranked"), (3, "xrerank", "windows reranked, expand_context 3")):
             tail = f"+x{e}" if e else ""
-            base_name = f"first_stage@{limit}{tail}"
-            base, labels = query_labels(r, c, base_name)
             for m in r.models_at(c):
+                limit = r.pool_depth(c, m, kind)  # the deepest pool of this scoring position: it fills the budgets
+                if limit is None:
+                    continue
+                base, labels = query_labels(r, c, f"first_stage@{limit}{tail}")
                 rows = r.rows(c, f"{kind}:{m}@{limit}{tail}")
                 if rows.empty or base.empty:
                     continue
@@ -457,11 +458,11 @@ def settings(r: Results, event: str) -> list[str]:
            "| chunking | ranker | " + " | ".join(f"@{b}" for b in budgets) + " |",
            "|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
-        depth = r.common_depth(c)
         names = ["first_stage", *(f"first_stage+x{e}" for e in r.expansions if e == 3)]
-        for m in r.models_at(c):
-            for d in sorted({x for x in ("n20", depth) if x}, key=lambda x: int(x[1:])):
-                names += [f"rerank:{m}@{d}", f"xrerank:{m}@{d}+x3"]
+        for m in r.models_at(c):  # EventMemory's default limit and each scoring position's deepest pool
+            for kind, tail in (("rerank", ""), ("xrerank", "+x3")):
+                deepest = r.pool_depth(c, m, kind)
+                names += [f"{kind}:{m}@{d}{tail}" for d in sorted({x for x in ("n20", deepest) if x}, key=lambda x: int(x[1:]))]
         for name in names:
             rows = r.rows(c, name)
             if rows.empty:

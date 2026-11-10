@@ -61,6 +61,7 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
             key = (run.dataset, run.scope, run.variant, run.sample, c)
             jobs[key] |= {run.expand} - {0}
             pools[key].add(depth.pool(run, c, embedder))
+            pools[key] |= depth.measured_pools(embedder, run.dataset, c, run.sample)  # other stages' pools too
     for key, expansions in sorted(jobs.items()):
         dataset, scope, variant, sample_name, c = key
         simulation.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)), scope, variant,

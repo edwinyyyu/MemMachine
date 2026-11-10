@@ -21,7 +21,7 @@ from rbench import depth, simulation
 from rbench import partitions as pt
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.embedding import EMBEDDERS
-from rbench.memory import MEMORY
+from rbench.memory import store_root
 from rbench.rerankers import RERANKERS, pair_ids
 from rbench.samples import ORDER
 from rbench.samples import sample as sample_of
@@ -47,7 +47,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     ignored. Embedding tokens are charged once for each partition not yet encoded."""
 
     def encoded(dataset: str, c: str, k: str) -> bool:
-        return (MEMORY / embedder / dataset / c / "done" / k).exists()
+        return (store_root(embedder, dataset, c) / "done" / k).exists()
 
     groups: dict[tuple, list] = defaultdict(list)
     for run in runs:

@@ -237,3 +237,23 @@ def test_large_partitions_are_encoded_in_batches_under_sqlites_variable_limit(tm
             assert stored == expected
 
     _run(go())
+
+
+def test_question_cache_is_keyed_on_the_query_side_and_survives_a_torn_line(tmp_path, monkeypatch):
+    """A changed instruction or size gets its own cache (no old vectors reused); a line a crash
+    cut short is skipped; embedders that embed documents alike share one store."""
+    from dataclasses import replace
+
+    from rbench import embedding as emb
+    from rbench import memory
+
+    base = memory.questions_path("qwen3-8b-di")
+    monkeypatch.setitem(emb.EMBEDDERS, "qwen3-8b-di", replace(emb.EMBEDDERS["qwen3-8b-di"], query_prompt="Instruct: x\nQuery:"))
+    assert memory.questions_path("qwen3-8b-di") != base
+    monkeypatch.setitem(emb.EMBEDDERS, "qwen3-8b-di", replace(emb.EMBEDDERS["qwen3-8b-di"], dimensions=512))
+    assert memory.questions_path("qwen3-8b-di") != base
+    path = tmp_path / "q.jsonl"
+    path.write_text('{"q": "a", "v": [1.0, 0.0]}\n{"q": "b", "v": [0.0')  # the second line was cut short
+    assert memory._read_questions(path) == {"a": [1.0, 0.0]}
+    assert memory.store_root("qwen3-8b-di", "d", "seg500") == memory.store_root("qwen3-8b-di-raw", "d", "seg500")
+    assert memory.store_root("gemma300m-raw", "d", "seg500") != memory.store_root("qwen3-8b-di", "d", "seg500")

@@ -864,10 +864,10 @@ def expansion_rows(r: Results) -> list[ExpansionPanel]:
         plain, plain_size = (min(sized, key=lambda ct: abs(math.log(ct[1] / window))) if sized and window
                              else (None, None))
         for m in r.models:
-            depth = r.common_depth(seed, [m])
+            depth, windows = r.pool_depth(seed, m, "rerank"), r.pool_depth(seed, m, "xrerank")  # each at its own pool
             items = [(EXPANSION_APPROACHES[1][0], seed, f"first_stage@{depth}+x{e}"),
                      (EXPANSION_APPROACHES[2][0], seed, f"rerank:{m}@{depth}+x{e}"),
-                     (EXPANSION_APPROACHES[3][0], seed, f"xrerank:{m}@{depth}+x{e}")]
+                     (EXPANSION_APPROACHES[3][0], seed, f"xrerank:{m}@{windows}+x{e}")]
             if plain is not None:
                 items.insert(0, (EXPANSION_APPROACHES[0][0], plain, f"rerank:{m}@{r.common_depth(plain, [m])}"))
             items = tuple((a, c, n) for a, c, n in items if not r.rows(c, n).empty)

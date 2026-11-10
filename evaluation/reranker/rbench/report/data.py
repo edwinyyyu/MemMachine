@@ -99,6 +99,12 @@ class Results:
         out |= {f"n{v}" for v in wanted if f"n{v}" in have}
         return sorted(out, key=lambda d: int(d[1:]))
 
+    def pool_depth(self, chunking: str, model: str, kind: str = "rerank") -> str | None:
+        """A model's deepest pool at a chunking for one scoring position (rerank: the seeds;
+        xrerank: the windows, scored to their own, shallower pool)."""
+        depths = self.depths_at(chunking, model, kind)
+        return depths[-1] if depths else None
+
     def depths_at(self, chunking: str, model: str, kind: str = "rerank") -> list[str]:
         """Count depths (vector search limits) a model's reranked rows (kind rerank: seeds;
         xrerank: windows) exist at, shallowest first."""
