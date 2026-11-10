@@ -24,6 +24,8 @@ seeds and each is read with its window:
                   counts seeds, like every ranker's, so both scoring positions rerank the
                   same seeds (the same vector search limit).
   oracle+x        seeds whose window holds gold first (cheapest answer's seeds first)
+  bound, bound+x  not a ranking: the cheapest reading of the same pool any ranking could achieve,
+                  per reading (bounds.py; exact with seeds alone, a valid floor with windows)
 
 A depth is a count of seeds ("n20"): EventMemory's vector_search_limit, how systems are
 configured. Equal reranker input is compared through each configuration's measured reranker
@@ -66,7 +68,7 @@ def depths(deepest: int) -> tuple[Depth, ...]:
 
 @dataclass(frozen=True)
 class Ranker:
-    kind: str  # first_stage | rerank | xrerank | oracle
+    kind: str  # first_stage | rerank | xrerank | oracle | bound
     model: str | None = None
     depth: Depth | None = None
     expand: int = 0
@@ -76,7 +78,8 @@ class Ranker:
         tail = f"+x{self.expand}" if self.expand else ""
         if self.kind == "first_stage":
             return "first_stage" + (f"@{self.depth.label}" if self.depth else "") + tail
-        head = {"rerank": f"rerank:{self.model}", "xrerank": f"xrerank:{self.model}", "oracle": "oracle"}[self.kind]
+        head = {"rerank": f"rerank:{self.model}", "xrerank": f"xrerank:{self.model}", "oracle": "oracle",
+                "bound": "bound"}[self.kind]
         return f"{head}@{self.depth.label}{tail}"
 
     def order(self, n: int, sims: np.ndarray, logits: np.ndarray | None, is_gold: np.ndarray) -> np.ndarray:
@@ -105,6 +108,7 @@ def for_models(models: list[str], expansions: tuple[int, ...] = (), depths: tupl
     out = [Ranker("first_stage")]
     for d in depths:
         out.append(Ranker("oracle", depth=d))
+        out.append(Ranker("bound", depth=d))
         out += [Ranker("first_stage", depth=d)] if limited_first_stage else []
         for m in models:
             out.append(Ranker("rerank", m, d))
@@ -112,6 +116,7 @@ def for_models(models: list[str], expansions: tuple[int, ...] = (), depths: tupl
         out.append(Ranker("first_stage", expand=e))
         for d in depths:
             out.append(Ranker("oracle", depth=d, expand=e))
+            out.append(Ranker("bound", depth=d, expand=e))
             out += [Ranker("first_stage", depth=d, expand=e)] if limited_first_stage else []
             for m in models:
                 out += [Ranker("rerank", m, d, expand=e), Ranker("xrerank", m, d, expand=e)]

@@ -135,9 +135,8 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
            "At each vector search limit L, every row reads only the top L seeds of the same vector search: in vector "
            "order (`first_stage@nL`) or reranked (`rerank`: the seeds; `xrerank`: their windows, expand then rerank). "
            "`+xE`: read with EventMemory windows of expand_context E. Δ: minus the first stage at the same L and expansion "
-           "[95%]. In the every-gold table only, `oracle` rows (seeds alone) are a perfect reranker: it reads only the "
-           "evidence seeds, so no reranker reads all the evidence in full with fewer tokens; elsewhere it is no bound and "
-           "is not shown.\n",
+           "[95%]. `bound` rows are the cheapest reading of the same pool any ranking could achieve, for this reading "
+           "(bounds.py): exact with seeds alone, a floor with windows (the evidence's own text and one header).\n",
            "| chunking | ranker | pairs | " + " | ".join(map(str, config.EVAL.columns)) + " | "
            + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|" + "---|" * (len(config.EVAL.columns) + len(config.EVAL.budgets))]
     for c in r.chunkings:
@@ -147,7 +146,7 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
                 base = r.rows(c, f"first_stage@{limit}{tail}")
                 names = ([f"first_stage@{limit}{tail}"] + [f"rerank:{m}@{limit}{tail}" for m in r.models_at(c)]
                          + ([f"xrerank:{m}@{limit}{tail}" for m in r.models_at(c)] if e else [])
-                         + ([f"oracle@{limit}"] if event == "every" and not e else []))
+                         + [f"bound@{limit}{tail}"])
                 for name in names:
                     rows = r.rows(c, name)
                     if rows.empty or base.empty:

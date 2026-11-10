@@ -42,6 +42,7 @@ Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>.p
   unit_tokens                              the mean segment-text tokens one retrieved seed's
                                            context holds at the row's expand_context (the seed
                                            alone, or its window), over every seed retrieved
+  bound_exact                              bound rows: whether the bound is exact (bounds.py)
   share_full, share_touch                  per evidence turn (span) of the answer read in full first:
                                            the reader cost at which it is read in full / touched
                                            (lists; report/readings.py's share readings)
@@ -60,7 +61,7 @@ import asyncio
 import numpy as np
 import pandas as pd
 
-from rbench import config, metrics, rankers
+from rbench import bounds, config, metrics, rankers
 from rbench import partitions as pt
 from rbench.datasets import info
 from rbench.memory import RENDER, CachedReranker, Memory
@@ -84,7 +85,8 @@ def stored_budgets() -> tuple[int, ...]:
 
 def extra() -> list[str]:
     budgets = stored_budgets()
-    return (["admitted", "seg_chars", "seg_tokens", "unit_tokens", "share_full", "share_touch"] + [f"{e}_ctx" for e in EVENTS]
+    return (["admitted", "seg_chars", "seg_tokens", "unit_tokens", "share_full", "share_touch", "bound_exact"]
+            + [f"{e}_ctx" for e in EVENTS]
             + [f"segs_t{b}" for b in budgets] + [f"ctx_t{b}" for b in budgets])
 
 
@@ -221,6 +223,13 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
         if r.id not in records:
             continue
         n = r.depth.chunks(seg.tokens[head]) if r.depth else 0
+        if r.kind == "bound":  # the cheapest reading of the top n seeds' pool any ranking could achieve
+            pool = {s for u in units[r.expand][:n] for s in u}
+            b = bounds.bound(g, pool, seg.inner, seg.run, r.expand)
+            values = [b.get(f, np.nan) for f in metrics.FIELDS]
+            records[r.id].append([0, 0.0, 0.0, 0, *values, np.nan, *sizes, unit_tokens[r.expand], b["share_full"],
+                                  b["share_touch"], b["exact"], *([np.nan] * (len(EVENTS) + 2 * len(stored_budgets())))])
+            continue
         logits = None
         cost = 0.0
         if r.model is not None:
@@ -238,7 +247,8 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
         prefix = cost - max(0, n - 1) * overheads[r.model] if r.model is not None else 0.0
         full, touched = metrics.span_costs(admitted, cum, g)
         records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values,
-                              len(admitted), *sizes, unit_tokens[r.expand], full, touched, *counts(values, cum, ctx)])
+                              len(admitted), *sizes, unit_tokens[r.expand], full, touched, np.nan,
+                              *counts(values, cum, ctx)])
 
 
 def report_dropped(dataset: str, chunking: str, dropped: dict[str, str], kept: set[str]) -> None:

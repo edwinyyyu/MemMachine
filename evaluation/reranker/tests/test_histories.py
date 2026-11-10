@@ -78,7 +78,7 @@ def test_simulated_rows_are_consistent():
     assert set(d.expand) == {0, 1, 2, 3, 6}
     # a reordered configuration reads only its pool: at most its seeds' windows (1 + expand
     # segments each), and with no expansion exactly its seeds unless reading hit the 16k cap
-    pooled = d[d.kind != "first_stage"]
+    pooled = d[~d.kind.isin(["first_stage", "bound"])]  # bound rows read nothing: they are not rankings
     pool = np.where(pooled.kind == "oracle", pooled.oracle_pairs, pooled.pairs)
     assert (pooled.admitted <= pool * (1 + pooled.expand)).all()
     plain = (pooled.expand == 0).to_numpy()
@@ -90,14 +90,15 @@ def test_simulated_rows_are_consistent():
     limited = d[d.ranker == "first_stage@n10+x3"]
     top = max(int(c.removeprefix("ctx_t")) for c in d.columns if c.startswith("ctx_t"))  # the largest stored budget
     assert (limited.admitted <= 40).all() and (limited[f"ctx_t{top}"] <= 10).all()
+    read = d[d.kind != "bound"]  # bound rows are not readings: no counts
     for e in ("first", "every"):
-        found = np.isfinite(d[f"{e}_k"])
-        assert (d.loc[found, f"{e}_ctx"] <= d.loc[found, f"{e}_k"]).all()  # a seed admits at least one segment
-        assert np.isinf(d.loc[~found, f"{e}_ctx"]).all()
+        found = np.isfinite(read[f"{e}_k"])
+        assert (read.loc[found, f"{e}_ctx"] <= read.loc[found, f"{e}_k"]).all()  # a seed admits at least one segment
+        assert np.isinf(read.loc[~found, f"{e}_ctx"]).all()
     plain = d[d.ranker == "first_stage"]
     assert (plain.segs_t1000 == plain.ctx_t1000).all()  # no expansion: one segment per seed
     stored = sorted(int(c.removeprefix("segs_t")) for c in d.columns if c.startswith("segs_t"))
-    assert (np.diff(d[[f"segs_t{b}" for b in stored]].to_numpy(), axis=1) >= 0).all()
+    assert (np.diff(read[[f"segs_t{b}" for b in stored]].to_numpy(), axis=1) >= 0).all()
 
 
 @pytest.mark.skipif(not READY, reason="needs prepared LongMemEval-S")
