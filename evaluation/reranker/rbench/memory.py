@@ -130,6 +130,7 @@ class ExactSearchEngine(VectorSearchEngine):
             raise ValueError(f"ExactSearchEngine supports cosine only, not {similarity_metric}")
         self._keys = np.zeros(0, np.int64)
         self._vectors = np.zeros((0, num_dimensions), np.float16)
+        self._float: np.ndarray | None = None  # the vectors as float32, made once per change (searches reuse it)
 
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         if not vectors:
@@ -139,10 +140,13 @@ class ExactSearchEngine(VectorSearchEngine):
         matrix = np.divide(matrix, norms, out=np.zeros_like(matrix), where=norms > 0)
         self._keys = np.concatenate([self._keys, np.fromiter(vectors.keys(), np.int64, len(vectors))])
         self._vectors = np.concatenate([self._vectors, matrix.astype(np.float16)])
+        self._float = None
 
     async def search(self, vectors: Iterable[Sequence[float]], *, limit: int,
                      allowed_keys: Container[int] | None = None) -> list[SearchResult]:
-        matrix = self._vectors.astype(np.float32)
+        if self._float is None:
+            self._float = self._vectors.astype(np.float32)
+        matrix = self._float
         out = []
         for query in vectors:
             q = np.asarray(query, dtype=np.float32)
@@ -162,6 +166,7 @@ class ExactSearchEngine(VectorSearchEngine):
     async def remove(self, keys: Iterable[int]) -> None:
         drop = np.isin(self._keys, np.fromiter(keys, np.int64))
         self._keys, self._vectors = self._keys[~drop], self._vectors[~drop]
+        self._float = None
 
     async def save(self, path: str) -> None:
         with open(path, "wb") as file:
@@ -171,6 +176,7 @@ class ExactSearchEngine(VectorSearchEngine):
         with open(path, "rb") as file:
             data = np.load(file)
             self._keys, self._vectors = data["keys"], data["vectors"]
+        self._float = None
 
 
 def store_root(embedder: str, dataset: str, chunking: str) -> Path:

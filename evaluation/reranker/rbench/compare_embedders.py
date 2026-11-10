@@ -22,7 +22,6 @@ benchmark's; the comparison between setups is what this measures.
 
 from __future__ import annotations
 
-import hashlib
 import random
 
 import numpy as np
@@ -32,7 +31,7 @@ from rbench import partitions as pt
 from rbench.datasets.longmemeval import history
 from rbench.paths import FIGURES, SUMMARY, VECTORS
 from rbench.report.stats import delta
-from rbench.samples import sample
+from rbench.samples import sample_order
 from rbench.schema import queries
 
 EXTRA = 25  # other sessions per haystack, besides the evidence sessions
@@ -74,33 +73,13 @@ def _vectors(embedder: str, dataset: str, qid: str, texts: list[str], size: int)
 
 
 def measure(server: str, dataset: str, size: int, picked: list[int]) -> dict[str, dict[str, np.ndarray]]:
-    """Per setup: every@k, first@k (per k) and MRR, one value per question."""
-    rows = queries(dataset)
-    out: dict[str, dict[str, list[float]]] = {s: {} for s in emb.SETUPS}
-    for n, qi in enumerate(picked):
-        q = rows[qi]
-        texts, gold = haystack(dataset, q, size)
-        for suffix in emb.SETUPS:
-            embedder = f"{server}{suffix}"
-            sims = _vectors(embedder, dataset, q["qid"], texts, size).astype(np.float32) @ \
-                emb.query_vectors(embedder, dataset, "question")[qi].astype(np.float32)
-            rank = np.empty(len(sims), dtype=int)
-            rank[np.argsort(-sims, kind="stable")] = np.arange(1, len(sims) + 1)
-            complete = [max(rank[i] for i in turn) for turn in gold]  # a turn is read once its last segment is
-            m = out[suffix]
-            for k in KS:
-                m.setdefault(f"every@{k}", []).append(float(max(complete) <= k))
-                m.setdefault(f"first@{k}", []).append(float(min(complete) <= k))
-            m.setdefault("MRR", []).append(1.0 / min(rank[i] for turn in gold for i in turn))
-        if (n + 1) % 10 == 0:
-            print(f"{n + 1}/{len(picked)} questions", flush=True)
-    return {s: {k: np.asarray(v) for k, v in m.items()} for s, m in out.items()}
+    """Per prompt setup of one server (keyed by its suffix): every@k, first@k and MRR per question."""
+    results = measure_embedders([f"{server}{suffix}" for suffix in emb.SETUPS], dataset, size, picked)
+    return {suffix: results[f"{server}{suffix}"] for suffix in emb.SETUPS}
 
 
 def write(server: str = "gemma300m", dataset: str = "longmemeval_m", size: int = 500, questions: int = 100) -> str:
-    rows = queries(dataset)
-    order = sorted(sample(dataset, "all"), key=lambda i: hashlib.sha1(f"sample:{rows[i]['qid']}".encode()).hexdigest())
-    picked = sorted(order[:questions])  # the samples' hash order (samples.py): the first 100 are the pilot's questions
+    picked = sorted(sample_order(dataset)[:questions])  # the samples' order: the first 100 are the pilot's questions
     results = measure(server, dataset, size, picked)
     clusters = np.asarray([queries(dataset)[i]["qid"] for i in picked])
     ref = results[""]
@@ -190,8 +169,7 @@ def write_embedders(embedders: list[str], dataset: str = "longmemeval_m", size: 
     95% paired bootstrap intervals over questions. The user's rule picks among them:
     whatever performs best (Qwen3-Embedding-8B with or without its query instruction)."""
     rows = queries(dataset)
-    picked = sorted(sorted(sample(dataset, "all"),
-                           key=lambda i: hashlib.sha1(f"sample:{rows[i]['qid']}".encode()).hexdigest())[:questions])
+    picked = sorted(sample_order(dataset)[:questions])  # the samples' order: the first 100 are the pilot's questions
     results = measure_embedders(embedders, dataset, size, picked)
     clusters = np.asarray([rows[i]["qid"] for i in picked])
     metrics = [*(f"every@{k}" for k in KS), *(f"first@{k}" for k in KS), "MRR"]
@@ -205,7 +183,35 @@ def write_embedders(embedders: list[str], dataset: str = "longmemeval_m", size: 
     lines += ["", f"| Δ vs {ref} | " + " | ".join(metrics) + " |", "|---|" + "---|" * len(metrics)]
     lines += [f"| {e} | " + " | ".join(delta(m[x] - results[ref][x], clusters) for x in metrics) + " |"
               for e, m in results.items() if e != ref]
-    path = SUMMARY / f"embedders__{dataset}__seg{size}__{len(picked)}q__{'_'.join(embedders)}.md"
+    name = f"embedders__{dataset}__seg{size}__{len(picked)}q__{'_'.join(embedders)}"
+    path = SUMMARY / f"{name}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
+    _figure_embedders(results, dataset, len(picked), name)
     return str(path)
+
+
+def _figure_embedders(results: dict[str, dict[str, np.ndarray]], dataset: str, n: int, name: str) -> None:
+    """every@k and first@k against k, a line per embedder (the report's palette and markers)."""
+    from rbench.report.figures import _figure, _k_x, _key, _plot, _save, _share_y
+
+    palette = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#6250d6")  # categorical slots, in order
+    shapes = ("x", "2", "1", "3", "4", "+")
+    style = {e: (palette[i % len(palette)], shapes[i % len(shapes)]) for i, e in enumerate(results)}
+    fig, axes = _figure(1, 2, panel=(4.6, 3.4), sharey=True)
+    for j, event in enumerate(("every", "first")):
+        ax = axes[0][j]
+        for e, m in results.items():
+            _plot(ax, KS, [m[f"{event}@{k}"].mean() for k in KS], color=style[e][0], marker=style[e][1])
+        _k_x(ax, max(KS))
+        _share_y(ax)
+        ax.set_title(f"{event}-gold within the top k segments", loc="left")
+        ax.set_xlabel("k segments; markers: measured points")
+        if j == 0:
+            ax.set_ylabel("share of questions")
+    out = FIGURES / "embedders"
+    out.mkdir(parents=True, exist_ok=True)
+    _save(fig, out / f"{name}.png", f"First stage by embedder — {dataset}, {n} questions, reduced haystacks",
+          [_key(c, marker=mk) for c, mk in style.values()], list(results), ncol=3,
+          note="Held equal: the questions and their haystacks (evidence sessions plus other sessions of the same "
+               "history), embedded as EventMemory embeds them. No reranker.")

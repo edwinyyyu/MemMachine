@@ -4,7 +4,7 @@ import numpy as np
 
 from dataclasses import replace
 
-from rbench.rerankers import PREFIX, QWEN3_CARD, SUFFIX, ScoreCache, depth, pair_ids, pair_overhead, to_logit
+from rbench.rerankers import PREFIX, QWEN3_CARD, SUFFIX, ScoreCache, pair_ids, pair_overhead, to_logit
 from rbench.text import QWEN, tokenizer
 
 
@@ -36,14 +36,6 @@ def test_probabilities_map_to_logits():
     p = np.array([0.5, 0.9])
     assert np.allclose(to_logit("q8", p), [0.0, np.log(9)])
     assert np.allclose(to_logit("q06-local", np.array([1.5])), [1.5])
-
-
-def test_depth_policy():
-    head = np.array([100] * 50)
-    assert depth(head, 1000, 5) == 10  # reaches 1,000 tokens with the 10th chunk
-    assert depth(head, 1050, 5) == 11  # the chunk that crosses the budget is included
-    assert depth(head, 100, 16) == 16  # at least min_depth
-    assert depth(np.array([100] * 3), 1000, 16) == 3  # capped by the head
 
 
 def test_pair_is_the_model_card_string_tokenized_in_one_piece():

@@ -29,6 +29,10 @@ set of spans that are all needed:
                           at any budget B is cost <= B, so B is a continuous knob
   first_touch / every_touch   the same with "touched" instead of "complete": some span of some
                           answer touched / every span of one answer touched
+  share / share_touch     the share of one answer's spans (LongMemEval: its evidence turns) complete
+                          / touched within B tokens, each counted once, for the answer read in full
+                          first; coverage is the mean share over queries (report/readings.py). With
+                          one evidence span it equals every / every_touch
   recall@B                max over answers of (that answer's gold characters inside chunks read
                           within B) / (that answer's gold characters). Partial spans count partially.
   precision@B             (characters read within B that lie in any answer's spans, overlaps once)

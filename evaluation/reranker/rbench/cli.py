@@ -23,13 +23,14 @@
                                      first stage under each embedding prompt setup, or across embedders (no reranker)
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
   embed-checks [--embedder E]                                preflight for a hosted embedder (Qwen3-Embedding-8B):
-                                     card scores, batch invariance, dimensions, billed tokens (cents)
+                                     card scores, batch invariance, dimensions, billed tokens, MemMachine's path (cents)
                                      (default: LongMemEval-M's EventMemory embedding text at seg500)
 
 run, adhoc and show take --budgets, --limits and --readings: the values reports are drawn at
 (defaults in rbench/config.py).
-run, adhoc, estimate and explain take --embedder (default gemma300m-raw, the local server without prompts;
-gemma300m-di-raw is DeepInfra's).
+run, adhoc, estimate, explain and depth take --embedder: the first stage. Default: the stage's own
+(qwen3-8b-di, Qwen3-Embedding-8B on DeepInfra, for the paid LongMemEval-M stages), else gemma300m-raw (the
+local server, free). show takes --embedder for whose results to draw (default gemma300m-raw).
 """
 
 from __future__ import annotations
@@ -176,6 +177,11 @@ def main(argv: list[str] | None = None) -> None:
             runs = grid.STAGES[stage]
             print(f"== {stage} ({_embedder(args, runs)})")
             print(json.dumps(_estimate(runs, _embedder(args, runs))["summary"], indent=1))
+        everything = [r for s in args.stages for r in grid.STAGES[s]]
+        if len(args.stages) > 1 and len({_embedder(args, grid.STAGES[s]) for s in args.stages}) == 1:
+            # stages share work (the pilot's questions are the core's): counted once together
+            print(f"== {' + '.join(args.stages)} together (shared pairs and partitions counted once)")
+            print(json.dumps(_estimate(everything, _embedder(args, everything))["summary"], indent=1))
     elif args.command in ("run", "adhoc"):
         if args.command == "run":
             runs = grid.STAGES[args.stage]

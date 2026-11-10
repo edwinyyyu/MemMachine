@@ -38,7 +38,7 @@ uv sync
 .venv/bin/python -m pytest -q tests
 .venv/bin/python -m rbench prepare longmemeval_m longmemeval_s   # download and split into histories
 .venv/bin/python -m rbench run lme-test                          # free: local, 8 LongMemEval-S histories
-.venv/bin/python -m rbench estimate lme-core lme-sizes --embedder gemma300m-di-raw
+.venv/bin/python -m rbench estimate lme-core lme-sizes lme-cut         # paid stages use Qwen3-Embedding-8B
 .venv/bin/python -m rbench show longmemeval_s --sample tiny --chart coverage,rpf   # zoomable chart windows from saved results
 ```
 
@@ -48,9 +48,10 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` c
 
 ```sh
 .venv/bin/python -m rbench smoke
-.venv/bin/python -m rbench embed-fidelity
-.venv/bin/python -m rbench run lme-pilot --max-usd 3 --embedder gemma300m-di-raw
-.venv/bin/python -m rbench run lme-core  --max-usd 6 --embedder gemma300m-di-raw
+.venv/bin/python -m rbench embed-checks
+.venv/bin/python -m rbench compare-embedders --embedders qwen3-8b-di,qwen3-8b-di-raw,gemma300m-di-raw
+.venv/bin/python -m rbench run lme-pilot --max-usd 3
+.venv/bin/python -m rbench run lme-core  --max-usd 6
 ```
 
 ## Cost

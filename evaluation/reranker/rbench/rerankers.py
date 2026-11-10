@@ -304,12 +304,3 @@ def score(reranker: str, work: Work, note: str, max_usd: float | None = None) ->
         done += sum(len(items) for _, items in group)
         rate = done / (time.monotonic() - started)
         print(f"  {done}/{todo} pairs, {rate:.0f} pairs/s, eta {(todo - done) / rate / 60:.1f} min", flush=True)
-
-
-# -------------------------------------------------------------------- pool depth
-
-
-def depth(head_tokens, pool_tokens: int, min_depth: int) -> int:
-    """How many head items to score: until pool_tokens tokens, at least min_depth."""
-    cum = np.cumsum(head_tokens)
-    return int(min(len(head_tokens), max(min_depth, np.searchsorted(cum, pool_tokens, "left") + 1)))

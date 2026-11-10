@@ -106,7 +106,9 @@ plt.rcParams.update({
 })
 PANEL = (4.4, 3.2)  # inches per panel; figures are at least MIN_WIDTH wide so the legend never dwarfs the plot
 MIN_WIDTH = 7.5
-TOKEN_MARKS = list(range(1000, 16000 + 1, 1000))  # where step curves carry their series marker
+def _token_marks() -> list[int]:
+    """Where step curves carry their series marker: every 1,000 reader tokens to the axis end."""
+    return list(range(1000, max(config.EVAL.token_top, 1000) + 1, 1000))
 LINE = 1.0  # the one line width (points): thin, with no outline, so overlapping lines stay whole
 
 
@@ -449,7 +451,7 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                         ax.set_visible(False)
                         continue
                     for key, name, color, ls in _series(r, c, limit, e, bound=True):
-                        _steps(ax, rd.costs(r.rows(c, name), reading), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
+                        _steps(ax, rd.costs(r.rows(c, name), reading), 0, config.EVAL.token_top, _token_marks(), _marker(key), color=color,
                                linestyle=ls)
                         keys.add(key)
                     _token_x(ax)
@@ -889,7 +891,7 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
         i, j = expands.index(p.expand), models.index(p.model)
         ax = axes[i][j]
         for label, c, name in p.items:
-            _steps(ax, rd.costs(r.rows(c, name), reading), 0, 16000, TOKEN_MARKS, EXPANSION_MARKERS[label],
+            _steps(ax, rd.costs(r.rows(c, name), reading), 0, config.EVAL.token_top, _token_marks(), EXPANSION_MARKERS[label],
                    color=colors[label])
             present.add(label)
         _token_x(ax)
