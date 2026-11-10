@@ -96,7 +96,7 @@ Qwen3-Reranker scores each pair independently, so a pool scored to depth D answe
 |---|---|
 | reader tokens (the rendered context) | report §3–4, `coverage_tokens_*.png` |
 | reranker tokens, as an API bills them and as a self-hosted server with a prefix cache computes them | §5–6, `rerank_cost.png` |
-| total cost, at any LLM-to-reranker price ratio | §7 (exact break-even values), `cost_saving.png` (% saved at every LLM price and coverage target, with the break-even LLM price per target drawn over it); both compare always reranking with never reranking |
+| total cost, at any LLM-to-reranker price ratio | §7 (exact break-even values), `cost_saving.png` (% saved at every LLM price and coverage target, with the break-even LLM price per target drawn over it where reranking is clearly cheaper at some higher price); both compare always reranking with never reranking, with the reranker's vector search limit held fixed for every target and price, one panel or block per limit: EventMemory's default 20, the limit whose reranked coverage averaged over the realistic budgets is highest, and the pool (the user's decision, 2026-11-09: re-choosing the limit per target and price made the line jagged and its configuration unknowable) |
 | segments read (k) | `rpf_k.png`, §12 |
 | vector search limit L, seeds kept after reranking k, segments read after expansion m | §13, `coverage_counts.png` |
 | what a budget implies for EventMemory's settings (`max_num_segments`, `vector_search_limit`) | §14 |

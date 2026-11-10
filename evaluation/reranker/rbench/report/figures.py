@@ -667,54 +667,74 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
 
 
 def cost_saving(r: Results, out, head: str, reading: str) -> None:
-    """Over a continuous range of LLM prices and coverage targets: the cost of reaching the target
-    with the reranker relative to without it, both at one setting (frontier.setting: a chunking
-    and expand_context), each at its cheapest vector search limit. Blue saves, red costs more;
-    gray where only the reranker reaches the target. Over it, the break-even LLM price per
-    target (the 0% boundary, frontier.break_even) with its 95% interval, and with a prefix cache."""
+    """Over a continuous range of LLM prices and coverage targets: the cost of reaching the
+    target with the reranker relative to without it, both at one setting (frontier.setting: a
+    chunking and expand_context). One panel per reranked configuration, its vector search limit
+    held fixed for every target and price (frontier.cost_limits: EventMemory's default 20, the
+    best L overall, the pool), against the first stage in vector order. Blue saves, red costs
+    more; gray where the saving's 95% interval includes 0. Over it, the break-even LLM price per
+    target (the 0% boundary, frontier.break_even) with its 95% interval, and with a prefix cache,
+    drawn only at targets where reranking is clearly cheaper at some higher price."""
     if not r.models:
         return
     fixed = frontier.setting(r)
     llm = np.logspace(-2, 2, 81)  # $ per million reader tokens
-    fig, axes = _figure(1, len(r.models), panel=(4.6, 3.8), sharey=True)
+    panels = [(m, L, what) for m in r.models for L, what in frontier.cost_limits(r, m, reading)]
+    if not panels:
+        return
+    columns = max(sum(p[0] == m for p in panels) for m in r.models)
+    models = [m for m in r.models if any(p[0] == m for p in panels)]
+    fig, axes = _figure(len(models), columns, panel=(4.6, 3.8), sharey=True)
     finite = lambda v: np.where(np.isfinite(v) & (v > 0) & (v < 1e12), v, np.nan)  # noqa: E731
-    for k, m in enumerate(r.models):
-        curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading, fixed=fixed)
-        no = np.stack([curves[p][0] for p in llm], 1)  # [target, price]
-        yes = np.stack([curves[p][1] for p in llm], 1)
-        ax = axes[0][k]
-        with np.errstate(invalid="ignore", divide="ignore"):
-            saved = 100 * (1 - yes / no)
-        lo_s, hi_s = frontier.saved_interval(r, m, list(llm), price(m), event=reading, fixed=fixed)
-        clear = ~((lo_s <= 0) & (hi_s >= 0))  # the saving's 95% interval excludes 0
-        im = ax.pcolormesh(llm, frontier.TARGETS, np.where(clear, saved, np.nan), cmap=DIVERGING,
-                           norm=TwoSlopeNorm(0, -50, 50), shading="nearest")
-        layers = ((np.isfinite(saved) & ~clear, MUTED, 1.0),  # no clear difference
-                  (np.isnan(no) & np.isfinite(yes), ORACLE, 0.6),  # only the reranker reaches the target
-                  (np.isfinite(no) & np.isnan(yes), FIRST_ONLY, 1.0))  # only the first stage does
-        for mask, color, alpha in layers:
-            ax.pcolormesh(llm, frontier.TARGETS, np.where(mask, 1.0, np.nan), shading="nearest", alpha=alpha,
-                          cmap=LinearSegmentedColormap.from_list("layer", [color, color]))
-        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading, fixed=fixed)
-        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading, fixed=fixed)[0]
-        y = frontier.TARGETS
-        shown = np.isfinite(finite(api))  # the interval only where there is a line: elsewhere the estimate is "never"
-        lo, hi = np.where(shown, lo, np.nan), np.where(shown, hi, np.nan)
-        marks = [i for i, t in enumerate(y) if round(t * 100) % 10 == 0]  # a marker at every 0.1 of coverage
-        for line in (lo, hi):  # the interval's edges: dotted, no markers
-            ax.plot(finite(line) * price(m), y, drawstyle="steps-mid", color=INK, linestyle=":", linewidth=LINE)
-        for line, marker in ((api, "x"), (cached, "+")):
-            _plot(ax, finite(line) * price(m), y, drawstyle="steps-mid", color=INK, marker=marker, markevery=marks)
-        ax.set_xlim(llm[0], llm[-1])
-        ax.set_facecolor(SURFACE)  # blank where neither reaches the target
-        _log_x(ax)
-        ax.grid(False)
-        ax.yaxis.set_major_locator(MultipleLocator(0.1))
-        ax.set_title(_priced(m), loc="left")
-        ax.set_xlabel("LLM input price ($ per million tokens)")
-        if k == 0:
-            ax.set_ylabel(f"coverage target ({EVENT_TEXT[reading]})")
-    fig.colorbar(im, ax=axes[0].tolist(), label="% of total cost saved by reranking (red: reranking costs more)")
+    n = r.df.qid.nunique()
+    for row, m in enumerate(models):
+        mine = [p for p in panels if p[0] == m]
+        for col in range(columns):
+            ax = axes[row][col]
+            if col >= len(mine):
+                ax.set_visible(False)
+                continue
+            _, L, what = mine[col]
+            curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading, fixed=fixed, limit=L)
+            no = np.stack([curves[p][0] for p in llm], 1)  # [target, price]
+            yes = np.stack([curves[p][1] for p in llm], 1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                saved = 100 * (1 - yes / no)
+            lo_s, hi_s = frontier.saved_interval(r, m, list(llm), price(m), event=reading, fixed=fixed, limit=L)
+            clear = ~((lo_s <= 0) & (hi_s >= 0))  # the saving's 95% interval excludes 0
+            im = ax.pcolormesh(llm, frontier.TARGETS, np.where(clear, saved, np.nan), cmap=DIVERGING,
+                               norm=TwoSlopeNorm(0, -50, 50), shading="nearest")
+            layers = ((np.isfinite(saved) & ~clear, MUTED, 1.0),  # no clear difference
+                      (np.isnan(no) & np.isfinite(yes), ORACLE, 0.6),  # only the reranker reaches the target
+                      (np.isfinite(no) & np.isnan(yes), FIRST_ONLY, 1.0))  # only the first stage does
+            for mask, color, alpha in layers:
+                ax.pcolormesh(llm, frontier.TARGETS, np.where(mask, 1.0, np.nan), shading="nearest", alpha=alpha,
+                              cmap=LinearSegmentedColormap.from_list("layer", [color, color]))
+            api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading, fixed=fixed, limit=L)
+            cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading, fixed=fixed,
+                                         limit=L)[0]
+            y = frontier.TARGETS
+            # where the line means something: reranking is clearly cheaper somewhere to its right
+            cheaper = (clear & (saved > 0)) | (np.isnan(no) & np.isfinite(yes))  # [target, price]
+            right = np.asarray([cheaper[i, llm >= finite(api)[i] * price(m)].any() if np.isfinite(finite(api)[i])
+                                else False for i in range(len(y))])
+            marks = [i for i, t in enumerate(y) if round(t * 100) % 10 == 0]  # a marker at every 0.1 of coverage
+            for line in (lo, hi):  # the interval's edges: dotted, no markers
+                ax.plot(np.where(right, finite(line), np.nan) * price(m), y, drawstyle="steps-mid", color=INK,
+                        linestyle=":", linewidth=LINE)
+            for line, marker in ((api, "x"), (cached, "+")):
+                _plot(ax, np.where(right, finite(line), np.nan) * price(m), y, drawstyle="steps-mid", color=INK,
+                      marker=marker, markevery=marks)
+            ax.set_xlim(llm[0], llm[-1])
+            ax.set_facecolor(SURFACE)  # blank where neither reaches the target
+            _log_x(ax)
+            ax.grid(False)
+            ax.yaxis.set_major_locator(MultipleLocator(0.1))
+            ax.set_title(f"{LABEL[m]} · L {L} ({what})", loc="left")
+            ax.set_xlabel("LLM input price ($/M)")
+            if col == 0:
+                ax.set_ylabel(f"coverage target ({EVENT_TEXT[reading]})")
+    fig.colorbar(im, ax=[a for row in axes for a in row], label="% of retrieval cost saved (reader + reranker tokens)")
     name = "cost_saving" + ("" if fixed == (default_segment(), 0) else f"_{fixed[0]}_x{fixed[1]}")
     _save(fig, out / _file(name, reading),
           f"Cost saved by reranking, at every LLM price and coverage target ({fixed[0]}, expand_context {fixed[1]}) — {head}",
@@ -726,14 +746,18 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
            "only the first stage reaches this target"],
           ncol=2,
           note=f"Held equal: the coverage target (y), the LLM input price (x), the chunking ({fixed[0]}) and "
-               f"expand_context ({fixed[1]}); config.EVAL.cost_chunking / cost_expand draw other settings. Color: total "
-               "cost (reader + reranker tokens) of reaching the target with the reranker, relative to the first stage in "
-               "vector order, each at its cheapest vector search limit, chosen once for all questions (never per question), on "
-               "the same questions it is measured on. Right of the break-even "
-               "line reranking is cheaper; no line at a target: never cheaper there (or beyond the price range). Interval "
-               "lines missing on the right: the interval includes never. Colored only where the saving (or the extra "
-               "cost) is clear: its 95% bootstrap interval over questions, each resample re-choosing both sides' limits, "
-               "excludes 0; light gray where it does not. Blank: neither side reaches the target. Exact values: report §7.")
+               f"expand_context ({fixed[1]}); config.EVAL.cost_chunking / cost_expand draw other settings. Each panel is one "
+               "reranked configuration, its vector search limit L held fixed at every target and price (its title "
+               "names it: EventMemory's default, the L whose reranked coverage averaged over the realistic budgets is "
+               "highest, and the pool), against the first stage in vector order, read as deep as the target needs. "
+               "Color: the total cost (reader + reranker tokens) of reaching the target with the reranker, relative to "
+               "without it, on the same questions it is measured on. Right of the break-even line reranking is cheaper; "
+               "the line is drawn only at targets where reranking is clearly cheaper at some higher price (else it would "
+               "mark nothing). Colored only where the saving (or extra cost) is clear: its 95% bootstrap interval over "
+               f"questions excludes 0; light gray where it does not. Blank: neither side reaches the target. Each step "
+               f"is one question (1/{n} of the coverage target). Long sessions: if retrieved context stays in the "
+               "conversation and is re-sent m times, read x as price × m (with prompt caching, write w and read c "
+               "multipliers: price × (w + c(m−1))). Exact values: report §7.")
 
 
 def query_types(r: Results, out, head: str, reading: str) -> None:

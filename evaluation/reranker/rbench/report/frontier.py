@@ -72,19 +72,42 @@ def setting(results: Results) -> tuple[str, int]:
 
 
 def configurations(results: Results, model: str | None, token_field: str = "rr_tokens", event: str = EVENT,
-                   fixed: tuple[str, int] | None = None) -> list[Config]:
+                   fixed: tuple[str, int] | None = None, limit: int | None = None) -> list[Config]:
     """Every configuration of one model (model None: every no-reranker configuration), at one
     (chunking, expand_context) when `fixed`, so only the vector search limit varies; else
-    across every chunking and expansion."""
+    across every chunking and expansion. limit (with fixed): the reranked side at that one
+    vector search limit, its seeds scored (one configuration, nothing re-chosen per target)."""
     d = results.select(expand=None)
     if fixed is not None:
         d = d[(d.chunking == fixed[0]) & (d.expand == fixed[1])]
     d = d[d.kind == "first_stage"] if model is None else d[d.kind.isin(RERANKED) & (d.model == model)]
+    if model is not None and limit is not None:
+        d = d[(d.kind == "rerank") & (d.depth == f"n{limit}")]
     out = []
     for name, g in d.groupby(["chunking", "ranker"]):
         g = g.sort_values("qid")
         out.append(Config(name, rd.costs(g, event), g[token_field].to_numpy()))
     return out
+
+
+def cost_limits(results: Results, model: str, event: str = EVENT) -> list[tuple[int, str]]:
+    """The vector search limits the cost comparison is drawn at, each held fixed for every
+    target and price (the user's decision, 2026-11-09: no per-target switching): EventMemory's
+    default 20, the best L chosen once overall (best.overall_limit), and the pool; (L, what
+    it is), each L once."""
+    from rbench.report import best
+
+    c, e = setting(results)
+    depths = [int(d[1:]) for d in results.depths_at(c, model, "rerank")]
+    if not depths:
+        return []
+    picks = [(20, "EventMemory's default"), (best.overall_limit(results, model, c, event, e), "the best overall"),
+             (depths[-1], "the pool")]
+    out: dict[int, list[str]] = {}
+    for L, what in picks:
+        if L is not None and L in depths:
+            out.setdefault(L, []).append(what)
+    return [(L, " = ".join(names)) for L, names in out.items()]
 
 
 def _clusters(results: Results) -> np.ndarray:
@@ -136,13 +159,13 @@ def _r_star(base: list[Config], rr: list[Config], chosen, index: np.ndarray | No
 
 
 def break_even(results: Results, model: str, token_field: str = "rr_tokens", with_interval: bool = True,
-               event: str = EVENT, fixed: tuple[str, int] | None = None):
+               event: str = EVENT, fixed: tuple[str, int] | None = None, limit: int | None = None):
     """(r* per target, lower, upper, chosen no-reranker names, chosen reranked names).
 
     r* is inf where the chosen reranked configuration is not cheaper, 0 where only the
     reranker reaches the target (cheaper at any price), and nan where nothing does."""
     base, rr = (configurations(results, None, event=event, fixed=fixed),
-                configurations(results, model, token_field, event, fixed))
+                configurations(results, model, token_field, event, fixed, limit))
     chosen = _choose(base, rr, None)
     point = _r_star(base, rr, chosen, None)
     lo = hi = np.full(len(TARGETS), np.nan)
@@ -165,14 +188,15 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
 
 
 def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price: float, token_field: str = "rr_tokens",
-                event: str = EVENT, fixed: tuple[str, int] | None = None) -> dict[float, tuple[np.ndarray, np.ndarray]]:
+                event: str = EVENT, fixed: tuple[str, int] | None = None,
+                limit: int | None = None) -> dict[float, tuple[np.ndarray, np.ndarray]]:
     """Total cost in $ per 1,000 questions to reach each coverage target, without and with the
     reranker: {llm price -> (no reranker [target], reranker [target])}, prices in $ per million
     tokens. Each side is its cheapest configuration at that price (segment length, expansion and,
     for the reranker, depth), chosen and measured on the same questions; nan where no
     configuration of that side reaches the target."""
     base, rr = (configurations(results, None, event=event, fixed=fixed),
-                configurations(results, model, token_field, event, fixed))
+                configurations(results, model, token_field, event, fixed, limit))
     b0 = np.asarray([min_budgets(c.costs) for c in base])
     b1 = np.asarray([min_budgets(c.costs) for c in rr]) if rr else np.zeros((0, len(TARGETS)))
     tok = np.asarray([c.tokens.mean() for c in rr])
@@ -193,13 +217,14 @@ def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price:
 
 
 def saved_interval(results: Results, model: str, llm_prices: list[float], rr_price: float, token_field: str = "rr_tokens",
-                   event: str = EVENT, fixed: tuple[str, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
+                   event: str = EVENT, fixed: tuple[str, int] | None = None,
+                   limit: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """The 95% bootstrap interval of the % of total cost reranking saves, per (target, price):
     clusters resampled, each side's cheapest configuration re-chosen in every resample (as
     break_even does). +100 where only the reranker reaches the target in a resample, -inf where
     only the first stage does, nan where neither."""
     base, rr = (configurations(results, None, event=event, fixed=fixed),
-                configurations(results, model, token_field, event, fixed))
+                configurations(results, model, token_field, event, fixed, limit))
     if not base or not rr:  # nothing to compare at this setting (e.g. the model is scored at other chunkings)
         empty = np.full((len(TARGETS), len(llm_prices)), np.nan)
         return empty, empty.copy()

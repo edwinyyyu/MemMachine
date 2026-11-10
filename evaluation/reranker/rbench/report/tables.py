@@ -244,32 +244,32 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
 
 
 def worth_it(r: Results, event: str) -> list[str]:
-    pick = ("the same questions they are measured on (no dev split), with a 95% interval whose every resample makes "
-            "its own choice; the minimum over many reranked configurations leans optimistic for the reranker")
+    pick = ("the same questions they are measured on (no dev split), so the best L leans optimistic for the reranker; "
+            "the 95% interval resamples questions with each block's L fixed")
     out = ["## 7. Worth the money: break-even price ratio\n",
            f"{_name(event)} coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
            "exceeds r* (chart: the break-even lines in cost_saving.png). Both sides at one setting "
            f"({frontier.setting(r)[0]}, expand_context {frontier.setting(r)[1]}; config.EVAL.cost_chunking / cost_expand): "
-           "the first stage in vector order against the reranker, each at its best vector search limit. Limits are chosen on "
-           f"{pick}. '–': the chosen reranked configuration is not cheaper; 'only': only reranking reaches the target "
-           "(cheaper at any price); 'n/a': nothing reaches it.\n",
-           "| target | " + " | ".join(f"{m}: r* API [95%] · prefix-cached · chosen" for m in r.models) + " |",
-           "|---|" + "---|" * len(r.models)]
+           "the first stage in vector order, read as deep as each target needs, against the reranker at one vector search "
+           "limit L held fixed for every target (one block per L: EventMemory's default, the L whose reranked coverage "
+           "averaged over the realistic budgets is highest, and the pool; chosen on "
+           f"{pick}). '–': reranking at that L is not cheaper; 'only': only reranking reaches the target (cheaper at any "
+           "price); 'n/a': nothing reaches it.\n"]
     fixed = frontier.setting(r)
-    results = {m: (frontier.break_even(r, m, "rr_tokens", event=event, fixed=fixed),
-                   frontier.break_even(r, m, "rr_prefix_tokens", False, event=event, fixed=fixed)) for m in r.models}
 
     def fmt(x: float) -> str:
         return "n/a" if np.isnan(x) else "–" if np.isinf(x) or x >= 1e12 else "only" if x == 0 else f"{x:,.1f}"
 
-    for t in SHOW_TARGETS:
-        i = int(np.argmin(np.abs(frontier.TARGETS - t)))
-        cells = []
-        for (api, cached) in results.values():
-            point, lo, hi, base_names, rr_names = api
-            chosen = " ".join(base_names[i]) + (" vs " + " ".join(rr_names[i]) if rr_names[i] else "")
-            cells.append(f"{fmt(point[i])} [{fmt(lo[i])}, {fmt(hi[i])}] · {fmt(cached[0][i])} · {chosen}")
-        out.append(f"| {t} | " + " | ".join(cells) + " |")
+    for m in r.models:
+        for L, what in frontier.cost_limits(r, m, event):
+            api = frontier.break_even(r, m, "rr_tokens", event=event, fixed=fixed, limit=L)
+            cached = frontier.break_even(r, m, "rr_prefix_tokens", False, event=event, fixed=fixed, limit=L)
+            out += [f"**{m} at L {L} ({what})**\n", "| target | r* API [95%] | r* prefix-cached |", "|---|---|---|"]
+            for t in SHOW_TARGETS:
+                i = int(np.argmin(np.abs(frontier.TARGETS - t)))
+                point, lo, hi, _, _ = api
+                out.append(f"| {t} | {fmt(point[i])} [{fmt(lo[i])}, {fmt(hi[i])}] | {fmt(cached[0][i])} |")
+            out.append("")
     return out + [""]
 
 
@@ -705,23 +705,27 @@ def summary(r: Results, event: str) -> list[str]:
                          f"({rc[1].split('@')[1]} vs {fc[1].replace('first_stage', 'first stage')})")
         lines.append("| best settings, each side (section 15; leans optimistic) | " + " | ".join(cells) + " |")
         out += lines + [""]
-        point, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=event, fixed=core)
         from rbench.report.stats import MIN_CLUSTERS
 
         few = len(np.unique(frontier._clusters(r))) < MIN_CLUSTERS  # no interval, as for the gains
         targets = list(frontier.TARGETS)
-        prices = []
-        for t in SUMMARY_TARGETS:
-            if t not in targets:
-                continue
-            k = targets.index(t)
-            p, a, z = (x[k] * price(m) for x in (point, lo, hi))
-            text = ("never" if not np.isfinite(p) or p >= 1e11 else "at any price" if p == 0 else f"${p:.2f}/M")
-            if text.startswith("$") and np.isfinite(a) and np.isfinite(z) and few is False:
-                text += f" [{a:.2f}, {'never' if z >= 1e11 * price(m) else f'{z:.2f}'}]"
-            prices.append(f"{t:.0%}: {text}")
+        at = []
+        for L, what in frontier.cost_limits(r, m, event):
+            point, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=event, fixed=core, limit=L)
+            prices = []
+            for t in SUMMARY_TARGETS:
+                if t not in targets:
+                    continue
+                k = targets.index(t)
+                p, a, z = (x[k] * price(m) for x in (point, lo, hi))
+                text = ("never" if not np.isfinite(p) or p >= 1e11 else "at any price" if p == 0 else f"${p:.2f}/M")
+                if text.startswith("$") and np.isfinite(a) and np.isfinite(z) and few is False:
+                    text += f" [{a:.2f}, {'never' if z >= 1e11 * price(m) else f'{z:.2f}'}]"
+                prices.append(f"{t:.0%}: {text}")
+            at.append(f"at L {L} ({what}): " + "; ".join(prices))
         out.append(f"Break-even LLM input price (reranking is cheaper above it; {core[0]}, expand_context {core[1]}, "
-                   f"{m} at ${price(m):g}/M): " + "; ".join(prices) + ". Section 7 and cost_saving.png give every target.\n")
+                   f"{m} at ${price(m):g}/M, its L held fixed at every target): " + " | ".join(at)
+                   + ". Section 7 and cost_saving.png give every target.\n")
     from rbench.report import topk
 
     if topk.available(r):

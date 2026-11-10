@@ -162,6 +162,21 @@ def overall(r: Results, model: str, reading: str, budget: float) -> tuple[tuple[
     return best_r[0], best_r[1], best_f[0], best_f[1]
 
 
+def overall_limit(r: Results, model: str, chunking: str, reading: str, expand: int = 0) -> int | None:
+    """One vector search limit for all the realistic budgets (config.EVAL.budgets): the L whose
+    reranked coverage, averaged over those budgets with equal weight, is highest (chosen once
+    for all questions, on the same questions it is measured on)."""
+    from rbench import config
+
+    choices = [limit_choice(r, model, chunking, reading, b, expand) for b in config.EVAL.budgets]
+    choices = [c for c in choices if c is not None]
+    if not choices:
+        return None
+    labels = [v.label for v in choices[0].values]
+    mean = [np.mean([c.coverage(i) for c in choices]) for i in range(len(labels))]
+    return int(labels[int(np.argmax(mean))].split()[1])
+
+
 def limit_choice(r: Results, model: str, chunking: str, reading: str, budget: float, expand: int = 0) -> Choice | None:
     """The vector search limit factor at one chunking and expansion (rerank_cost.png marks it)."""
     tail = f"+x{expand}" if expand else ""
