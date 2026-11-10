@@ -1,4 +1,4 @@
-"""Running a grid stage: prepare inputs, rerank (under a total spend cap), simulate, report.
+"""Running a grid stage: prepare inputs, rerank, simulate, report.
 
 Every step skips what is already cached, so a stage can be rerun after an interruption or
 extended later, and only new work is done.
@@ -36,7 +36,7 @@ def prepare(run: Run, embedder: str = EMBEDDER) -> None:
         print(f"{run.dataset} {c} {run.sample}: pool {depth.pool(run, c, embedder)} seeds", flush=True)
 
 
-def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER) -> None:
+def rerank(run: Run, model: str, embedder: str = EMBEDDER) -> None:
     spec = RERANKERS[model]
     for c in run.chunkings:
         work = simulation.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand,
@@ -47,7 +47,7 @@ def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER
         print(f"{model} {label}: {pairs} pairs to score, {tokens / 1e6:.2f}M tokens, "
               f"${tokens / 1e6 * (spec.usd_per_mtok or 0.0):.2f}", flush=True)
         if pairs:
-            score(model, work, label, max_usd)
+            score(model, work, label)
 
 
 def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:

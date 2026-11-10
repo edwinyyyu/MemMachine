@@ -71,6 +71,7 @@ from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import S
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
+from rbench import credits  # noqa: E402
 from rbench import embedding as emb  # noqa: E402
 from rbench.paths import DATA, SECRETS  # noqa: E402
 from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
@@ -241,7 +242,13 @@ class QueryCachingEmbedder(Embedder):
 
         async def one(batch: list) -> list[list[float]]:
             async with self._gate:
-                return await call(batch, 10)
+                try:
+                    return await call(batch, 10)
+                except Exception as err:  # MemMachine's ExternalServiceAPIError, from the API's answer
+                    broke = credits.from_embedder(err)
+                    if broke is not None:
+                        raise broke from err
+                    raise
 
         parts = await asyncio.gather(*(one(texts[i : i + size]) for i in range(0, len(texts), size)))
         vectors = [v for part in parts for v in part]

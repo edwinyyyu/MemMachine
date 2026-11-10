@@ -1,4 +1,4 @@
-"""Qwen3 rerankers: input format, backends, the score cache, and the spend cap.
+"""Qwen3 rerankers: input format, backends, the score cache, and the spend log.
 
 Each model's entry in RERANKERS holds everything specific to it: its backend and price, its
 chart label, color and markers, and its Template. The Qwen3 model card's template: the string
@@ -19,9 +19,9 @@ datasets) or an "em" context EventMemory rendered (memory.RENDER).
 
 Spend: every paid request is cached and logged as soon as it returns, so a failure loses
 nothing already paid for. (A request retried after a timeout may have been billed for the
-attempt that timed out; that attempt is not logged, so logged spend can slightly undercount.) The cap (`max_usd`) is TOTAL DeepInfra spend across all models
-and all runs so far, read from the call logs, and is checked before every group of
-requests against its exact token count.
+attempt that timed out; that attempt is not logged, so logged spend can slightly undercount.)
+There is no spend cap: DeepInfra's prepaid credits are the cap, and running out of them stops
+the run cleanly with everything finished kept (credits.py).
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from functools import cache
 
 import numpy as np
 
+from rbench import credits
 from rbench.paths import SCORES, SECRETS
 from rbench.text import QWEN, tokenizer
 
@@ -262,6 +263,8 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
                         response = None
                 if response is not None and response.status_code == 200:
                     break
+                if response is not None and credits.refused(response.status_code, response.text):
+                    raise credits.OutOfCredits(f"reranking: HTTP {response.status_code}")
                 if response is not None and response.status_code not in (429, 500, 502, 503, 504):
                     raise RuntimeError(f"DeepInfra {response.status_code}: {response.text[:300]}")
                 await asyncio.sleep(min(60, 2**attempt))
@@ -278,15 +281,18 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
 
         results = await asyncio.gather(*(run(q, b) for q, b in requests), return_exceptions=True)
     failures = [r for r in results if isinstance(r, BaseException)]
+    broke = [r for r in failures if isinstance(r, credits.OutOfCredits)]
+    if broke:  # the requests in flight have finished and are cached: stop here
+        raise SystemExit(f"{broke[0]}; {len(requests) - len(failures)} of {len(requests)} requests in this group "
+                         "are cached")
     if failures:
         raise RuntimeError(f"{len(failures)} of {len(requests)} requests failed (the rest are cached): {failures[0]}")
 
 
-def score(reranker: str, work: Work, note: str, max_usd: float | None = None) -> None:
-    """Score work in groups, checking the total spend cap before each group of a paid model."""
+def score(reranker: str, work: Work, note: str) -> None:
+    """Score work in groups of GROUP_QUERIES queries, each request cached as it returns. A paid
+    model stops cleanly when DeepInfra's credits run out (credits.py)."""
     spec, cache_ = RERANKERS[reranker], ScoreCache(reranker)
-    if spec.backend != "local" and max_usd is None:
-        raise SystemExit("a paid backend needs a spend cap (--max-usd, total across models)")
     todo = sum(len(items) for _, items in work)
     done, started = 0, time.monotonic()
     for g in range(0, len(work), GROUP_QUERIES):
@@ -294,10 +300,6 @@ def score(reranker: str, work: Work, note: str, max_usd: float | None = None) ->
         if spec.backend == "local":
             _local(spec.hf_model, group, spec.template, cache_, note)
         else:
-            tokens = sum(len(r) for q, items in group for r in pair_ids(q, [d for _, d in items], spec.template))
-            spent = total_spent_usd()
-            if spent + tokens / 1e6 * spec.usd_per_mtok > max_usd:
-                raise SystemExit(f"spend cap: ${spent:.2f} spent + ${tokens / 1e6 * spec.usd_per_mtok:.2f} > ${max_usd:.2f}")
             if spec.template != QWEN3_CARD:
                 raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself; other templates run locally")
             asyncio.run(_deepinfra(spec.hf_model, group, spec.template, cache_, note))

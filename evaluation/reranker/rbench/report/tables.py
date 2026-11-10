@@ -592,7 +592,8 @@ def _topk_cell(g: dict, i: int | None, j: int) -> str:
         return "–"
     if g["limits"][i] == g["ks"][j]:
         return f"{g['reranked'][i, j]:.3f} (= first stage: k = L)"
-    return f"{g['reranked'][i, j]:.3f}: {g['gain'][i, j]:+.3f} [{g['low'][i, j]:+.3f}, {g['high'][i, j]:+.3f}]"
+    ci = "" if np.isnan(g["low"][i, j]) else f" [{g['low'][i, j]:+.3f}, {g['high'][i, j]:+.3f}]"
+    return f"{g['reranked'][i, j]:.3f}: {g['gain'][i, j]:+.3f}{ci}"
 
 
 def topk_recall(r: Results) -> list[str]:
@@ -654,6 +655,15 @@ def _verdict(lo: float, hi: float) -> str:
     return "helps" if lo > 0 else "hurts" if hi < 0 else "no clear difference"
 
 
+def _ci(lo: float, hi: float, digits: int = 3) -> str:
+    """A 95% interval and its verdict; with fewer than stats.MIN_CLUSTERS clusters there is none."""
+    from rbench.report.stats import MIN_CLUSTERS
+
+    if np.isnan(lo):
+        return f"(no interval: fewer than {MIN_CLUSTERS} clusters)"
+    return f"[{lo:+.{digits}f}, {hi:+.{digits}f}] {_verdict(lo, hi)}"
+
+
 def summary(r: Results, event: str) -> list[str]:
     """The questions answered first, a fixed template filled with this report's numbers: per
     model, the gain at EventMemory's defaults and at the best settings at the realistic
@@ -681,7 +691,7 @@ def summary(r: Results, event: str) -> list[str]:
                 d = rd.hit(rd.costs(rows, event), b) - rd.hit(rd.costs(base, event), b)
                 lo, hi = interval(d, base.cluster.to_numpy())
                 cells.append("identical on every question (both have read the whole pool)" if not d.any() else
-                             f"{d.mean():+.3f} [{lo:+.3f}, {hi:+.3f}] {_verdict(lo, hi)}")
+                             f"{d.mean():+.3f} {_ci(lo, hi)}")
             lines.append(f"| EventMemory's defaults ({core[0]}, L 20, expand_context 0) | " + " | ".join(cells) + " |")
         cells = []
         for b in budgets:
@@ -691,11 +701,14 @@ def summary(r: Results, event: str) -> list[str]:
                 continue
             d = rd.hit(rd.costs(r.rows(*rc), event), b) - rd.hit(rd.costs(r.rows(*fc), event), b)
             lo, hi = interval(d, r.rows(*fc).cluster.to_numpy())
-            cells.append(f"{rv:.3f} vs {fv:.3f}: {d.mean():+.3f} [{lo:+.3f}, {hi:+.3f}] {_verdict(lo, hi)} "
+            cells.append(f"{rv:.3f} vs {fv:.3f}: {d.mean():+.3f} {_ci(lo, hi)} "
                          f"({rc[1].split('@')[1]} vs {fc[1].replace('first_stage', 'first stage')})")
         lines.append("| best settings, each side (section 15; leans optimistic) | " + " | ".join(cells) + " |")
         out += lines + [""]
         point, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=event, fixed=core)
+        from rbench.report.stats import MIN_CLUSTERS
+
+        few = len(np.unique(frontier._clusters(r))) < MIN_CLUSTERS  # no interval, as for the gains
         targets = list(frontier.TARGETS)
         prices = []
         for t in SUMMARY_TARGETS:
@@ -704,7 +717,7 @@ def summary(r: Results, event: str) -> list[str]:
             k = targets.index(t)
             p, a, z = (x[k] * price(m) for x in (point, lo, hi))
             text = ("never" if not np.isfinite(p) or p >= 1e11 else "at any price" if p == 0 else f"${p:.2f}/M")
-            if text.startswith("$") and np.isfinite(a) and np.isfinite(z):
+            if text.startswith("$") and np.isfinite(a) and np.isfinite(z) and few is False:
                 text += f" [{a:.2f}, {'never' if z >= 1e11 * price(m) else f'{z:.2f}'}]"
             prices.append(f"{t:.0%}: {text}")
         out.append(f"Break-even LLM input price (reranking is cheaper above it; {core[0]}, expand_context {core[1]}, "
@@ -721,7 +734,7 @@ def summary(r: Results, event: str) -> list[str]:
                 if k in g["ks"] and 20 in g["limits"] and k < 20:
                     i, j = g["limits"].index(20), g["ks"].index(k)
                     parts.append(f"k {k}: {g['first'][j]:.2f} → {g['reranked'][i, j]:.2f} ({g['gain'][i, j]:+.2f} "
-                                 f"[{g['low'][i, j]:+.2f}, {g['high'][i, j]:+.2f}] {_verdict(g['low'][i, j], g['high'][i, j])})")
+                                 f"{_ci(g['low'][i, j], g['high'][i, j], 2)})")
             out.append(f"Recall at top-k ({m}; evidence turns found in full; section 16). Top-k as the vector search "
                        "limit, everything kept: reranking cannot change recall (only order), a gain of 0 by construction. "
                        "Top-k as the seeds kept after reranking the default 20: " + ("; ".join(parts) or "–") + ".\n")

@@ -74,7 +74,7 @@ def smoke(models: list[str]) -> list[str]:
 
 
 def fidelity(dataset: str, chunking_name: str, sample_name: str, local: str = "q06-local", api: str = "q06",
-             pool_seeds: int = 50, max_usd: float = 0.10, scope: str | None = None, variant: str | None = None) -> dict:
+             pool_seeds: int = 50, scope: str | None = None, variant: str | None = None) -> dict:
     """Score through `api` the pairs `local` has scored (what EventMemory.query sends its
     reranker for the sample at vector search limit pool_seeds), then compare the two."""
     from rbench import simulation
@@ -91,8 +91,7 @@ def fidelity(dataset: str, chunking_name: str, sample_name: str, local: str = "q
             work.append((query, missing))
         per_query.append(keys)
     if work:
-        cap = rerankers.total_spent_usd() + max_usd
-        rerankers.score(api, work, f"fidelity/{dataset}/{chunking_name}", cap)
+        rerankers.score(api, work, f"fidelity/{dataset}/{chunking_name}")
     xs, ys, rho, top1 = [], [], [], []
     for keys in per_query:
         if len(keys) < 3:

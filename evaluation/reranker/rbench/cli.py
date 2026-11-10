@@ -10,13 +10,14 @@
   depth <dataset> <chunking> <sample>  how deep the vector search must go to hold all evidence (depth.py)
   fit-cut [dataset ...] [--target seg500]   the simple chunker's length whose mean segment matches
                                      TextSegmenter's (sizes.py; CPU only, before embedding; config.CUT)
-  run <stage> [--only prepare|rerank|report] [--models m,...] [--max-usd X]
+  run <stage> [--only prepare|rerank|report] [--models m,...]
                                      --models runs the stage with these registered models instead of its own
-                                     --max-usd caps TOTAL DeepInfra reranker spend, all models and runs so far
   adhoc --datasets a,b --chunkings x,y --models m,n [--variant V] [--scope S] [--sample S]
-        [--pool-seeds N] [--expand E] [--only ...] [--max-usd X]
+        [--pool-seeds N] [--expand E] [--only ...]
                                      chunkings: seg<N> (EventMemory's TextSegmenter) or cut<N> (the simple chunker)
-                                     any combination on request (same caching and spend cap)
+                                     any combination on request (same caching)
+  No spend cap: DeepInfra's prepaid credits are the cap (turn its auto top-up off) and `estimate` is
+  the price check; out of credits, a run stops cleanly and a rerun resumes (credits.py).
   smoke [--models q06,q4,q8]         preflight: what DeepInfra returns and bills
   fidelity <dataset> <chunking> <sample>   preflight: local vs DeepInfra 0.6B on the same pairs
   show <dataset> [--sample S] [--chart coverage,rpf,...] [--scope S] [--variant V]
@@ -88,7 +89,6 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("stage", choices=grid.STAGES)
     p.add_argument("--only", choices=("prepare", "rerank", "report"))
     p.add_argument("--models")
-    p.add_argument("--max-usd", type=float)
     p = sub.add_parser("adhoc")
     for name in ("datasets", "chunkings", "models"):
         p.add_argument(f"--{name}", required=True)
@@ -96,7 +96,6 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument(f"--{name}", default=default)
     p.add_argument("--expand", type=int, default=0, help="score each seed's window (expand_context)")
     p.add_argument("--pool-seeds", type=int, default=50, help="seeds scored per query")
-    p.add_argument("--max-usd", type=float)
     p = sub.add_parser("show")
     p.add_argument("dataset")
     p.add_argument("--sample", default="tiny")
@@ -224,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.only in (None, "rerank"):
             for run in runs:
                 for m in run.models:
-                    pipeline.rerank(run, m, args.max_usd, embedder)
+                    pipeline.rerank(run, m, embedder)
         if args.only in (None, "report"):
             for path in pipeline.simulate_and_report(runs, embedder):
                 print(path)
