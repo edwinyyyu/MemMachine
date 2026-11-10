@@ -75,14 +75,15 @@ def configurations(results: Results, model: str | None, token_field: str = "rr_t
                    fixed: tuple[str, int] | None = None, limit: int | None = None) -> list[Config]:
     """Every configuration of one model (model None: every no-reranker configuration), at one
     (chunking, expand_context) when `fixed`, so only the vector search limit varies; else
-    across every chunking and expansion. limit (with fixed): the reranked side at that one
-    vector search limit, its seeds scored (one configuration, nothing re-chosen per target)."""
+    across every chunking and expansion. limit (with fixed): one configuration at that vector
+    search limit, nothing re-chosen per target: the reranker scoring the seeds, or (model None)
+    the first stage over the same top L seeds (the user's rule: the same limit on both sides)."""
     d = results.select(expand=None)
     if fixed is not None:
         d = d[(d.chunking == fixed[0]) & (d.expand == fixed[1])]
     d = d[d.kind == "first_stage"] if model is None else d[d.kind.isin(RERANKED) & (d.model == model)]
-    if model is not None and limit is not None:
-        d = d[(d.kind == "rerank") & (d.depth == f"n{limit}")]
+    if limit is not None:
+        d = d[d.depth == f"n{limit}"] if model is None else d[(d.kind == "rerank") & (d.depth == f"n{limit}")]
     out = []
     for name, g in d.groupby(["chunking", "ranker"]):
         g = g.sort_values("qid")
@@ -108,6 +109,15 @@ def cost_limits(results: Results, model: str, event: str = EVENT) -> list[tuple[
         if L is not None and L in depths:
             out.setdefault(L, []).append(what)
     return [(L, " = ".join(names)) for L, names in out.items()]
+
+
+def ceiling(results: Results, limit: int, event: str = EVENT) -> float | None:
+    """The coverage no reading of the top `limit` seeds can pass, whatever the budget (the
+    share of questions, or of evidence turns, all of whose evidence is among those seeds), at
+    the cost comparison's setting; None when the first stage at that limit was not simulated."""
+    c, e = setting(results)
+    rows = results.rows(c, f"first_stage@n{limit}" + (f"+x{e}" if e else ""))
+    return None if rows.empty else float(rd.reachable(rd.costs(rows, event)).mean())
 
 
 def _clusters(results: Results) -> np.ndarray:
@@ -164,7 +174,7 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
 
     r* is inf where the chosen reranked configuration is not cheaper, 0 where only the
     reranker reaches the target (cheaper at any price), and nan where nothing does."""
-    base, rr = (configurations(results, None, event=event, fixed=fixed),
+    base, rr = (configurations(results, None, event=event, fixed=fixed, limit=limit),
                 configurations(results, model, token_field, event, fixed, limit))
     chosen = _choose(base, rr, None)
     point = _r_star(base, rr, chosen, None)
@@ -195,7 +205,7 @@ def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price:
     tokens. Each side is its cheapest configuration at that price (segment length, expansion and,
     for the reranker, depth), chosen and measured on the same questions; nan where no
     configuration of that side reaches the target."""
-    base, rr = (configurations(results, None, event=event, fixed=fixed),
+    base, rr = (configurations(results, None, event=event, fixed=fixed, limit=limit),
                 configurations(results, model, token_field, event, fixed, limit))
     b0 = np.asarray([min_budgets(c.costs) for c in base])
     b1 = np.asarray([min_budgets(c.costs) for c in rr]) if rr else np.zeros((0, len(TARGETS)))
@@ -223,7 +233,7 @@ def saved_interval(results: Results, model: str, llm_prices: list[float], rr_pri
     clusters resampled, each side's cheapest configuration re-chosen in every resample (as
     break_even does). +100 where only the reranker reaches the target in a resample, -inf where
     only the first stage does, nan where neither."""
-    base, rr = (configurations(results, None, event=event, fixed=fixed),
+    base, rr = (configurations(results, None, event=event, fixed=fixed, limit=limit),
                 configurations(results, model, token_field, event, fixed, limit))
     if not base or not rr:  # nothing to compare at this setting (e.g. the model is scored at other chunkings)
         empty = np.full((len(TARGETS), len(llm_prices)), np.nan)
