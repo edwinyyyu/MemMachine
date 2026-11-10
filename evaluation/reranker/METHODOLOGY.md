@@ -112,6 +112,8 @@ There is no dev split (§6), so the choice and the measurement use the same ques
 
 **Latency.** Call times are recorded as a by-product only and reported in §15. They do not represent a self-hosted deployment (DeepInfra requests run 16 at a time, with queueing and any retries), and nothing is spent to measure them.
 
+**Settings are chosen overall, never per question** (the user's rule, 2026-11-09). Every choice the reports make (the vector search limit, seeds kept, segment length, expansion, scoring position, and each side of the cost comparison) is made once for all questions at a given reader budget or coverage target, because a service runs one configuration. The pool rule is overall too: a depth that fills the axis for 95% of the questions. The only per-question optima are the true bounds (`rbench/bounds.py`), labelled as bounds.
+
 ## 6. Statistics
 
 - **No split** (decided 2026-11-06): all 470 questions are evaluated. Samples take questions in a fixed hash order, so the pilot's 100 are part of the core's 470.

@@ -89,8 +89,11 @@ def min_budgets(c: np.ndarray, targets: np.ndarray) -> np.ndarray:
 
 
 def reachable(c: np.ndarray) -> np.ndarray:
-    """Each question's value with no budget limit (all of its pool read)."""
-    return hit(c, np.inf)
+    """Each question's value with no budget limit (all of its pool read): finite costs only
+    (inf <= inf would count what is never reached)."""
+    if c.dtype == object:
+        return np.asarray([float(np.mean(np.isfinite(x))) if len(x) else 0.0 for x in c])
+    return np.isfinite(c).astype(np.float64)
 
 
 def _flat(c: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

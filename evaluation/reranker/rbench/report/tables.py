@@ -441,6 +441,36 @@ def equal_counts(r: Results, event: str) -> list[str]:
 
 
 
+def _pick(choices: dict, factor: str, which: str) -> str:
+    """A factor's best or cheapest-equivalent value's label ('–' when not simulated)."""
+    ch = choices.get(factor)
+    return "–" if ch is None else ch.values[getattr(ch, which)].label
+
+
+def recommended(r: Results, event: str) -> list[str]:
+    """The EventMemory settings to use at each reader budget, per model, from the best-settings
+    choices (section 15): vector_search_limit and max_num_segments the cheapest within the
+    best's 95% bound, segment length and expand_context the best."""
+    from rbench.report import best
+
+    rows = []
+    for m in r.models:
+        for b in config.EVAL.budgets:
+            choices = {f: best.choose(r, f, v) for f, v in best.factors(r, m, event, b).items()}
+            if not choices:
+                continue
+            rows.append(f"| {m} | {b:,} | {_pick(choices, 'L', 'cheapest')} | {_pick(choices, 'm', 'cheapest')} | "
+                        f"{_pick(choices, 'segment', 'best')} | {_pick(choices, 'reader sees', 'best')} | "
+                        f"{_pick(choices, 'reranker sees', 'best')} |")
+    if not rows:
+        return []
+    return ["**Recommended settings** (from section 15, chosen once for all questions at each budget): the vector search "
+            "limit and max_num_segments are the cheapest within the best's 95% bound, the segment length, what the reader "
+            "sees (expand_context) and the scoring position the best.\n",
+            "| model | reader budget | vector_search_limit | max_num_segments | segment length | reader sees | reranker sees |",
+            "|---|---|---|---|---|---|---|", *rows, ""]
+
+
 def settings(r: Results, event: str) -> list[str]:
     """What each configuration needs EventMemory set to at a reader budget: max_num_segments
     (segments read within it) and, for the first stage, vector_search_limit (seeds reached)."""
@@ -457,6 +487,7 @@ def settings(r: Results, event: str) -> list[str]:
            + "\n",
            "| chunking | ranker | " + " | ".join(f"@{b}" for b in budgets) + " |",
            "|---|---|" + "---|" * len(budgets)]
+    out = recommended(r, event) + out
     for c in r.chunkings:
         names = ["first_stage", *(f"first_stage+x{e}" for e in r.expansions if e == 3)]
         for m in r.models_at(c):  # EventMemory's default limit and each scoring position's deepest pool
@@ -508,14 +539,132 @@ def clear(r: Results) -> None:
         old.unlink()
 
 
+def _value_cell(v) -> str:
+    """A factor value's cell: its label, reranked coverage · the first stage's under it."""
+    first = "–" if v.first is None else f"{v.first.mean():.3f}"
+    return f"{v.label}: {v.reranked.mean():.3f} · {first}"
+
+
+def best_settings(r: Results, event: str) -> list[str]:
+    """Which value of each factor works best, one factor at a time (best.py)."""
+    from rbench.report import best
+
+    if not r.models:
+        return []
+    core = frontier.setting(r)
+    out = ["## 15. Best settings, one factor at a time\n",
+           f"Each factor varied alone; the others at the core setting ({core[0]}, expand_context {core[1]}, the reranker "
+           "scoring the seeds, at its deepest pool). Per value: the reranked coverage and the first stage's under the "
+           "same value. *Best*: the highest reranked coverage. *Cheapest equivalent*: the cheapest value (fewer seeds or "
+           "segments, or fewer reranker tokens) whose coverage reaches the best's 95% lower bound. The bound comes from "
+           "bootstrap resamples of the questions, each re-choosing the best value: choices are made on the same "
+           "questions they are measured on (no dev split), so the best leans optimistic. Every setting is chosen once for "
+           "all questions at a budget, never per question, since a service runs one configuration (only the bound rows "
+           "are per-question optima, and are labelled so). Factors that need seed counts (k, m) are shown for the event "
+           "readings only.\n"]
+    for m in r.models:
+        for b in config.EVAL.budgets:
+            choices = {f: best.choose(r, f, v) for f, v in best.factors(r, m, event, b).items()}
+            if not choices:
+                continue
+            out += [f"**{m}, {b:,} reader tokens**\n",
+                    "| factor | values | best (reranked · first stage) | cheapest equivalent (reranked · first stage) "
+                    "| first stage's best |", "|---|---|---|---|---|"]
+            for f, ch in choices.items():
+                firsts = [(v.first.mean(), v.label) for v in ch.values if v.first is not None]
+                top = max(firsts) if firsts else None
+                out.append(f"| {f} | {len(ch.values)} | {_value_cell(ch.values[ch.best])} | "
+                           f"{_value_cell(ch.values[ch.cheapest])} | "
+                           + (f"{top[1]}: {top[0]:.3f}" if top else "–") + " |")
+            (rc, rv, fc, fv) = best.overall(r, m, event, b)
+            out.append(f"\nBest combination simulated: reranked {rc[0]} {rc[1]} {rv:.3f}; first stage alone "
+                       f"{fc[0]} {fc[1]} {fv:.3f}.\n")
+    return out + [""]
+
+
+SUMMARY_TARGETS = (0.5, 0.7, 0.9)  # coverage targets the summary gives the break-even price at
+
+
+def _verdict(lo: float, hi: float) -> str:
+    if np.isnan(lo):
+        return "too few clusters to tell"
+    return "helps" if lo > 0 else "hurts" if hi < 0 else "no clear difference"
+
+
+def summary(r: Results, event: str) -> list[str]:
+    """The questions answered first, a fixed template filled with this report's numbers: per
+    model, the gain at EventMemory's defaults and at the best settings at the realistic
+    budgets, the break-even LLM price at a few targets, and the caveats."""
+    from rbench.report import best
+    from rbench.report.data import price
+    from rbench.report.stats import interval
+
+    if not r.models:
+        return []
+    core = frontier.setting(r)
+    default_limit = "n20"
+    budgets = config.EVAL.budgets
+    out = ["## Summary\n",
+           f"Does reranking improve retrieval enough to justify its cost? {_name(event)} coverage; reader budgets "
+           f"{', '.join(f'{b:,}' for b in budgets)} tokens; Δ = reranked minus the first stage over the same seeds "
+           "[95% interval over questions]; *helps* / *hurts*: the interval excludes 0.\n"]
+    for m in r.models:
+        out.append(f"**{m}**\n")
+        rows, base = r.rows(core[0], f"rerank:{m}@{default_limit}"), r.rows(core[0], f"first_stage@{default_limit}")
+        lines = ["| | " + " | ".join(f"@{b:,}" for b in budgets) + " |", "|---|" + "---|" * len(budgets)]
+        if not rows.empty and not base.empty:
+            cells = []
+            for b in budgets:
+                d = rd.hit(rd.costs(rows, event), b) - rd.hit(rd.costs(base, event), b)
+                lo, hi = interval(d, base.cluster.to_numpy())
+                cells.append("identical on every question (both have read the whole pool)" if not d.any() else
+                             f"{d.mean():+.3f} [{lo:+.3f}, {hi:+.3f}] {_verdict(lo, hi)}")
+            lines.append(f"| EventMemory's defaults ({core[0]}, L 20, expand_context 0) | " + " | ".join(cells) + " |")
+        cells = []
+        for b in budgets:
+            rc, rv, fc, fv = best.overall(r, m, event, b)
+            if rc is None or fc is None:
+                cells.append("–")
+                continue
+            d = rd.hit(rd.costs(r.rows(*rc), event), b) - rd.hit(rd.costs(r.rows(*fc), event), b)
+            lo, hi = interval(d, r.rows(*fc).cluster.to_numpy())
+            cells.append(f"{rv:.3f} vs {fv:.3f}: {d.mean():+.3f} [{lo:+.3f}, {hi:+.3f}] {_verdict(lo, hi)} "
+                         f"({rc[1].split('@')[1]} vs {fc[1].replace('first_stage', 'first stage')})")
+        lines.append("| best settings, each side (section 15; leans optimistic) | " + " | ".join(cells) + " |")
+        out += lines + [""]
+        point, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=event, fixed=core)
+        targets = list(frontier.TARGETS)
+        prices = []
+        for t in SUMMARY_TARGETS:
+            if t not in targets:
+                continue
+            k = targets.index(t)
+            p, a, z = (x[k] * price(m) for x in (point, lo, hi))
+            text = ("never" if not np.isfinite(p) or p >= 1e11 else "at any price" if p == 0 else f"${p:.2f}/M")
+            if text.startswith("$") and np.isfinite(a) and np.isfinite(z):
+                text += f" [{a:.2f}, {'never' if z >= 1e11 * price(m) else f'{z:.2f}'}]"
+            prices.append(f"{t:.0%}: {text}")
+        out.append(f"Break-even LLM input price (reranking is cheaper above it; {core[0]}, expand_context {core[1]}, "
+                   f"{m} at ${price(m):g}/M): " + "; ".join(prices) + ". Section 7 and cost_saving.png give every target.\n")
+    pool = r.pool_depth(core[0], r.models[0], "rerank")
+    bound = r.rows(core[0], f"bound@{pool}") if pool else None
+    ceiling = (f" The reranker's pool ({pool[1:]} seeds) holds all the evidence for "
+               f"{rd.reachable(rd.costs(bound, event)).mean():.0%} of questions (the bound), so no reranker of it can do "
+               "better." if bound is not None and not bound.empty else "")
+    out += ["Recommended EventMemory settings per budget: section 14. Every setting is chosen once for all questions "
+            "(never per question), on the same questions it is measured on (no dev split): the best-settings line leans "
+            "optimistic." + ceiling + "\n"]
+    return out
+
+
 def write(r: Results, event: str = "first") -> str:
     head = [f"# {r.dataset} · {r.scope} · {r.variant} · {r.sample} · {_name(event)}\n", GLOSSARY,
             f"Embedder {r.embedder}. {r.df.qid.nunique()} questions, all evaluated (no dev split). "
             f"Rerankers: {', '.join(r.models) or 'none'}.\n"]
-    body = (first_stage(r, event) + headroom(r, event) + equal_reader_tokens(r, event) + token_savings(r, event)
+    body = (summary(r, event) + first_stage(r, event) + headroom(r, event) + equal_reader_tokens(r, event) + token_savings(r, event)
             + overfetch(r, event) + equal_reranker_tokens(r, event) + (worth_it(r, event) if event == "every" else [])
             + chunkers(r, event) + query_types(r, event) + help_harm(r, event) + expansion(r, event)
-            + equal_counts(r, event) + settings(r, event)
+            + equal_counts(r, event) + settings(r, event) + best_settings(r, event)
             + (latency(r) if event == "every" else []))
     path = SUMMARY / r.embedder / f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}__{event}.md"
     path.parent.mkdir(parents=True, exist_ok=True)

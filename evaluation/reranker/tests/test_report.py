@@ -82,3 +82,15 @@ def test_share_readings_sit_between_the_event_readings():
     for target, budget in zip((0.3, 0.6), rd.min_budgets(c, np.asarray([0.3, 0.6])), strict=True):
         if np.isfinite(budget):
             assert rd.coverage(c, [budget])[0] >= target - 1e-9 and rd.coverage(c, [budget - 1])[0] < target
+
+
+def test_reachable_counts_only_finite_costs():
+    import numpy as np
+
+    from rbench.report import readings as rd
+
+    events = np.asarray([10.0, np.inf, 300.0])
+    assert rd.reachable(events).tolist() == [1.0, 0.0, 1.0]
+    shares = np.empty(2, dtype=object)
+    shares[:] = [np.asarray([5.0, np.inf]), np.asarray([np.inf])]
+    assert rd.reachable(shares).tolist() == [0.5, 0.0]
