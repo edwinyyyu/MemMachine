@@ -135,15 +135,17 @@ def test_ingest_stops_cleanly_and_the_partition_is_encoded_again(tmp_path, monke
     partial = asyncio.run(broke())
     assert partial > 0  # the first batch was written before the failure: a half-written partition
     paid = len(state["sent"])
-    assert cached() == len(set(state["sent"])) > 0  # what was embedded before the failure is kept
+    paid_unique = len(set(state["sent"]))
+    assert cached() == paid_unique > 0  # what was embedded before the failure is kept
     state.update(broke=False, sent=[])
     whole, hits = asyncio.run(rerun(tmp_path / "stores"))
     again = len(state["sent"])
-    assert cached() == 0  # released once the partition is stored
+    assert cached() == len(set(state["sent"])) + paid_unique  # kept: every text embedded so far
     state["sent"] = []
     clean, _ = asyncio.run(rerun(tmp_path / "clean"))
     assert whole == clean > partial and len(hits) == 5  # nothing doubled, nothing missing; it searches
-    assert paid + again == len(state["sent"])  # the rerun paid only for what was never embedded
+    assert paid + again == cached()  # every text paid exactly once: the rerun paid only for what was never embedded
+    assert len(state["sent"]) == 0  # and a clean encoding of the same texts elsewhere costs nothing (the cache is kept)
 
 
 def _rerank_with(handler, tmp_path, monkeypatch, docs: int = 40, queries: int = 25):

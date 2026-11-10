@@ -39,11 +39,14 @@ MAC_EMBED_TOK_PER_S = 10500
 # table 92 B (text-free format). An approximation from one store: segments.sqlite's fixed part
 # is not separately measured at other lengths.
 INDEX_EXTRA, SEGMENT_ROW, VECTOR_ROW, TABLE_ROW = 8, 835, 163, 92
+CACHE_ROW = 60  # the embedding cache's key and row besides the float32 vector (memory.EmbeddingCache, kept)
 
 
 def disk_bytes(segments: float, chars: float, dims: int) -> float:
-    """Estimated disk of `segments` stored segments averaging `chars` characters."""
-    return segments * (2 * dims + INDEX_EXTRA + SEGMENT_ROW + chars + VECTOR_ROW + TABLE_ROW)
+    """Estimated disk of `segments` stored segments averaging `chars` characters: the index
+    (float16), the segment and vector stores, the segment table, and the kept embedding cache
+    (float32 vector and key)."""
+    return segments * (2 * dims + INDEX_EXTRA + SEGMENT_ROW + chars + VECTOR_ROW + TABLE_ROW + 4 * dims + CACHE_ROW)
 
 
 IN_FLIGHT = 16  # the adaptive limit's start (limits.START): it grows while DeepInfra allows, so hours are an upper bound

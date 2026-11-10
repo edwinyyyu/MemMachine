@@ -205,9 +205,10 @@ def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
     async def through_memmachine() -> np.ndarray:
         embedder_ = QueryCachingEmbedder(embedder)
         try:  # through the API every time: the documents' cached vectors are dropped before and after
-            embedder_._cache.drop(EmbeddingCache.key(t) for t in CARD_DOCUMENTS)
+            keys = [EmbeddingCache.key(t) for t in CARD_DOCUMENTS]
+            embedder_._cache.drop(keys)
             vectors = np.asarray(await embedder_._ingest_embed(CARD_DOCUMENTS), dtype=np.float64)
-            embedder_.release()
+            embedder_._cache.drop(keys)
             return vectors
         finally:
             await embedder_.aclose()

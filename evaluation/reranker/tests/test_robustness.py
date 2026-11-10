@@ -170,3 +170,52 @@ def test_an_unreadable_depth_file_counts_as_missing(tmp_path, monkeypatch):
     dbs.replace_atomically(p, lambda t: t.write_text(json.dumps({"summary": {"fill": {}}, "per_query": {}})))
     assert depth._read("e", "d", "c", "s") is not None and not list(tmp_path.rglob("*.partial*"))
     assert np.isfinite(1.0)
+
+
+def test_vectors_survive_losing_the_stores(tmp_path, monkeypatch):
+    """The embedding cache is kept: delete a finished partition's stores and index files and
+    re-ingest the same events, and nothing is embedded again; the rebuilt index ranks the same."""
+    import shutil
+
+    from tests.test_memory import _events  # noqa: PLC0415
+
+    monkeypatch.setattr(memory, "SECRETS", tmp_path)
+    monkeypatch.setattr(memory, "EMBEDDINGS", tmp_path / "e")
+    monkeypatch.setattr(memory, "questions_path", lambda e: tmp_path / "q.jsonl")
+    monkeypatch.setattr(limits, "_LIMITS", {})
+    (tmp_path / "deepinfra_api_key").write_text("test")
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.append(len(body["input"]))
+        n = body.get("dimensions") or 1024
+        data = [{"object": "embedding", "index": i,
+                 "embedding": np.random.default_rng(len(t) * 7 + i).normal(size=n).tolist()}
+                for i, t in enumerate(body["input"])]
+        return httpx.Response(200, json={"object": "list", "data": data, "model": body["model"],
+                                         "usage": {"prompt_tokens": 1, "total_tokens": 1}})
+
+    import openai
+
+    real = openai.AsyncOpenAI
+    monkeypatch.setattr(memory.openai, "AsyncOpenAI", lambda **kw: real(
+        http_client=REAL_CLIENT(transport=httpx.MockTransport(handler)), **kw))
+    events = _events(30)
+    root = tmp_path / "stores"
+
+    async def ingest_and_query() -> list[str]:
+        async with Memory("qwen3-8b-di", "synthetic", "seg80", root=root) as m:
+            assert await m.ingest("h", events)
+            partition = await (await m.event_memory()).open_or_create_partition("h")
+            result = await partition.query("the price", vector_search_limit=10)
+            return [s.block.text for c in result.scored_segment_contexts for s in c.segments]
+
+    first = asyncio.run(ingest_and_query())
+    documents = [n for n in sent]
+    assert documents
+    shutil.rmtree(root)  # both SQLite stores, every index file, the done markers: gone
+    sent.clear()
+    again = asyncio.run(ingest_and_query())
+    assert sent == [1] or sent == []  # at most the search's question (it is cached too after the first run)
+    assert again == first

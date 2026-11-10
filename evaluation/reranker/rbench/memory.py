@@ -282,20 +282,21 @@ class EmbeddingCache:
     """Document vectors by content, like the score cache: sha1 of the exact text EventMemory
     sends (the deriver's output) -> its vector, in data/embeddings/<embedder>__<setup>.sqlite,
     where the setup hashes everything that changes a vector (the model, server, dimensions asked
-    and kept, prompts, MemMachine's max input length).
+    and kept, prompts, MemMachine's max input length, the stored precision).
 
-    Each request's vectors are written as it returns, so a failure mid-partition keeps what was
-    paid for: the rerun deletes the half-written partition, encodes it again, and pays only for
-    the texts that were never embedded. Vectors are kept as the float64 the API returned, so a
-    re-encoding stores exactly what the first would have. A partition's rows are dropped once
-    its done marker is written (Memory.ingest), so the cache holds only the partitions in
-    flight, never a second copy of the index: duplicate texts are paid once among those, and a
-    duplicate in a later partition, or re-encoding a finished partition whose stores were
-    deleted, pays again."""
+    Kept permanently (the user, 2026-11-10: the vectors must survive a failure of EventMemory's
+    storage layers and be reusable without its id mappings), so re-encoding the same chunking
+    and derivation from nothing costs no embedding even if both SQLite stores and every index
+    file are lost; duplicate texts anywhere are paid once. Each request's vectors are written as
+    it returns, so a failure mid-partition keeps what was paid for. Stored as float32: the
+    engine casts each vector to float32 and normalizes it before rounding to float16, so a
+    float32 copy rebuilds the index bit for bit (a float16 copy would round twice and could
+    reorder near ties). About 4 KB per segment at 1,024 dimensions: 31 GB for LongMemEval-M at
+    seg500 (costs.estimate counts it)."""
 
     def __init__(self, spec: emb.Embedder) -> None:
         setup = json.dumps([spec.model, spec.url, spec.route, spec.request_dimensions, spec.dimensions, spec.query_prompt,
-                            spec.doc_prompt, spec.max_input_chars])
+                            spec.doc_prompt, spec.max_input_chars, "float32"])
         path = EMBEDDINGS / f"{spec.name}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = connect(path)
@@ -310,13 +311,13 @@ class EmbeddingCache:
         for start in range(0, len(keys), 900):  # SQLite's bound-parameter limit
             part = keys[start : start + 900]
             rows = self.db.execute(f"SELECT key, v FROM vectors WHERE key IN ({','.join('?' * len(part))})", part)
-            out.update({k: np.frombuffer(v, dtype=np.float64).tolist() for k, v in rows})
+            out.update({k: np.frombuffer(v, dtype=np.float32).tolist() for k, v in rows})
         return out
 
     def put(self, rows: dict[str, Sequence[float]]) -> None:
         with self.db:
             self.db.executemany("INSERT OR REPLACE INTO vectors VALUES (?, ?)",
-                                [(k, np.asarray(v, dtype=np.float64).tobytes()) for k, v in rows.items()])
+                                [(k, np.asarray(v, dtype=np.float32).tobytes()) for k, v in rows.items()])
 
     def drop(self, keys: Iterable[str]) -> None:
         keys = list(keys)
@@ -359,7 +360,6 @@ class QueryCachingEmbedder(Embedder):
         hosted = spec.key_file is not None
         self._gate = limits.Gate(limits.limit_for(f"embed:{spec.name}", spec.in_flight, adaptive=hosted))
         self._cache = EmbeddingCache(spec)
-        self._used: set[str] = set()  # document keys since the last release()
         self._path = questions_path(embedder)
         if str(self._path) not in _QUESTIONS:  # parsed once per process (about 10 MB of JSON lines)
             _QUESTIONS[str(self._path)] = _read_questions(self._path)
@@ -451,7 +451,6 @@ class QueryCachingEmbedder(Embedder):
 
         texts = [str(x) for x in inputs]
         keys = [EmbeddingCache.key(t) for t in texts]
-        self._used.update(keys)
         have = self._cache.get(set(keys))
         first = {}  # each text not cached yet, once: its position
         for i, k in enumerate(keys):
@@ -465,12 +464,6 @@ class QueryCachingEmbedder(Embedder):
             have.update(zip(first, await self._batches([inputs[i] for i in first.values()], self._inner._ingest_embed,
                                                        list(first)), strict=True))
         return [have[k] for k in keys]
-
-    def release(self) -> None:
-        """Drop the cached vectors of the partitions encoded since the last release (their done
-        markers are written: the stores hold them)."""
-        self._cache.drop(self._used)
-        self._used.clear()
 
     async def _search_embed(self, queries: list, max_attempts: int = 1) -> list[list[float]]:
         missing = [q for q in dict.fromkeys(queries) if q not in self._questions]
@@ -608,8 +601,6 @@ class Memory:
             await partition.encode_events(batch, format_options=format_options)
         self.done(key).parent.mkdir(parents=True, exist_ok=True)
         self.done(key).write_text(str(uuid.uuid4()))  # an encoding's stamp: its segment uuids are new each time
-        if isinstance(self._embedder, QueryCachingEmbedder):
-            self._embedder.release()  # the stores hold its vectors now
         return True
 
     async def _batches(self, events: list[Event], format_options: FormatOptions | None) -> list[list[Event]]:

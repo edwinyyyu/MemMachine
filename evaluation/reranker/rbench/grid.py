@@ -101,9 +101,13 @@ STAGES: dict[str, list[Run]] = {
     # whose histories embed locally in minutes; the questions are LongMemEval-M's.
     "format-test": [Run("longmemeval_s", "history", "question", ("seg500",), ("q06-local", "q06-local-raw"),
                         sample="proto", pool_seeds=50, expand=0)],
-    # Paid, cheap: every planned configuration on 100 questions first.
-    "lme-pilot": [replace(lme(("seg500",), ("q8",), e), sample="proto") for e in (0, 3)],
-    "lme-core": [lme(("seg500",), ("q8",), e) for e in (0, 3)],
+    # The minimal paid run (the user, 2026-11-10): the seeds scored by both the 4B and the 8B
+    # (rerank, then read the seeds or their windows at every expand_context, free), no windows
+    # scored. The pilot first: the same on 100 questions.
+    "lme-pilot": [replace(lme(("seg500",), ("q4", "q8"), 0), sample="proto")],
+    "lme-core": [lme(("seg500",), ("q4", "q8"), 0)],
+    # Optional, later: the reranker scoring each seed's expand_context-3 window (expand, then rerank).
+    "lme-windows": [lme(("seg500",), ("q8",), 3)],
     "lme-sizes": [lme(("seg250", "seg1000", "seg2000"), ("q8",), e) for e in (0, 3)],
     # Optional: the 0.6B as the cheap middle option.
     "lme-small": [lme(("seg500",), ("q06",), e) for e in (0, 3)],

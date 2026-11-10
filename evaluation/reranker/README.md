@@ -63,14 +63,15 @@ Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-size
 
 | stage | reranking (8B) | embedding (Qwen3-Embedding-8B) | total |
 |---|---|---|---|
-| lme-core (seg500: seeds $0.84, windows $0.94) | $1.78 | $6.29 | **$8.07** |
+| lme-pilot + lme-core, the minimal run (seg500, seeds only: 8B $0.84, 4B $0.42) | $1.26 | $6.29 | **$7.55** |
+| lme-windows (expand, then rerank at x3, 8B) | $0.94 | (shared) | $0.94 |
 | lme-sizes (seg250, seg1000, seg2000) | $7.17 | $18.75 | $25.92 |
 | lme-cut (cut355) | $1.80 | $6.48 | $8.28 |
 | all three | $10.75 | $31.52 | $42.27 |
 
 On 8 locally embedded LongMemEval-M histories at seg500, reading 200 seeds reaches 16,000 tokens for all 8 and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
 
-Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decision, 2026-11-09) is the core alone, about $8: seg500 with the 8B, plus the pilot and the checks. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
+Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decisions, 2026-11-09 and 2026-11-10) is the pilot and the core, about $7.55: seg500, the seeds scored by both the 4B and the 8B, no windows scored, plus the checks; disk about 58 GB with the kept embedding cache. `lme-windows` is optional. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
 
 Disk (`estimate` gives it per stage, 2026-11-10, LongMemEval-M with Qwen3-Embedding-8B's 1,024 dimensions: float16 index, segment store, segment tables): about 26 GB at 500 characters (lme-core; the size-matched cut355 the same), 48 GB at 250, 16 GB at 1,000 and 11 GB at 2,000 (lme-sizes 76 GB), so about 128 GB for every planned stage.
 
