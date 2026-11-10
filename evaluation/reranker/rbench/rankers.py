@@ -24,8 +24,9 @@ seeds and each is read with its window:
                   counts seeds, like every ranker's, so both scoring positions rerank the
                   same seeds (the same vector search limit).
   oracle+x        seeds whose window holds gold first (cheapest answer's seeds first)
-  bound, bound+x  not a ranking: the cheapest reading of the same pool any ranking could achieve,
-                  per reading (bounds.py; exact with seeds alone, a valid floor with windows)
+  bound         not a ranking: the cheapest reading of the same pool any ranking could achieve,
+                per reading, with seeds alone (bounds.py; none with windows: an exact one is
+                not computable here)
 
 A depth is a count of seeds ("n20"): EventMemory's vector_search_limit, how systems are
 configured. Equal reranker input is compared through each configuration's measured reranker
@@ -116,7 +117,6 @@ def for_models(models: list[str], expansions: tuple[int, ...] = (), depths: tupl
         out.append(Ranker("first_stage", expand=e))
         for d in depths:
             out.append(Ranker("oracle", depth=d, expand=e))
-            out.append(Ranker("bound", depth=d, expand=e))
             out += [Ranker("first_stage", depth=d, expand=e)] if limited_first_stage else []
             for m in models:
                 out += [Ranker("rerank", m, d, expand=e), Ranker("xrerank", m, d, expand=e)]

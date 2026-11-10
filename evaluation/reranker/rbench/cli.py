@@ -8,6 +8,8 @@
                                      a dry run of one query through every measurement
   estimate <stage> ...               reranker tokens, DeepInfra dollars and hours per stage
   depth <dataset> <chunking> <sample>  how deep the vector search must go to hold all evidence (depth.py)
+  fit-cut [dataset ...] [--target seg500]   the simple chunker's length whose mean segment matches
+                                     TextSegmenter's (sizes.py; CPU only, before embedding; config.CUT)
   run <stage> [--only prepare|rerank|report] [--models m,...] [--max-usd X]
                                      --models runs the stage with these registered models instead of its own
                                      --max-usd caps TOTAL DeepInfra reranker spend, all models and runs so far
@@ -77,6 +79,9 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("depth")
     for name in ("dataset", "chunking", "sample"):
         p.add_argument(name)
+    p = sub.add_parser("fit-cut")
+    p.add_argument("datasets", nargs="*", default=["longmemeval_s", "longmemeval_m"])
+    p.add_argument("--target", default="seg500")
     p = sub.add_parser("estimate")
     p.add_argument("stages", nargs="+", choices=grid.STAGES)
     p = sub.add_parser("run")
@@ -172,6 +177,16 @@ def main(argv: list[str] | None = None) -> None:
         from rbench import depth
 
         print(json.dumps(depth.measure(args.embedder or EMBEDDER, args.dataset, args.chunking, args.sample), indent=1))
+    elif args.command == "fit-cut":
+        from rbench import config, sizes
+
+        for name in args.datasets:
+            f = sizes.fit(name, args.target)
+            recorded = config.CUT.get((name, args.target))
+            print(json.dumps({"dataset": name, "target": f.target, "fitted": f.chunking,
+                              f"{f.target} mean chars": round(f.target_chars, 1),
+                              f"{f.chunking} mean chars": round(f.cut_chars, 1), "questions": f.questions,
+                              "config.CUT": recorded, "matches config": recorded == f.length}))
     elif args.command == "estimate":
         for stage in args.stages:  # each at its own first stage unless --embedder says otherwise
             runs = grid.STAGES[stage]

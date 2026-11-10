@@ -39,7 +39,7 @@ uv sync
 .venv/bin/python -m pytest -q tests
 .venv/bin/python -m rbench prepare longmemeval_m longmemeval_s   # download and split into histories
 .venv/bin/python -m rbench run lme-test                          # free: local, 8 LongMemEval-S histories
-.venv/bin/python -m rbench estimate lme-core lme-sizes lme-cut         # paid stages use Qwen3-Embedding-8B
+.venv/bin/python -m rbench estimate lme-pilot lme-core               # the minimal paid run; uses Qwen3-Embedding-8B
 .venv/bin/python -m rbench show longmemeval_s --sample tiny --chart coverage,rpf   # zoomable chart windows from saved results
 ```
 
@@ -70,7 +70,7 @@ Priced 2026-11-09 for the 8B at DeepInfra's $0.05/M, before the paid embeddings 
 
 The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Windows cost about as much as seeds: fewer of them fill the axis, but each pair is longer.
 
-The first stage is Qwen3-Embedding-8B on DeepInfra (METHODOLOGY section 3), and embedding now costs more than reranking: about $6.29 for the core's segment length, $18.75 for the three other lengths and $6.13 for the simple chunker (`estimate`, 2026-11-09; embeddinggemma was about $1.37 per length). With the 8B the full plan comes to about $40 (embeddings about $31, reranking about $8.40); the 4B and 0.6B add about $6. The smallest useful run, the core alone, is about $8.
+The first stage is Qwen3-Embedding-8B on DeepInfra (METHODOLOGY section 3), and embedding now costs more than reranking: about $6.29 for the core's segment length, $18.75 for the three other lengths and $6.13 for the simple chunker (`estimate`, 2026-11-09; embeddinggemma was about $1.37 per length). With the 8B the full plan comes to about $40 (embeddings about $31, reranking about $8.40); the 4B and 0.6B add about $6. The minimal run (the user's decision, 2026-11-09) is the core alone, about $8: seg500 with the 8B, plus the pilot and the checks. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3); the cut prices above were measured at cut500, before the fit; `estimate lme-cut` re-prices cut355.
 
 Disk: keeping every history's vectors takes ~12 GB at 500 characters (float16); the four lengths together are estimated at 40–50 GB.
 

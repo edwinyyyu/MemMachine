@@ -6,7 +6,8 @@ searching its own history through MemMachine's EventMemory itself (memory.py, hi
 Varied:
   segment size     500 characters (EventMemory's default) in the core; 250, 1,000 and 2,000
   chunker          EventMemory's TextSegmenter (seg<N>, recursive splitting) throughout; the simple
-                   chunker (cut<N>, a cut every N characters within each turn) as an option
+                   chunker (cut<M>, a cut every M characters within each turn) as an option, its M
+                   fitted so its measured mean segment matches seg<N>'s (sizes.py, config.CUT)
   reranking        none; the seeds (rerank, then read seeds or expand them); or each seed's
                    expand_context-3 window (expand, then rerank: what EventMemory's query does
                    whenever expand_context > 0; its default is 0)
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from rbench.config import cut_for
 from rbench.datasets import info
 from rbench.embedding import PAID as PAID_EMBEDDER
 
@@ -65,6 +67,7 @@ def runs(datasets, chunkings, models, **settings) -> list[Run]:
 
 
 LME = "longmemeval_m"
+LMS = "longmemeval_s"
 
 
 def lme(chunkings: tuple[str, ...], models: tuple[str, ...], expand: int, **settings) -> Run:
@@ -82,12 +85,16 @@ def lme(chunkings: tuple[str, ...], models: tuple[str, ...], expand: int, **sett
 # the pilot's 100 are part of the core's 470.
 STAGES: dict[str, list[Run]] = {
     # Free and fast: the local 0.6B on 8 LongMemEval-S histories, to test the pipeline itself.
-    "lme-test": [Run("longmemeval_s", "history", "question", ("seg500", "cut500"), ("q06-local",), sample="tiny",
+    "lme-test": [Run(LMS, "history", "question", ("seg500", cut_for(LMS, "seg500")), ("q06-local",), sample="tiny",
                      expand=e) for e in (0, 3)],
-    # Free, about an hour on this machine: the local 0.6B on 100 LongMemEval-S questions at the
-    # pools the paid run uses (fill depth), to see full-depth curves before paying.
-    "lme-s-proto": [Run("longmemeval_s", "history", "question", ("seg500",), ("q06-local",), sample="proto",
-                        expand=e) for e in (0, 3)],
+    # Free, about an hour on this machine per chunking: the local 0.6B on 100 LongMemEval-S
+    # questions at the pools the paid run uses (fill depth), to see full-depth curves before
+    # paying; EventMemory's segments and the size-matched simple chunker.
+    "lme-s-proto": [Run(LMS, "history", "question", ("seg500", cut_for(LMS, "seg500")), ("q06-local",),
+                        sample="proto", expand=e) for e in (0, 3)],
+    # Free, longer (hours of the local 0.6B): the other segment lengths on the same questions.
+    "lme-s-sizes": [Run(LMS, "history", "question", ("seg250", "seg1000", "seg2000"), ("q06-local",),
+                        sample="proto", expand=e) for e in (0, 3)],
     # Free: the reranker's input format on the local 0.6B (the user's rule: whichever of the model
     # card's prompt and raw pairs does better on a small sample becomes the format). LongMemEval-S,
     # whose histories embed locally in minutes; the questions are LongMemEval-M's.
@@ -99,9 +106,9 @@ STAGES: dict[str, list[Run]] = {
     "lme-sizes": [lme(("seg250", "seg1000", "seg2000"), ("q8",), e) for e in (0, 3)],
     # Optional: the 0.6B as the cheap middle option.
     "lme-small": [lme(("seg500",), ("q06",), e) for e in (0, 3)],
-    # Optional: the simple chunker at EventMemory's default limit. Reports state each chunking's
-    # measured size, and comparisons that pair by size use the measured one.
-    "lme-cut": [lme(("cut500",), ("q8",), e) for e in (0, 3)],
+    # Optional: the simple chunker, size-matched to EventMemory's default segments (its length
+    # fitted to their measured mean: sizes.py). Reports state each chunking's measured size.
+    "lme-cut": [lme((cut_for(LME, "seg500"),), ("q8",), e) for e in (0, 3)],
 }
 
 

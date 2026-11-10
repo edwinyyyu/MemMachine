@@ -9,9 +9,9 @@ How a ranker reads (reading.admission): contexts in its order, each admitted who
 its seed first), so what it has read when an event happens is some whole contexts plus a
 prefix of one more, rendered with every pool context in the query result.
 
-Seeds alone (expand_context 0): every context is one seed, its own component and its own run,
-so a set S of seeds costs  sum(inner + run - NEWLINE) + SEPARATOR x (|S| - 1):  additive. The
-bounds are exact optimums over subsets of the pool:
+Seeds alone (expand_context 0) only. Every context is one seed, its own component and its own
+run, so a set S of seeds costs  sum(inner + run - NEWLINE) + SEPARATOR x (|S| - 1):  additive.
+The bounds are exact optimums over subsets of the pool:
   first        the cheapest evidence span read alone (all its segments in the pool)
   first_touch  the cheapest evidence segment in the pool
   every        all segments of the cheapest answer
@@ -21,14 +21,16 @@ bounds are exact optimums over subsets of the pool:
   share        spans in cheapest-first order (picking the cheapest k spans is optimal for
                additive costs): the k-th turn is complete at the sum of the k cheapest
   share_touch  the same with each span's cheapest segment
-With windows (expand_context > 0) the rendered cost is not monotone in what is read: a
-segment that joins two components can save a header, so an exact search would have to
-consider contexts that hold no evidence. The bound there is the evidence's own text tokens
-plus the cheapest single header in the pool: valid for every ranker, but loose (no rendering,
-no other headers, nothing between). Rows record which kind each is (`exact`).
+Rows record whether each is exact (`exact`: false only where spans share segments).
 
-A span with a segment outside the pool (the top L seeds, or the union of their windows) cannot
-be read in full: inf. Touching it needs one of its segments in the pool.
+There is no bound with windows (expand_context > 0): an exact one is not computable here. The
+rendered cost is not monotone in what is read (a segment that joins two components can save a
+header), so an exact search would have to consider contexts that hold no evidence, and a valid
+floor (the evidence's own text plus one header) was exact for no question, so it said nothing
+(the user's decision, 2026-11-09: draw no bound with windows).
+
+A span with a segment outside the pool (the top L seeds) cannot be read in full: inf.
+Touching it needs one of its segments in the pool.
 """
 
 from __future__ import annotations
@@ -46,28 +48,24 @@ def _alternatives(g: Gold) -> list[list[list[int]]]:
     return [[[int(c) for c, _ in span] for span in alt] for alt in g.alternatives]
 
 
-def bound(g: Gold, pool: set[int], inner: np.ndarray, run: np.ndarray, expand: int) -> dict:
+def bound(g: Gold, pool: set[int], inner: np.ndarray, run: np.ndarray) -> dict:
     """{first, every, first_touch, every_touch: cost; share_full, share_touch: costs whose
-    readings.hit at any budget is the best share any ranker reaches; exact: bool} for one pool."""
-    _, newline, separator = constants()
+    readings.hit at any budget is the best share any ranker reaches; exact: bool} for one
+    pool of seeds read alone."""
+    _, newline, sep = constants()
     alts = _alternatives(g)
-    if expand == 0:  # a seed read alone is its own component and run
-        unit = {s: int(inner[s]) + int(run[s]) - newline for s in pool}
-        floor, sep = 0.0, separator
-    else:  # text only; at least one header (the pool's cheapest) for the whole reading
-        unit = {s: int(inner[s]) for s in pool}
-        floor, sep = float(min((int(run[s]) for s in pool), default=0) - newline), 0
+    unit = {s: int(inner[s]) + int(run[s]) - newline for s in pool}  # a seed read alone: its own component and run
 
     def cost(segments: set[int]) -> float:
         return sum(unit[s] for s in segments) + sep * max(0, len(segments) - 1)
 
-    exact = expand == 0
+    exact = True
     full = [[cost(set(span)) if span and all(s in pool for s in span) else INF for span in alt] for alt in alts]
     touch = [[min((unit[s] for s in span if s in pool), default=INF) for span in alt] for alt in alts]
-    first = min((c for alt in full for c in alt), default=INF) + floor
-    first_touch = min((c for alt in touch for c in alt), default=INF) + floor
+    first = min((c for alt in full for c in alt), default=INF)
+    first_touch = min((c for alt in touch for c in alt), default=INF)
     every = min((cost({s for span in alt for s in span}) if all(np.isfinite(f)) else INF
-                 for alt, f in zip(alts, full, strict=True)), default=INF) + floor
+                 for alt, f in zip(alts, full, strict=True)), default=INF)
     every_touch = INF
     curves_full, curves_touch = [], []
     for alt, f, t in zip(alts, full, touch, strict=True):
@@ -76,23 +74,23 @@ def bound(g: Gold, pool: set[int], inner: np.ndarray, run: np.ndarray, expand: i
             exact = False  # spans share segments: a set cover; use valid floors instead
         if all(np.isfinite(t)):
             value = sum(t) + sep * max(0, len(t) - 1) if disjoint else max(t)
-            every_touch = min(every_touch, value + floor)
+            every_touch = min(every_touch, value)
         # spans sharing segments may cost less together than apart: completing k of them costs
         # at least the k-th cheapest span alone (a valid floor)
-        curves_full.append(_completions(sorted(f), sep, floor) if disjoint else [c + floor for c in sorted(f)])
-        curves_touch.append(_completions(sorted(t), sep, floor) if disjoint
-                            else [min(t) + floor if np.isfinite(min(t)) else INF] * len(t))
+        curves_full.append(_completions(sorted(f), sep) if disjoint else sorted(f))
+        curves_touch.append(_completions(sorted(t), sep) if disjoint
+                            else [min(t) if np.isfinite(min(t)) else INF] * len(t))
     return {"first": first, "every": every, "first_touch": first_touch, "every_touch": every_touch,
             "share_full": _best(curves_full), "share_touch": _best(curves_touch), "exact": exact}
 
 
-def _completions(costs: list[float], separator: float, floor: float) -> list[float]:
+def _completions(costs: list[float], separator: float) -> list[float]:
     """The cost at which the 1st, 2nd, ... span of an answer is complete when its spans are
-    read cheapest first (separators between seeds; the windows' header floor once)."""
+    read cheapest first (separators between seeds)."""
     out, total = [], 0.0
     for k, c in enumerate(costs):
         total = total + c + (separator if k else 0.0) if np.isfinite(c) and np.isfinite(total) else INF
-        out.append(total + floor if np.isfinite(total) else INF)
+        out.append(total)
     return out
 
 

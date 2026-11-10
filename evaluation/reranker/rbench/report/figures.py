@@ -350,14 +350,14 @@ def _series(r: Results, c: str, limit: str, e: int, bound: bool = False) -> list
     scoring the seeds (up caltrop: rerank, then read the seeds or their windows); each model
     scoring the windows (down caltrop: expand, then rerank; only where they were scored). All
     lines are solid. bound adds the bound (bounds.py): the cheapest reading of the same pool any
-    ranking could achieve, exact with seeds alone and a floor with windows."""
+    ranking could achieve, with seeds alone only (none with windows)."""
     tail = f"+x{e}" if e else ""
     out = [("first_stage", f"first_stage@{limit}{tail}", SERIES["first_stage"], "-")]
     out += [(m, f"rerank:{m}@{limit}{tail}", SERIES[m], "-") for m in r.models_at(c)]
     if e:
         out += [(f"{m}~windows", f"xrerank:{m}@{limit}{tail}", SERIES[m], "-") for m in r.models_at(c)]
-    if bound:
-        out.append(("bound", f"bound@{limit}{tail}", ORACLE, "-"))
+    if bound and not e:
+        out.append(("bound", f"bound@{limit}", ORACLE, "-"))
     return [x for x in out if not r.rows(c, x[1]).empty]
 
 
@@ -413,23 +413,19 @@ def _ranker_groups(r: Results, keys: set[str]) -> list[tuple[str, list, list[str
 
 SAME_LIMIT = ("Each panel is one vector search limit L and one expand_context E: every line reads only the top L seeds of the "
               "same vector search, each with its window of E neighbouring segments, in vector order (first stage) or reranked.")
-BOUND = (" Gray: the bound, the cheapest reading of the same pool any ranking could achieve (no reranker's line can pass "
-         "above it). With seeds alone (expand_context 0) it is exact: the evidence seeds read first, each reading's "
-         "cheapest way. With windows it is a floor: the evidence's own text and one header, nothing else rendered, so "
-         "it is loose. Where the bound levels off below 1, the rest of the evidence is not among the L seeds: a ceiling "
-         "set by the vector search, not by the reader budget (report section 2 gives that share per L).")
+BOUND = (" Gray, with seeds alone (expand_context 0): the bound, the cheapest reading of the same pool any ranking could "
+         "achieve (no reranker's line can pass above it): the evidence seeds read first, each reading's cheapest way. "
+         "Where it levels off below 1, the rest of the evidence is not among the L seeds: a ceiling set by the vector "
+         "search, not by the reader budget (report section 2 gives that share per L). No bound with windows: an exact "
+         "one isn't computable here.")
 
 
 def _bound_label(r: Results) -> str:
     """The bound's legend label, with the share of questions it is exact for."""
-    rows = r.df[r.df.kind == "bound"]
+    rows = r.df[(r.df.kind == "bound") & (r.df.expand == 0)]  # simulations before 2026-11-09 have window floors
     if rows.empty:
         return "bound"
-    seeds, windows = rows[rows.expand == 0], rows[rows.expand > 0]
-    parts = [f"exact for {seeds.bound_exact.astype(bool).mean():.0%} of questions with seeds alone"] if not seeds.empty else []
-    if not windows.empty:
-        parts.append(f"a floor with windows (exact for {windows.bound_exact.astype(bool).mean():.0%})")
-    return "bound over the same pool: " + "; ".join(parts)
+    return f"bound over the same pool, seeds alone (exact for {rows.bound_exact.astype(bool).mean():.0%} of questions)"
 TOKENS_EQUAL = "Held equal: reader tokens, the vector search limit and the expansion (panel). Not equal: reranker tokens. " + SAME_LIMIT
 
 

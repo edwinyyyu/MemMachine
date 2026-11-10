@@ -48,6 +48,20 @@ class Evaluation:
 
 
 EVAL = Evaluation()
+
+# The simple chunker's length fitted to TextSegmenter's measured mean segment (sizes.py:
+# `python -m rbench fit-cut`, 2026-11-09, over every question). seg500 averages 299.2
+# characters per segment on LongMemEval-S (cut354: 299.1) and 299.1 on LongMemEval-M (cut355:
+# 299.4); TextSegmenter splits at natural boundaries under its limit, so the cut is shorter.
+CUT = {("longmemeval_s", "seg500"): 354, ("longmemeval_m", "seg500"): 355}
+
+
+def cut_for(dataset: str, chunking: str) -> str:
+    """The simple chunker size-matched to a TextSegmenter chunking (seg<N>): the fitted cut<M>,
+    or cut<N> where no fit is recorded."""
+    return f"cut{CUT.get((dataset, chunking), chunking[3:])}"
+
+
 READINGS = ("first", "every", "first_touch", "every_touch", "share", "share_touch")  # report/readings.py
 
 

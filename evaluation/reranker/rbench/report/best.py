@@ -21,7 +21,8 @@ Factors (values that were not simulated are skipped):
   m             segments read (EventMemory's max_num_segments), at the deepest pool, within the
                 budget too (events)
   segment       the segment length (seg<N>), each at its own deepest pool
-  chunker       EventMemory's TextSegmenter (seg<N>) or the simple chunker (cut<N>), same N
+  chunker       EventMemory's TextSegmenter (seg<N>) or the simple chunker size-matched to it
+                (cut<M>, M fitted so the mean segments match: config.cut_for)
   reader sees   the seeds alone, or their windows at each expand_context (rerank, then expand)
   reranker sees the seeds (rerank, then expand) or the windows (expand, then rerank), at
                 expand_context 3, each at its own pool
@@ -33,6 +34,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from rbench import config
 from rbench.report import frontier
 from rbench.report import readings as rd
 from rbench.report.data import Results
@@ -108,8 +110,7 @@ def factors(r: Results, model: str, reading: str, budget: float) -> dict[str, li
     out["segment"] = [v for c in r.chunkings if c.startswith("seg")
                       if (d := r.pool_depth(c, model, "rerank"))
                       if (v := value(c, c, f"rerank:{model}@{d}", f"first_stage@{d}"))]
-    n = core[3:]
-    out["chunker"] = [v for c in (f"seg{n}", f"cut{n}") if c in r.chunkings
+    out["chunker"] = [v for c in (core, config.cut_for(r.dataset, core)) if c in r.chunkings
                       if (d := r.pool_depth(c, model, "rerank"))
                       if (v := value(c, c, f"rerank:{model}@{d}", f"first_stage@{d}"))]
     if pool:

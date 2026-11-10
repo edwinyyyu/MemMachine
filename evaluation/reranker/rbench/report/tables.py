@@ -50,8 +50,10 @@ def _cov(rows, event: str, budgets) -> list[str]:
 
 
 def _pairs(r: Results) -> list[tuple[str, str]]:
-    """(seg<N>, cut<N>): EventMemory's TextSegmenter and the simple chunker at the same limit."""
-    return [(c, "cut" + c[3:]) for c in r.chunkings if c.startswith("seg") and "cut" + c[3:] in r.chunkings]
+    """(seg<N>, cut<M>): EventMemory's TextSegmenter and the simple chunker size-matched to it
+    (config.cut_for: M fitted so the mean segments match)."""
+    return [(c, config.cut_for(r.dataset, c)) for c in r.chunkings
+            if c.startswith("seg") and config.cut_for(r.dataset, c) in r.chunkings]
 
 
 def _sizes(r: Results, a: str, b: str) -> str:
@@ -67,8 +69,8 @@ def first_stage(r: Results, event: str) -> list[str]:
     out = ["## 1. First stage alone (embedding and chunking)\n",
            f"{_name(event)} coverage by reader budget, no reranker"
            + "; `+xE` reads each seed's EventMemory window (expand_context E)"
-           + (". Δ rows: the simple chunker minus EventMemory's TextSegmenter at the same character limit, with both "
-              "measured sizes (the limit is not the size).\n" if _pairs(r) else ".\n"),
+           + (". Δ rows: the simple chunker minus EventMemory's TextSegmenter, size-matched (the cut's length fitted so "
+              "its mean segment matches TextSegmenter's: sizes.py), with both measured sizes.\n" if _pairs(r) else ".\n"),
            "Measured unit: the chunker's limit, the mean segment of the partitions searched and of the seeds "
            "retrieved; for windows, the mean window of the seeds retrieved (segment-text tokens).\n"
            if any(c.startswith(("seg", "cut")) for c in r.chunkings) else "",
@@ -82,7 +84,7 @@ def first_stage(r: Results, event: str) -> list[str]:
                            + " | ".join(_cov(rows, event, config.EVAL.columns)) + " |")
     for seg, cut in _pairs(r):
         a, b = r.rows(seg, "first_stage"), r.rows(cut, "first_stage")
-        out.append(f"| Δ cut−seg {seg[3:]} | {_sizes(r, seg, cut)} | " + " | ".join(
+        out.append(f"| Δ {cut}−{seg} | {_sizes(r, seg, cut)} | " + " | ".join(
             delta(rd.hit(rd.costs(b, event), x) - rd.hit(rd.costs(a, event), x), a.cluster.to_numpy())
             for x in config.EVAL.columns) + " |")
     return out + [""]
@@ -135,8 +137,8 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
            "At each vector search limit L, every row reads only the top L seeds of the same vector search: in vector "
            "order (`first_stage@nL`) or reranked (`rerank`: the seeds; `xrerank`: their windows, expand then rerank). "
            "`+xE`: read with EventMemory windows of expand_context E. Δ: minus the first stage at the same L and expansion "
-           "[95%]. `bound` rows are the cheapest reading of the same pool any ranking could achieve, for this reading "
-           "(bounds.py): exact with seeds alone, a floor with windows (the evidence's own text and one header).\n",
+           "[95%]. `bound` rows are the cheapest reading of the same pool any ranking could achieve, for this reading, with "
+           "seeds alone (bounds.py); there is none with windows, since an exact one isn't computable here.\n",
            "| chunking | ranker | pairs | " + " | ".join(map(str, config.EVAL.columns)) + " | "
            + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |", "|---|---|---|" + "---|" * (len(config.EVAL.columns) + len(config.EVAL.budgets))]
     for c in r.chunkings:
@@ -146,7 +148,7 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
                 base = r.rows(c, f"first_stage@{limit}{tail}")
                 names = ([f"first_stage@{limit}{tail}"] + [f"rerank:{m}@{limit}{tail}" for m in r.models_at(c)]
                          + ([f"xrerank:{m}@{limit}{tail}" for m in r.models_at(c)] if e else [])
-                         + [f"bound@{limit}{tail}"])
+                         + ([] if e else [f"bound@{limit}"]))
                 for name in names:
                     rows = r.rows(c, name)
                     if rows.empty or base.empty:
@@ -275,9 +277,10 @@ def chunkers(r: Results, event: str) -> list[str]:
     if not _pairs(r):
         return []
     out = ["## 8. Chunkers with a reranker: the simple chunker minus EventMemory's TextSegmenter\n",
-           "At the same character limit; measured mean segments (retrieved seeds) are given per pair, since the "
-           "recursive splitter's segments run well under its limit.\n",
-           "| limit | measured sizes (seg vs cut) | ranker | " + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |",
+           "Size-matched: the cut's length is fitted so its mean segment over the partitions searched matches "
+           "TextSegmenter's (sizes.py), since the recursive splitter's segments run well under its limit. Measured mean "
+           "segments of the seeds retrieved are given per pair.\n",
+           "| pair | measured sizes (seg vs cut) | ranker | " + " | ".join(f"Δ@{b}" for b in config.EVAL.budgets) + " |",
            "|---|---|---|" + "---|" * len(config.EVAL.budgets)]
     for c, other in _pairs(r):
         shared = [m for m in r.models_at(c) if m in r.models_at(other)]
@@ -286,7 +289,7 @@ def chunkers(r: Results, event: str) -> list[str]:
             a, b = r.rows(c, name), r.rows(other, name)
             if a.empty or b.empty:
                 continue
-            out.append(f"| {c[3:]} | {_sizes(r, c, other)} | {name} | " + " | ".join(
+            out.append(f"| {c} vs {other} | {_sizes(r, c, other)} | {name} | " + " | ".join(
                 delta(rd.hit(rd.costs(b, event), x) - rd.hit(rd.costs(a, event), x), a.cluster.to_numpy())
                 for x in config.EVAL.budgets) + " |")
     return out + [""]

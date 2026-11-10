@@ -234,7 +234,7 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
         n = r.depth.chunks(seg.tokens[head]) if r.depth else 0
         if r.kind == "bound":  # the cheapest reading of the top n seeds' pool any ranking could achieve
             pool = {s for u in units[r.expand][:n] for s in u}
-            b = bounds.bound(g, pool, seg.inner, seg.run, r.expand)
+            b = bounds.bound(g, pool, seg.inner, seg.run)
             values = [b.get(f, np.nan) for f in metrics.FIELDS]
             records[r.id].append([0, 0.0, 0.0, 0, *values, np.nan, *sizes, unit_tokens[r.expand], b["share_full"],
                                   b["share_touch"], [], [], b["exact"],
