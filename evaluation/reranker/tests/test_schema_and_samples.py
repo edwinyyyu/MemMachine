@@ -1,5 +1,8 @@
 """The prepared-data format catches bad gold, and samples nest."""
 
+import pytest
+
+from rbench.paths import PREPARED
 from rbench.schema import validate
 
 
@@ -13,6 +16,8 @@ def test_validate_flags_out_of_bounds_and_unknown_docs():
     assert len(problems) == 2
 
 
+@pytest.mark.skipif(not all((PREPARED / d / "queries.jsonl").exists() for d in ("longmemeval_s", "longmemeval_m")),
+                    reason="needs LongMemEval-S and -M prepared")
 def test_samples_nest_in_one_hash_order():
     from rbench.samples import ORDER, sample
 

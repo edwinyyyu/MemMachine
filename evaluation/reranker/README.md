@@ -63,19 +63,19 @@ Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-size
 
 | stage | reranking | embedding (Qwen3-Embedding-8B) | total | disk |
 |---|---|---|---|---|
-| lme-pilot + lme-core, the minimal run (seg500, seeds: 8B $0.84, 4B $0.42) | $1.26 | $6.29 | **$7.55** | 58 GB |
+| lme-pilot + lme-core, the minimal run (seg500, seeds: 8B $0.84, 4B $0.42) | $1.26 | $5.68 (exact: 568.0M tokens) | **$6.94** | 42.9 GB at 1,024 dimensions, 126.5 GB at 4,096 |
 | lme-windows (expand, then rerank at x3, 8B) | $0.94 | shared with the core | $0.94 | 0 |
 | lme-sizes (seg250, seg1000, seg2000; 8B seeds and windows) | $7.17 | $18.75 | $25.92 | 166 GB |
 | lme-cut (cut355; 8B seeds and windows) | $1.80 | $6.48 | $8.28 | 58 GB |
 | all four | $11.17 | $31.52 | $42.69 | 282 GB |
 
-Disk counts the index, the stores, the segment tables and the kept embedding cache (float32, as the API returns it). Every stage together needs about 282 GB, more than the 264 GB free on 2026-11-10: the minimal run fits; the others need space freed first (`run` refuses to start when the new stores would not fit).
+The minimal run's row is exact (2026-11-10: every distinct derived text counted with the embedder's tokenizer, `costs.exact_counts`; the pilot alone is $1.57). Its disk is for the benchmark's own vector store (`rbench/vectorstore.py`), measured: per segment, the segment store and the vector store's record (about 1.2 KB at seg500); per distinct text, one row of the permanent float32 copy (the vector plus 625 B), which is the store's only copy of the vectors. The other rows were priced earlier, by probing 8 histories, with the older layout's disk (a float16 index besides the copy); `estimate` gives current figures. `run` refuses to start when the new stores would not fit.
 
 On 8 locally embedded LongMemEval-M histories at seg500, reading 200 seeds reaches 16,000 tokens for all 8 and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
 
-Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decisions, 2026-11-09 and 2026-11-10) is the pilot and the core, about $7.55: seg500, the seeds scored by both the 4B and the 8B, no windows scored, plus the checks; disk about 58 GB with the kept embedding cache. `lme-windows` is optional. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
+Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decisions, 2026-11-09 and 2026-11-10) is the pilot and the core, $6.94: seg500, the seeds scored by both the 4B and the 8B, no windows scored, plus the checks; disk 42.9 GB at 1,024 dimensions, or 126.5 GB keeping 4,096 (searched at 1,024 by truncation if `embed-checks` check 6 passes). `lme-windows` is optional. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
 
-Disk (`estimate` gives it per stage, 2026-11-10, LongMemEval-M with Qwen3-Embedding-8B's 1,024 dimensions: float16 index, segment store, segment tables): about 26 GB at 500 characters (lme-core; the size-matched cut355 the same), 48 GB at 250, 16 GB at 1,000 and 11 GB at 2,000 (lme-sizes 76 GB), so about 128 GB for every planned stage.
+Disk for the other stages: `estimate <stage>` (exact counts, a few minutes of CPU per chunking the first time, cached in `data/counts/`).
 
 ## Layout
 

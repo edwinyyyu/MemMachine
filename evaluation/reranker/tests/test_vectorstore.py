@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from rbench.memory import Memory
+from rbench.paths import PREPARED
 from rbench.vectorstore import ContentVectorStore, ensure_content, vector_hash
 from tests.test_memory import FakeEmbedder, _events
 
@@ -186,6 +187,7 @@ def _fake_api(server_truncates: bool, noise: float = 0.0):
     return raw
 
 
+@pytest.mark.skipif(not (PREPARED / "longmemeval_m" / "queries.jsonl").exists(), reason="needs LongMemEval-M prepared")
 @pytest.mark.parametrize(("server_truncates", "noise", "passes"), [(True, 0.0, True), (True, 1e-6, True),
                                                                    (False, 0.0, False)])
 def test_the_truncation_check_tells_truncation_apart(monkeypatch, server_truncates, noise, passes):
