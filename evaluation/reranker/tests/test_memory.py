@@ -214,3 +214,26 @@ def test_simple_chunker_cuts_every_n_characters_within_each_turn():
     assert [p.offset for p in pieces] == list(range(len(pieces))) and {p.event_uuid for p in pieces} == {event.uuid}
     with pytest.raises(ValueError):
         segmenter("fix500")
+
+
+def test_large_partitions_are_encoded_in_batches_under_sqlites_variable_limit(tmp_path, monkeypatch):
+    """A partition with more segments than one statement can bind is encoded in batches, and
+    the stored segments are the same as one call's."""
+    from rbench import memory
+
+    monkeypatch.setattr(memory, "ENCODE_SEGMENTS", 5)
+    events = _events(12)
+
+    async def go():
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
+            batches = await m._batches(events, None)
+            assert len(batches) > 1 and [e for b in batches for e in b] == events
+            assert await m.ingest("h", events)
+            segment_store, _, _ = await m.stores()
+            part = await segment_store.open_partition("h")
+            by_event = await part.get_segment_uuids_by_event_uuids([e.uuid for e in events])
+            stored = sum(len(v) for v in by_event.values())
+            expected = sum([len(await m.segmenter.segment(e)) for e in events])
+            assert stored == expected
+
+    _run(go())

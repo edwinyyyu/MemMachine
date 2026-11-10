@@ -9,7 +9,7 @@ interfaces:
 
   ExactSearchEngine  a VectorSearchEngine that searches exhaustively. MemMachine's engines
                      (hnswlib, usearch) are approximate; exact search keeps index misses out of
-                     the results. Its saved index is the history's vectors (float16), kept.
+                     the results. Its saved index is the partition's vectors (float16), kept.
   QueryCachingEmbedder  MemMachine's OpenAIEmbedder (the no-prompt path), against the local
                      llama-server or DeepInfra, with concurrency bounded and question
                      embeddings cached, so replaying configurations does not re-embed them.
@@ -74,6 +74,10 @@ from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa
 MEMORY = DATA / "memory"
 RERANK_FORMAT = FormatOptions(time_style="short")  # what EventMemory.query renders for its reranker
 RENDER = "em"  # score-cache render tag: units are EventMemory-rendered contexts
+# Segments per encode_events call. MemMachine's SQLite vector store binds one SQL variable per
+# vector in an upsert, and SQLite allows 32,766 per statement: one call with more fails ("too
+# many SQL variables"; a corpus partition, or a LongMemEval-M history at 250 characters).
+ENCODE_SEGMENTS = 20_000
 
 
 class FixedCutSegmenter(Segmenter):
@@ -258,7 +262,7 @@ class Memory:
 
     Use one per partition (`async with Memory(...)`): the SQLite vector store keeps every opened
     partition's index in memory until it shuts down, so closing after each partition keeps
-    memory flat. A partition's events are encoded in one call, so its index is saved once."""
+    memory flat. A partition's events are encoded in one call (batches past ENCODE_SEGMENTS), so its index is saved once."""
 
     def __init__(self, embedder: str, dataset: str, chunking: str, root: Path | None = None,
                  backend: Embedder | None = None) -> None:
@@ -286,7 +290,7 @@ class Memory:
                 store_schema=VectorStoreSchema(vector_dimensions=768, similarity_metric=SimilarityMetric.COSINE,
                                                indexed_properties=EventMemory.expected_vector_store_indexed_properties()),
                 vector_search_engine_factory=ExactSearchEngine, index_directory=str(self.root / "index"),
-                save_threshold=1))  # one upsert per history (ingest), so its index is saved once
+                save_threshold=1))  # one upsert per encode_events call (ingest), so its index is saved once per batch
             await segment_store.startup()
             await vector_store.startup()
             self._embedder = self._backend or QueryCachingEmbedder(self.embedder)
@@ -312,10 +316,25 @@ class Memory:
         memory = await self.event_memory()
         await memory.delete_partition(key)
         partition = await memory.open_or_create_partition(key)
-        await partition.encode_events(events, format_options=format_options)
+        for batch in await self._batches(events, format_options):
+            await partition.encode_events(batch, format_options=format_options)
         self.done(key).parent.mkdir(parents=True, exist_ok=True)
         self.done(key).write_text(str(uuid.uuid4()))  # an encoding's stamp: its segment uuids are new each time
         return True
+
+    async def _batches(self, events: list[Event], format_options: FormatOptions | None) -> list[list[Event]]:
+        """Events in order, in groups of at most ENCODE_SEGMENTS segments (counted with the same
+        segmenter; an event is never split). One group, so one index save, for most partitions."""
+        out: list[list[Event]] = [[]]
+        n = 0
+        for e in events:
+            k = len(await self.segmenter.segment(e, format_options=format_options))
+            if out[-1] and n + k > ENCODE_SEGMENTS:
+                out.append([])
+                n = 0
+            out[-1].append(e)
+            n += k
+        return out
 
     async def __aenter__(self) -> Memory:
         await self.stores()
