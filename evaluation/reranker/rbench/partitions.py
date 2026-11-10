@@ -39,9 +39,8 @@ from rbench import metrics
 from rbench.datasets import info
 from rbench.memory import Memory  # imports MemMachine (quietly) before the names below
 from rbench.memory import segmenter as memory_segmenter
-from rbench.reading import constants
 from rbench.schema import corpus, queries
-from rbench.text import GEMMA, count
+from rbench.text import READER, count
 
 from memmachine_server.episodic_memory.event_memory.data_types import (  # noqa: E402, I001
     Event,
@@ -166,7 +165,7 @@ class Segments:
     offset: np.ndarray  # the segment's position within its event
     start: np.ndarray  # character offsets within the event's text
     end: np.ndarray
-    tokens: np.ndarray  # embeddinggemma tokens of the segment text
+    tokens: np.ndarray  # reader tokens (text.READER: Qwen3's tokenizer) of the segment text
     inner: np.ndarray  # reader-cost pieces (reading.Reader)
     run: np.ndarray
 
@@ -188,15 +187,19 @@ COLUMNS = ("event", "offset", "start", "end", "tokens", "inner", "run")
 
 
 def _costs(segments: list[Segment], read: FormatOptions | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Token counts per segment: its text, its JSON-escaped text (inner), and a run starting
-    at it (header, quotes and newline), with the header as EventMemory renders it for a reader
-    (string_from_segment_context in the dataset's reading format)."""
-    quotes, newline, _ = constants()
+    """Reader-token counts (text.READER) per segment: its text, its JSON-escaped text (inner), and a run starting
+    at it: the run rendered alone (header as EventMemory renders it for a reader, in the dataset's
+    reading format, then the quoted text and a newline) minus its inner tokens, so the tokens
+    that merge across the seams (': "', '."', '"\n' in a byte-level BPE) are counted as the real
+    string has them. Against real tokenization of string_from_query_result on 4 LongMemEval-S
+    histories (587 segment limits, 2026-11-10), this run cost leaves a mean error of 0.19% (max
+    1.8%) where header, quotes and newline counted apart overcount by 1.7% (max 3.7%)."""
     texts = [s.block.text for s in segments]
     headers = [EventMemory.string_from_segment_context([s.model_copy(update={"block": TextBlock(text="")})],
                                                        format_options=read)[:-2] for s in segments]
-    return (count(texts, GEMMA), count([json.dumps(t, ensure_ascii=False)[1:-1] for t in texts], GEMMA),
-            count(headers, GEMMA) + quotes + newline)
+    inner = count([json.dumps(t, ensure_ascii=False)[1:-1] for t in texts], READER)
+    whole = count([h + json.dumps(t, ensure_ascii=False) + "\n" for h, t in zip(headers, texts, strict=True)], READER)
+    return count(texts, READER), inner, whole - inner
 
 
 def _ordered(segments: Iterable[Segment]) -> list[Segment]:
@@ -239,7 +242,7 @@ def _save_table(path, stamp: str, seg: Segments) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.stem + ".partial.npz")
-    np.savez_compressed(temporary, stamp=np.str_(stamp), uuid=np.asarray(seg.uuid, dtype="S"),
+    np.savez_compressed(temporary, stamp=np.str_(stamp), reader=np.str_(READER), uuid=np.asarray(seg.uuid, dtype="S"),
                         **{c: getattr(seg, c) for c in COLUMNS})
     os.replace(temporary, path)
 
@@ -255,7 +258,8 @@ async def table(m: Memory, dataset: str, p: Part) -> Segments:
     if path.exists():
         try:
             data = np.load(path, allow_pickle=False)
-            fresh = str(data["stamp"]) == stamp and all(c in data for c in ("uuid", *COLUMNS))
+            fresh = (str(data["stamp"]) == stamp and "reader" in data and str(data["reader"]) == READER
+                     and all(c in data for c in ("uuid", *COLUMNS)))  # counted with another tokenizer: recounted
             seg = Segments(tuple(data["uuid"].astype(str).tolist()), *(data[c] for c in COLUMNS)) if fresh else None
             old = fresh and "texts" in data
             data.close()
@@ -336,12 +340,12 @@ def offline(dataset: str, k: str, chunking: str, scope: str | None = None) -> tu
 def embedding_tokens(dataset: str, k: str, chunking: str, scope: str | None = None, embedder: str | None = None) -> int:
     """Tokens a partition's embedding costs: its embedding texts (sent as they are, as
     EventMemory's OpenAIEmbedder sends them) plus the embedder's special tokens per text,
-    counted with the embedder's tokenizer (embeddinggemma's by default)."""
+    counted with the embedder's tokenizer (text.READER for an embedder not in embedding.EMBEDDERS)."""
     from rbench.embedding import EMBEDDERS
 
     _, _, texts = offline(dataset, k, chunking, scope)
     spec = EMBEDDERS.get(embedder) if embedder else None
-    tokenizer, special = (spec.tokenizer, spec.special_tokens) if spec else (GEMMA, 2)
+    tokenizer, special = (spec.tokenizer, spec.special_tokens) if spec else (READER, 1)
     return int(count(list(texts), tokenizer).sum()) + special * len(texts)
 
 

@@ -167,7 +167,11 @@ def test_an_unreadable_depth_file_counts_as_missing(tmp_path, monkeypatch):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('{"summary": {"fill"')  # cut off mid-write
     assert not depth._known("e", "d", "c", "s", 0)
-    dbs.replace_atomically(p, lambda t: t.write_text(json.dumps({"summary": {"fill": {}}, "per_query": {}})))
+    from rbench.text import READER
+
+    dbs.replace_atomically(p, lambda t: t.write_text(json.dumps({"summary": {"fill": {}, "reader": "other"}, "per_query": {}})))
+    assert depth._read("e", "d", "c", "s") is None  # fill depths in another tokenizer's reader tokens: measured again
+    dbs.replace_atomically(p, lambda t: t.write_text(json.dumps({"summary": {"fill": {}, "reader": READER}, "per_query": {}})))
     assert depth._read("e", "d", "c", "s") is not None and not list(tmp_path.rglob("*.partial*"))
     assert np.isfinite(1.0)
 

@@ -55,6 +55,29 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no s
 .venv/bin/python -m rbench run lme-core
 ```
 
+### On EC2 (Amazon Linux 2023)
+
+The paid stages run on an EC2 instance with the data on a separate EBS volume mounted at `/data` (`RBENCH_DATA` moves everything under `data/`; results stay in the clone). Nothing needs a Hugging Face login: every tokenizer the paid path loads is Qwen3's, which is public (METHODOLOGY section 2, "Tokenizer").
+
+```sh
+sudo dnf install -y git tmux
+command -v uv || { curl -LsSf https://astral.sh/uv/install.sh | sh; source ~/.local/bin/env; }
+sudo mkdir -p /data/rbench /data/uv-cache && sudo chown -R $USER /data/rbench /data/uv-cache   # must exist before `run`
+cat >> ~/.bashrc <<'X'
+export RBENCH_DATA=/data/rbench
+export UV_CACHE_DIR=/data/uv-cache UV_LINK_MODE=copy
+X
+source ~/.bashrc
+cd <clone>/evaluation/reranker && git pull --ff-only
+uv sync --python 3.14
+(umask 077; mkdir -p .secrets; read -rsp 'DeepInfra key: ' K; printf %s "$K" > .secrets/deepinfra_api_key; unset K; echo)
+.venv/bin/python -m rbench prepare longmemeval_m
+.venv/bin/python -m pytest -q tests                        # passes and skips, no failures
+.venv/bin/python -m rbench estimate lme-pilot lme-core     # exact counts: a few minutes of CPU the first time
+```
+
+Then the preflight above (inside `tmux`), and `run lme-pilot`. The permanent embedding copy, `/data/rbench/embeddings/`, is what was paid for: copy it to S3 or snapshot the volume after a paid stage.
+
 ## Cost
 
 The pools are fixed: the reranker scores the top 200 seeds, or the top 100 windows (`config.EVAL.pool_seeds`, `pool_windows`; the user's decision, 2026-11-10), at every segment length, and every shallower vector search limit replays for free. `estimate` prices each stage at them and reports, beside each pool, for how many questions reading it reaches the reader-token axis end (16,000) and for how many it holds all the evidence (`rbench/depth.py`). At shorter segments the same pool holds less text, so the curves level off earlier.
@@ -71,7 +94,7 @@ Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-size
 
 The minimal run's row is exact (2026-11-10: every distinct derived text counted with the embedder's tokenizer, `costs.exact_counts`; the pilot alone is $1.57). Its disk is for the benchmark's own vector store (`rbench/vectorstore.py`), measured: per segment, the segment store and the vector store's record (about 1.2 KB at seg500); per distinct text, one row of the permanent float32 copy (the vector plus 625 B), which is the store's only copy of the vectors. The other rows were priced earlier, by probing 8 histories, with the older layout's disk (a float16 index besides the copy); `estimate` gives current figures. `run` refuses to start when the new stores would not fit.
 
-On 8 locally embedded LongMemEval-M histories at seg500, reading 200 seeds reaches 16,000 tokens for all 8 and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
+On 8 locally embedded LongMemEval-M histories at seg500 (reader tokens counted with Qwen3's tokenizer, 2026-11-10), reading 200 seeds reaches 16,000 tokens for 6 of 8 (the fill depth at 16,000 is 197 seeds at the median, 209 at most) and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
 
 Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decisions, 2026-11-09 and 2026-11-10) is the pilot and the core, $6.94: seg500, the seeds scored by both the 4B and the 8B, no windows scored, plus the checks; disk 42.9 GB at 1,024 dimensions, or 126.5 GB keeping 4,096 (searched at 1,024 by truncation if `embed-checks` check 6 passes). `lme-windows` is optional. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
 

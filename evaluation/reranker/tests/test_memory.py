@@ -20,7 +20,7 @@ import pytest
 from rbench import partitions as pt
 from rbench.memory import RERANK_FORMAT, ExactSearchEngine, Memory
 from rbench.reading import Reader, admission
-from rbench.text import GEMMA, count
+from rbench.text import READER, count
 
 from memmachine_server.common.data_types import SimilarityMetric  # noqa: E402, I001
 from memmachine_server.common.embedder import Embedder  # noqa: E402
@@ -174,7 +174,7 @@ def test_reader_cost_tracks_string_from_query_result(stored):
                 for limit, (s, k) in enumerate(pairs, start=1):
                     cost = reader.admit(s, k if lazy else None)
                     shown = QueryResult(scored_segment_contexts=scored[: k + 1] if lazy else scored)
-                    real = count([EventMemory.string_from_query_result(shown, max_num_segments=limit)], GEMMA)[0]
+                    real = count([EventMemory.string_from_query_result(shown, max_num_segments=limit)], READER)[0]
                     errors.append(abs(cost - real) / real)
         return errors
 

@@ -69,6 +69,7 @@ from rbench.report.data import (  # noqa: E402
 )
 from rbench.report.stats import interval  # noqa: E402
 from rbench.rerankers import RERANKERS  # noqa: E402
+from rbench.text import READER_NAME  # noqa: E402
 
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 # Models take their color, markers and label from their registry entry (rerankers.RERANKERS).
@@ -450,7 +451,7 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                     _share_y(ax)
                     ax.set_title(f"{c} · L {limit[1:]} · {_unit_title(r, c, e)}", loc="left")
                     if i == len(expansions) - 1:
-                        ax.set_xlabel("reader tokens (rendered context)\nexact at every budget")
+                        ax.set_xlabel(f"reader tokens ({READER_NAME}, rendered context)\nexact at every budget")
                     if j == 0:
                         ax.set_ylabel(("mean over questions: " if rd.is_share(reading) else "share of questions: ")
                                       + EVENT_TEXT[reading])
@@ -469,7 +470,7 @@ def recall_precision_f1(r: Results, out, head: str) -> None:
     for c in r.chunkings:
         for e in _expansions(r):
             limits = r.limits(c, config.EVAL.limits, ("rerank",) if not e else ("rerank", "xrerank"))
-            for axis, fmt, grid, xlabel in (("tokens", "t{}", CURVE_BUDGETS, "reader tokens (rendered context)"),
+            for axis, fmt, grid, xlabel in (("tokens", "t{}", CURVE_BUDGETS, f"reader tokens ({READER_NAME}, rendered context)"),
                                             ("k", "k{}", CURVE_KS, "segments read (k, window neighbours included)")):
                 xs = [v for v in grid if f"recall_{fmt.format(v)}" in r.df]  # results simulated before the finer grid
                 fig, axes = _figure(3, len(limits), panel=(4.0, 2.6), sharex=True)
@@ -613,7 +614,7 @@ def expansion_compare(r: Results, out, head: str) -> None:
                     _share_y(ax)
                     ax.set_title(f"{c} · L {L} ({what}) · {approach}", loc="left")
                     if i == len(grid) - 1:
-                        ax.set_xlabel("reader tokens (rendered context)\nexact at every budget")
+                        ax.set_xlabel(f"reader tokens ({READER_NAME}, rendered context)\nexact at every budget")
                     if j == 0:
                         ax.set_ylabel(_coverage(reading))
             _save(fig, out / _file("expansion_compare", reading, c, r),
@@ -756,7 +757,7 @@ def chunker_compare(r: Results, out, head: str) -> None:
                 _share_y(ax)
                 ax.set_title(f"L {L} ({what}) · {EVENT_TEXT[reading]}", loc="left")
                 if i == len(limits) - 1:
-                    ax.set_xlabel("reader tokens (rendered context)\nexact at every budget")
+                    ax.set_xlabel(f"reader tokens ({READER_NAME}, rendered context)\nexact at every budget")
                 if j == 0:
                     ax.set_ylabel("coverage")
         sizes = _size_line(r, [seg, cut])
@@ -881,7 +882,7 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
             ax.axhline(0, color=INK2, linewidth=LINE)
             _measured_x(ax, {c: measured[c] for c in sized})
             ax.set_title(f"{LABEL[m]} · L {d[1:]}", loc="left")
-            ax.set_xlabel("measured mean segment of the retrieved seeds (tokens)")
+            ax.set_xlabel(f"measured mean segment of the retrieved seeds ({READER_NAME} tokens)")
             if j == 0:
                 ax.set_ylabel(f"gain in {_coverage(reading)}")
     first = SERIES[models[0]]
@@ -969,7 +970,7 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
                          loc="left")
             ax.set_xlabel("LLM input price ($/M)")
             if col == 0:
-                ax.set_ylabel("spend per question, in reader tokens\n(money / LLM price)")
+                ax.set_ylabel(f"spend per question, in reader tokens ({READER_NAME})\n(money / LLM price)")
     fig.colorbar(im, ax=[a for row in axes for a in row],
                  label=f"coverage gained by reranking for the same money ({EVENT_TEXT[reading]})")
     legend = [(Patch(color=MUTED), "no clear difference (the gain's 95% interval includes 0)")] if not few else []
@@ -1068,7 +1069,7 @@ def first_stage_sizes(r: Results, out, head: str, reading: str) -> None:
         _measured_x(ax, {c: measured[c] for cs in families.values() for c in cs})
         _share_y(ax)
         ax.set_title(f"reader budget {b:,}", loc="left")
-        ax.set_xlabel("measured mean segment / chunk (tokens)")
+        ax.set_xlabel(f"measured mean segment / chunk ({READER_NAME} tokens)")
         if j == 0:
             ax.set_ylabel(f"{_coverage(reading)}, no reranker")
     _save(fig, out / _file("first_stage_sizes", reading), f"First-stage coverage vs measured segment size (no reranker) — {head}",
@@ -1173,7 +1174,7 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
         _token_x(ax)
         _share_y(ax)
         ax.set_title(f"{LABEL[p.model]} · expand_context {p.expand}\n{p.sizes()}", loc="left")
-        ax.set_xlabel("reader tokens: exact steps, one per question")
+        ax.set_xlabel(f"reader tokens ({READER_NAME}): exact steps, one per question")
         if j == 0:
             ax.set_ylabel(_coverage(reading))
     for i, e in enumerate(expands):  # panels without a comparison stay empty

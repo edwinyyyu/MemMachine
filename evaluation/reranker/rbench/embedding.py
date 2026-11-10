@@ -221,9 +221,12 @@ def fit_dimensions(spec: Embedder, vectors: np.ndarray) -> np.ndarray:
 
 def _fit(spec: Embedder, text: str) -> str:
     """The text, cut at the last whole token that fits the context (as sentence-transformers
-    truncates), measured with the model's own tokenizer."""
+    truncates), measured with the model's own tokenizer. A text that cannot reach the limit is
+    returned without loading it (so embeddinggemma's gated tokenizer is never needed for
+    segments, about 500 characters, against its 2,048 tokens): every token covers at least one
+    UTF-8 byte, and SentencePiece adds at most one leading-space token."""
     budget = spec.max_tokens - spec.special_tokens
-    if len(text.encode()) <= budget:
+    if len(text.encode()) + 1 <= budget:
         return text
     starts = token_starts([text], spec.tokenizer)[0]
     return text if len(starts) <= budget else text[: int(starts[budget])]

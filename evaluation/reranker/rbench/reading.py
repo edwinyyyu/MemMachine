@@ -18,12 +18,15 @@ Re-rendering and tokenizing at every step would be quadratic, so the cost is kep
 incrementally under an additive token model:
 
   cost = sum over admitted segments of inner(s)          (tokens of its JSON-escaped text)
-       + sum over runs of run_cost(first segment)         (header + quotes + newline)
+       + sum over runs of run_cost(first segment)         (header, quotes, newline: the run
+                                                           rendered alone, minus its text)
        - NEWLINE x components + SEPARATOR x (components - 1)
 
-tests/test_reading.py checks the incremental result against recomputing the model from
-scratch at every step (exact), and the model against real tokenization of the rendered
-string (within a fraction of a percent on LongMemEval text).
+Tokens are reader tokens (text.READER: Qwen3's tokenizer). tests/test_reading.py checks the
+incremental result against recomputing the model from scratch at every step (exact);
+tests/test_memory.py checks the model against real tokenization of the rendered string. On
+4 LongMemEval-S histories (587 segment limits, 2026-11-10) its mean error is 0.19%, at most
+1.8% (partitions._costs).
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from functools import cache
 
 import numpy as np
 
-from rbench.text import GEMMA, count
+from rbench.text import READER, count
 
 
 def seed_proximity(position: int, seed_position: int) -> float:
@@ -61,7 +64,7 @@ def admission(contexts: Sequence[Sequence[int]], seeds: Sequence[int]) -> list[t
 
 @cache
 def constants() -> tuple[int, int, int]:
-    quotes, newline, separator = (int(n) for n in count(['""', "\n", "\n\n"], GEMMA))
+    quotes, newline, separator = (int(n) for n in count(['""', "\n", "\n\n"], READER))
     return quotes, newline, separator
 
 

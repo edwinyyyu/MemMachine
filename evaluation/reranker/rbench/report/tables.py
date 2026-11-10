@@ -33,6 +33,7 @@ from rbench.report import frontier
 from rbench.report import readings as rd
 from rbench.report.data import Results, query_labels, size_label, unit_tokens
 from rbench.report.stats import delta
+from rbench.text import READER_NAME
 
 EVENTS = rd.ALL  # the event readings (complete, touched) and the share readings (readings.py)
 RERANK_BUDGETS = (1000, 2000, 4000, 8000, 16000, 32000, 64000)
@@ -283,7 +284,7 @@ def worth_it(r: Results, event: str) -> list[str]:
             if es is None:
                 continue
             out += [f"**{m} at L {L} on both sides ({what}; {es.tokens:,.0f} reranker tokens per question)**\n",
-                    "| spend (reader tokens) | break-even | clearly from | "
+                    "| spend (reader tokens, " + READER_NAME + ") | break-even | clearly from | "
                     + " | ".join(f"gain at ${p:g}/M" for p in PRICES_SHOWN) + " |",
                     "|---|---|---|" + "---|" * len(PRICES_SHOWN)]
             for T in spends:
@@ -412,7 +413,7 @@ def expansion(r: Results, event: str) -> list[str]:
                   "Same for all: reader tokens.",
                   "Plain chunks are embedded, reranked and read whole; the closest measured size is used.",
                   "Sizes are measured. Overlapping windows are read once."),
-           "| model | expand_context | approach | measured unit (tokens) | reranker tokens | "
+           "| model | expand_context | approach | measured unit (" + READER_NAME + " tokens) | reranker tokens | "
            + " | ".join(f"@{b}" for b in config.EVAL.budgets) + " |",
            "|---|---|---|---|---|" + "---|" * len(config.EVAL.budgets)]
     flagged = []
@@ -438,6 +439,7 @@ GLOSSARY = """**How to read the numbers** (definitions: METHODOLOGY section 2)
 
 - Every number is a per-question value, averaged over the questions.
 - Evidence: the turns marked as holding the answer.
+- *Reader tokens*: the tokens of the context EventMemory renders for the reader, counted with Qwen3's tokenizer.
 - *In full*: every segment of an evidence turn read. *Touched*: any of them read.
 - *every*: all of a question's evidence read. *first*: some of it. *share*: the share of its evidence turns read.
 - *Recall*: the share of the evidence's characters read. *Precision*: the share of what is read that is evidence.
@@ -742,7 +744,7 @@ def summary(r: Results, event: str) -> list[str]:
     budgets = config.EVAL.budgets
     out = ["## Summary\n",
            _intro("Does reranking improve retrieval enough to justify its cost?",
-                  f"Measure: {_name(event)} coverage at {', '.join(f'{b:,}' for b in budgets)} reader tokens.",
+                  f"Measure: {_name(event)} coverage at {', '.join(f'{b:,}' for b in budgets)} reader tokens ({READER_NAME}).",
                   "Δ: reranked minus the first stage over the same seeds, with its 95% interval.",
                   "*helps* / *hurts*: the interval excludes 0.")]
     for m in r.models:

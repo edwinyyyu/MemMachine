@@ -89,16 +89,18 @@ VERSION = 1
 def fingerprint(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
                 expansions: tuple[int, ...], scope: str, variant: str, limit: int, pools: tuple[int, ...]) -> str:
     """What a simulation's results depend on: VERSION, its arguments, the stored budgets and
-    columns, each partition's encoding (its done stamp: new segments, new uuids) and each
+    columns, the reader tokenizer, each partition's encoding (its done stamp: new segments, new uuids) and each
     model's score cache (its last score and call: new scores can deepen what is replayed)."""
     import hashlib
     import json
 
     from rbench.memory import store_root
 
+    from rbench.text import READER
+
     h = hashlib.sha1(json.dumps([VERSION, embedder, dataset, chunking, sample_name, sorted(models), sorted(expansions),
                                  scope, variant, limit, sorted(pools), stored_budgets(), extra(),
-                                 config.EVAL.token_top]).encode())
+                                 config.EVAL.token_top, READER]).encode())
     root = store_root(embedder, dataset, chunking)
     for k in sorted(pt.groups(dataset, sample(dataset, sample_name), scope)):
         done = root / "done" / k

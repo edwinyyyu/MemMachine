@@ -5,7 +5,7 @@ characters and spans, then averaged over queries with equal weight (a macro-aver
 is pooled across queries.
 
 Reading. Whole chunks are read in ranked order. "Within B tokens" means the longest prefix of
-the order whose embeddinggemma tokens sum to at most B (reading stops at the first chunk that
+the order whose reader tokens (Qwen3 tokenizer, text.READER) sum to at most B (reading stops at the first chunk that
 does not fit; overlapping expansion windows are counted once). A prefix's cost is the most any
 step up to it cost: EventMemory's rendered context can shrink by a header when a segment joins
 two windows, but a reader that stopped at the first chunk that did not fit never gets there.

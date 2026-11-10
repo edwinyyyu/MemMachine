@@ -11,6 +11,7 @@ from rbench.datasets import INACTIVE
 from rbench.paths import PREPARED
 from rbench.samples import sample
 from rbench.schema import queries
+from rbench.text import count
 
 DOCUMENT_DATASETS = [d for d in INACTIVE if (PREPARED / d / "queries.jsonl").exists()]
 
@@ -53,4 +54,5 @@ def test_documents_render_and_embed_without_dates_or_producers():
         assert texts[i] == plain  # the embedding text is the segment's JSON text alone
         assert EventMemory.string_from_segment_context([segments[i]], format_options=f.rerank) == plain
         assert EventMemory.string_from_segment_contexts([[segments[i]]], format_options=f.read) == plain
-    assert int(seg.run.min()) == int(seg.run.max())  # no header: every run costs only quotes and newline
+        # no header: a run costs only its quotes and newline (with whatever merges into them)
+        assert int(seg.run[i]) == int(count([plain + "\n"])[0]) - int(seg.inner[i])

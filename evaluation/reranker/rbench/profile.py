@@ -2,7 +2,7 @@
 justification from the registry (rbench/datasets/__init__.py).
 
 What is measured and why:
-  documents     count, embeddinggemma tokens (p10 / median / p90 / max); paragraph length
+  documents     count, tokens (Qwen3 tokenizer: p10 / median / p90 / max); paragraph length
                 (blank-line blocks) and line structure (heading, list and table lines),
                 because the recursive chunker cuts on exactly those boundaries
   queries       tokens (p10 / median / p90) and the rule-based form and context labels

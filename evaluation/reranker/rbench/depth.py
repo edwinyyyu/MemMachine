@@ -48,6 +48,7 @@ from rbench.paths import RESULTS
 from rbench.reading import Reader
 from rbench.samples import sample
 from rbench.schema import queries
+from rbench.text import READER
 
 TARGETS = (0.90, 0.95, 0.99)
 POOL_COVERAGE = 0.95  # the pool fills the axis end for at least this share of queries
@@ -172,7 +173,7 @@ def save(embedder: str, dataset: str, chunking: str, sample_name: str, per: dict
     """Summarize and save per-query depths (measure's, or those an overlapped ingest measured
     partition by partition: pipeline.prepare_and_score); returns the summary."""
     expansions = tuple(sorted({0, *expansions}))
-    summary = {"embedder": embedder, "dataset": dataset, "chunking": chunking, "sample": sample_name,
+    summary = {"embedder": embedder, "dataset": dataset, "chunking": chunking, "sample": sample_name, "reader": READER,
                "queries": len(per), "segments_median": float(np.median([v["segments"] for v in per.values()]))}
     for reading in ("every", "first"):
         d = np.sort([v[reading] for v in per.values()])
@@ -207,12 +208,14 @@ def _quantile(sorted_depths: np.ndarray, target: float) -> float:
 
 
 def _read(embedder: str, dataset: str, chunking: str, sample_name: str) -> dict | None:
-    """The saved depths, None when missing or unreadable (measured again)."""
+    """The saved depths, None when missing, unreadable or counted in another tokenizer's reader
+    tokens (measured again: fill depths are in reader tokens)."""
     p = path(embedder, dataset, chunking, sample_name)
     try:
-        return json.loads(p.read_text())
+        saved = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+    return saved if saved.get("summary", {}).get("reader") == READER else None
 
 
 def load(embedder: str, dataset: str, chunking: str, sample_name: str) -> dict:
