@@ -1,4 +1,16 @@
-"""How deep the vector search must go: the pool depth D, measured by coverage.
+"""How deep the vector search must go: the pool depth, measured by budget fill.
+
+The pool rule (the user's, 2026-11-09): the reranker's pool must be deep enough that reading
+it does not run out before the largest reader budget evaluated (the chart axis's end,
+config.EVAL.token_top), so curves keep rising across the axis instead of flattening because
+the pool is used up; cost decides that axis end. The fill depth at budget B is the number of
+contexts (seeds, or their windows) whose rendered reading cost reaches B: the pool's cost does
+not depend on the order it is read in, so it is measured in first-stage order with the real
+Reader. A pool fills B for a query when its fill depth is at most the pool; the pool is the
+fill depth at POOL_COVERAGE of the sample's queries, per segment length, chunker and scoring
+position (seeds, or windows: these fill a budget several times faster).
+
+Also measured and reported, not used as the pool rule: the coverage depth.
 
 For each query, EventMemory.query (no reranker, expand_context 0) ranks every segment of the
 partition it searches. The depth a query needs is the rank of its deepest needed seed:
@@ -14,7 +26,8 @@ vector search limit is the pool, rerankers.py), and every limit up to D replays 
 where returns diminish is read off the replay, not chosen before it.
 
 Output: results/depth/<embedder>/<dataset>__<chunking>__<sample>.json with per-query depths,
-the quantiles, and D at each target in TARGETS.
+the coverage quantiles and D at each target in TARGETS, and the fill depths per expand_context
+(FILL_EXPANSIONS) and budget (FILL_BUDGETS and config.EVAL.token_top).
 """
 
 from __future__ import annotations
@@ -24,15 +37,44 @@ import json
 
 import numpy as np
 
+from rbench import config
 from rbench import partitions as pt
 from rbench.datasets import info
 from rbench.memory import Memory
 from rbench.paths import RESULTS
+from rbench.reading import Reader
 from rbench.samples import sample
 from rbench.schema import queries
 
 TARGETS = (0.90, 0.95, 0.99)
+POOL_COVERAGE = 0.95  # the pool fills the axis end for at least this share of queries
+FILL_BUDGETS = (4000, 8000, 12000, 16000)  # candidate axis ends priced before a paid run
+FILL_EXPANSIONS = (0, 3)  # scoring positions: the seeds, and the windows grid.py scores
 DEPTH = RESULTS / "depth"
+
+
+def budgets() -> tuple[int, ...]:
+    return tuple(sorted(set(FILL_BUDGETS) | {config.EVAL.token_top}))
+
+
+def fill_costs(contexts: list[list[int]], seg: pt.Segments, top: float) -> list[int]:
+    """Rendered cost of reading the first L contexts in full, for L = 1, 2, ..., until it
+    reaches `top` (or the contexts run out)."""
+    reader, out = Reader(contexts, seg.event, seg.inner, seg.run, lazy=True), []
+    for k, context in enumerate(contexts):
+        reader.open(k)
+        for s in context:
+            if s not in reader.admitted:
+                reader.admit(s, k)
+        out.append(reader.cost)
+        if out[-1] >= top:
+            break
+    return out
+
+
+def fill_depth(costs: list[int], budget: float) -> int:
+    """Contexts read before the cost reaches `budget` (all of them when it never does)."""
+    return next((k + 1 for k, c in enumerate(costs) if c >= budget), len(costs))
 
 
 def path(embedder: str, dataset: str, chunking: str, sample_name: str):
@@ -52,7 +94,8 @@ def needed(order: list[int], g) -> tuple[float, float]:
     return float(every), float(first)
 
 
-async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope: str, variant: str) -> dict:
+async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope: str, variant: str,
+                   expansions: tuple[int, ...]) -> dict:
     rows, fmt = queries(dataset), pt.formats(dataset)
     out = {}
     for k, members in pt.groups(dataset, sample(dataset, sample_name), scope).items():
@@ -63,19 +106,30 @@ async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str,
             index = {u: i for i, u in enumerate(seg.uuid)}
             for qi in members:
                 q = rows[qi]
-                result = await partition.query(q["variants"][variant], vector_search_limit=len(seg), expand_context=0,
+                query = q["variants"][variant]
+                result = await partition.query(query, vector_search_limit=len(seg), expand_context=0,
                                                format_options=fmt.rerank)
                 order = [index[str(c.seed_segment_uuid)] for c in result.scored_segment_contexts]
                 every, first = needed(order, pt.gold(pt.gold_spans(dataset, q, p), p, seg))
-                out[q["qid"]] = {"every": every, "first": first, "segments": len(seg)}
+                top = max(budgets())
+                seeds = fill_costs([[s] for s in order], seg, top)
+                fill = {"0": {str(b): fill_depth(seeds, b) for b in budgets()}}
+                for e in [e for e in expansions if e]:  # windows fill a budget with no more contexts than seeds
+                    windowed = await partition.query(query, vector_search_limit=len(seeds), expand_context=e,
+                                                     format_options=fmt.rerank)
+                    contexts = [[index[str(x.uuid)] for x in c.segments] for c in windowed.scored_segment_contexts]
+                    costs = fill_costs(contexts, seg, top)
+                    fill[str(e)] = {str(b): fill_depth(costs, b) for b in budgets()}
+                out[q["qid"]] = {"every": every, "first": first, "segments": len(seg), "fill": fill}
     return out
 
 
 def measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope: str | None = None,
-            variant: str | None = None) -> dict:
+            variant: str | None = None, expansions: tuple[int, ...] = FILL_EXPANSIONS) -> dict:
     """Measure and save the depths a sample's queries need; returns the summary."""
     scope, variant = pt.scope_of(dataset, scope), variant or info(dataset).default_variant
-    per = asyncio.run(_measure(embedder, dataset, chunking, sample_name, scope, variant))
+    expansions = tuple(sorted({0, *expansions}))
+    per = asyncio.run(_measure(embedder, dataset, chunking, sample_name, scope, variant, expansions))
     summary = {"embedder": embedder, "dataset": dataset, "chunking": chunking, "sample": sample_name,
                "queries": len(per), "segments_median": float(np.median([v["segments"] for v in per.values()]))}
     for reading in ("every", "first"):
@@ -85,6 +139,13 @@ def measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope:
             "D": {f"{t:.2f}": _quantile(d, t) for t in TARGETS},
             "unreachable": int(np.isinf(d).sum()),
         }
+    summary["fill"] = {}  # expand -> budget -> {pool: fill depth at POOL_COVERAGE, median, max}
+    for e in expansions:
+        summary["fill"][str(e)] = {}
+        for b in budgets():
+            d = np.sort([v["fill"][str(e)][str(b)] for v in per.values()])
+            summary["fill"][str(e)][str(b)] = {"pool": _quantile(d, POOL_COVERAGE), "median": float(np.median(d)),
+                                               "max": float(d.max())}
     target = path(embedder, dataset, chunking, sample_name)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps({"summary": summary, "per_query": per}, indent=1) + "\n")
@@ -106,17 +167,40 @@ def load(embedder: str, dataset: str, chunking: str, sample_name: str) -> dict:
     return json.loads(p.read_text())["summary"]
 
 
-POOL_COVERAGE = 0.95  # the pool holds all of a question's evidence for at least this share of questions
+def _known(embedder: str, dataset: str, chunking: str, sample_name: str, expand: int) -> bool:
+    if not path(embedder, dataset, chunking, sample_name).exists():
+        return False
+    fill = load(embedder, dataset, chunking, sample_name).get("fill", {})
+    return str(expand) in fill and str(config.EVAL.token_top) in fill[str(expand)]
+
+
+def _fill(embedder: str, dataset: str, chunking: str, sample_name: str, expand: int) -> int:
+    return int(load(embedder, dataset, chunking, sample_name)["fill"][str(expand)][str(config.EVAL.token_top)]["pool"])
 
 
 def pool(run, chunking: str, embedder: str, measure_if_missing: bool = True) -> int | None:
-    """A run's pool (vector search limit) at a chunking: its own pool_seeds, else D at
-    POOL_COVERAGE of "every" measured on the run's sample (measured now if the partitions are
-    encoded and measure_if_missing; None when it cannot be known yet)."""
+    """A run's pool (vector search limit) at a chunking: its own pool_seeds, else the fill depth
+    of its scoring position (seeds, or windows at run.expand) at config.EVAL.token_top, at
+    POOL_COVERAGE of the sample's queries (measured now if the partitions are encoded and
+    measure_if_missing; None when it cannot be known yet)."""
     if run.pool_seeds:
         return run.pool_seeds
-    if not path(embedder, run.dataset, chunking, run.sample).exists():
+    if not _known(embedder, run.dataset, chunking, run.sample, run.expand):
         if not measure_if_missing:
             return None
-        measure(embedder, run.dataset, chunking, run.sample, run.scope, run.variant)
-    return int(load(embedder, run.dataset, chunking, run.sample)["every"]["D"][f"{POOL_COVERAGE:.2f}"])
+        measure(embedder, run.dataset, chunking, run.sample, run.scope, run.variant, (*FILL_EXPANSIONS, run.expand))
+    return _fill(embedder, run.dataset, chunking, run.sample, run.expand)
+
+
+def estimated_pool(run, chunking: str, embedder: str) -> tuple[int, str] | None:
+    """For pricing before a run's sample is embedded: the fill depth measured on the largest
+    smaller sample of the same dataset and chunking that is (any embedder), and which one it
+    is. None when there is none."""
+    from rbench.samples import ORDER
+
+    for sample_name in reversed(ORDER[: ORDER.index(run.sample)]):
+        for e in (embedder, *sorted(p.name for p in DEPTH.glob("*") if p.name != embedder)):
+            if _known(e, run.dataset, chunking, sample_name, run.expand):
+                n = load(e, run.dataset, chunking, sample_name)["queries"]
+                return _fill(e, run.dataset, chunking, sample_name, run.expand), f"{sample_name} ({n} queries, {e})"
+    return None

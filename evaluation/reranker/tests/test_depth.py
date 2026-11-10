@@ -25,3 +25,11 @@ def test_unreached_evidence_is_infinite():
 def test_depth_at_a_target_is_an_order_statistic():
     d = np.sort(np.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9, 100], dtype=float))
     assert _quantile(d, 0.9) == 9 and _quantile(d, 0.95) == 100 and _quantile(d, 0.5) == 5
+
+
+def test_fill_depth_is_the_contexts_read_before_the_budget_is_reached():
+    from rbench.depth import fill_depth
+
+    costs = [100, 250, 400, 900]  # rendered cost after reading 1, 2, 3, 4 contexts in full
+    assert fill_depth(costs, 250) == 2 and fill_depth(costs, 401) == 4
+    assert fill_depth(costs, 5000) == 4  # never reached: the whole search

@@ -57,19 +57,23 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     per_model: dict[str, float] = {}
     basis: dict[str, set[str]] = defaultdict(set)
     unknown: list[str] = []  # groups whose pool depth is not measured yet
-    pools_used: dict[str, int] = {}
+    by_group: dict[str, dict] = {}  # model, dataset, chunking, sample, seeds or windows -> pool, tokens, dollars
     for (dataset, scope, variant, c, expand, model), members in groups.items():
         sample_name = max((r.sample for r in members), key=ORDER.index)  # the largest holds the others
         template = RERANKERS[model].template
         rows, picked = queries(dataset), sample_of(dataset, sample_name)
         keys = pt.groups(dataset, picked, scope)
         ready = all(encoded(dataset, c, k) for k in keys)
+        label = f"{dataset} {c} {sample_name}" + (f" windows x{expand}" if expand else " seeds")
         pools = [depth.pool(r, c, embedder, measure_if_missing=ready) for r in members]
-        if any(p is None for p in pools):  # the pool is the measured depth, known only once the partitions are encoded
-            unknown.append(f"{model} {dataset} {c} {sample_name}{f' +x{expand}' if expand else ''}")
-            continue
+        if any(p is None for p in pools):  # not embedded yet: the depth measured on a smaller sample, if any
+            guesses = [depth.estimated_pool(r, c, embedder) for r in members]
+            if any(g is None for g in guesses):
+                unknown.append(label)
+                continue
+            pools = [g[0] for g in guesses]
+            label += f" (depth from {guesses[0][1]})"
         pool_seeds = max(pools)
-        pools_used[f"{dataset} {c} {sample_name}"] = pool_seeds
         if ready:
             work = simulation.scoring_work(embedder, dataset, c, sample_name, model, expand, pool_seeds, scope, variant)
             tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], template)))
@@ -90,6 +94,8 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
             basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")
         per_model[model] = per_model.get(model, 0.0) + tokens
+        by_group[f"{model} {label}"] = {"pool": pool_seeds, "tokens_M": round(tokens / 1e6, 2),
+                                        "usd": round(tokens / 1e6 * (RERANKERS[model].usd_per_mtok or 0.0), 2)}
 
     to_embed: set[tuple[str, str, str, str]] = set()  # (dataset, scope, chunking, partition) not encoded yet
     for run in runs:
@@ -108,8 +114,8 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     summary["embedding"] = {"embedder": embedder, "tokens_M": embed_tok / 1e6,
                             "usd": embed_tok / 1e6 * EMBEDDERS[embedder].usd_per_mtok,
                             "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600, "estimate": True}
-    if pools_used:
-        summary["pools (seeds)"] = pools_used
+    if by_group:
+        summary["by scoring job (pool in seeds)"] = by_group
     if unknown:
         summary["not priced (pool depth not measured: encode the partitions first)"] = unknown
     return {"summary": summary}

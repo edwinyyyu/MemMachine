@@ -158,6 +158,11 @@ class Reader:
         self.total_runs += delta
         self.admitted.add(s)
         self.total_inner += int(self.inner[s])
+        return self.cost
+
+    @property
+    def cost(self) -> int:
+        """The rendered cost of everything admitted so far."""
         return self.total_inner + self.total_runs - self.newline * self.components + self.separator * max(0, self.components - 1)
 
 
