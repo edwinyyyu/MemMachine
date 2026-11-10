@@ -88,7 +88,10 @@ RENDER = "em"  # score-cache render tag: units are EventMemory-rendered contexts
 # call with more fails ("too many SQL variables"; a corpus partition, or a LongMemEval-M history
 # at 250 characters), and the failed upsert's pending operations then keep the store from
 # reopening. Batches stay under the limit (with save_threshold=1, one index save per batch);
-# tests/test_memory.py checks a partition encoded in batches stores the same segments.
+# tests/test_memory.py checks a partition encoded in batches stores the same segments. Redoing a
+# half-written partition goes through MemMachine's SQLiteVectorStore.delete_partition, which
+# drops the partition's records table and unlinks its index rather than deleting rows by an IN
+# list, so it avoids the limit by construction.
 ENCODE_SEGMENTS = 20_000
 
 
