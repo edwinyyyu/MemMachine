@@ -10,8 +10,9 @@ Varied:
   reranking        none; the seeds (rerank, then read seeds or expand them); or each seed's
                    expand_context-3 window (expand, then rerank: what EventMemory's query does
                    whenever expand_context > 0; its default is 0)
-  pool depth       the top 50 seeds in the core (vector search limits 5-50, EventMemory's default
-                   20 among them, at every segment length); the top 200 in the depth stage.
+  pool depth       the whole vector search: each question's pool is the depth that holds all its
+                   evidence for 95% of the sample's questions (depth.py, measured after embedding,
+                   per segment length and chunker); every shallower vector search limit replays.
                    Seed counts, not tokens: the vector search limit is a count, and equal
                    reranker input is compared through each configuration's measured tokens
 Free (replayed from cached scores): every shallower overfetch, top-k, reader budget, and the
@@ -45,7 +46,8 @@ class Run:
     models: tuple[str, ...]
     sample: str = "large"
     expand: int = 0  # > 0: score each seed's EventMemory window (expand_context = expand), not the seed
-    pool_seeds: int = 50  # score each query's top pool_seeds seeds (its deepest vector search limit)
+    pool_seeds: int | None = None  # seeds scored per query (its deepest vector search limit); None: the depth
+    # that holds all evidence for depth.POOL_COVERAGE of the sample's queries, measured after embedding (depth.py)
     note: str = ""
 
 
@@ -88,7 +90,6 @@ STAGES: dict[str, list[Run]] = {
     "lme-pilot": [replace(lme(("seg500",), ("q8",), e), sample="proto") for e in (0, 3)],
     "lme-core": [lme(("seg500",), ("q8",), e) for e in (0, 3)],
     "lme-sizes": [lme(("seg250", "seg1000", "seg2000"), ("q8",), e) for e in (0, 3)],
-    "lme-depth": [lme(("seg500",), ("q8",), e, pool_seeds=200) for e in (0, 3)],
     # Optional: the 0.6B as the cheap middle option.
     "lme-small": [lme(("seg500",), ("q06",), e) for e in (0, 3)],
     # Optional: the simple chunker at EventMemory's default limit. Reports state each chunking's

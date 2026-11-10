@@ -22,7 +22,7 @@ from rbench.memory import Memory
 from rbench.rankers import Depth, Ranker
 from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key, score, to_logit
 from rbench.schema import queries
-from rbench.simulation import first_stage, keys_for, read
+from rbench.simulation import FIRST_STAGE_LIMIT, first_stage, keys_for, read
 
 from memmachine_server.episodic_memory.event_memory.data_types import ProducerContext  # noqa: I001
 
@@ -41,11 +41,11 @@ def _source(p: pt.Part, seg: pt.Segments, c: int) -> str:
     return f"{p.labels[e]} ({context.producer})" if isinstance(context, ProducerContext) else p.labels[e]
 
 
-async def _first(embedder: str, dataset: str, chunking: str, p: pt.Part, query: str, expand: int):
+async def _first(embedder: str, dataset: str, chunking: str, p: pt.Part, query: str, expand: int, limit: int):
     async with Memory(embedder, dataset, chunking) as m:
         seg = await pt.table(m, dataset, p)
         partition = await (await m.event_memory()).open_or_create_partition(p.key)
-        return (seg, *await first_stage(partition, seg, query, (expand,), pt.formats(dataset).rerank))
+        return (seg, *await first_stage(partition, seg, query, (expand,), pt.formats(dataset).rerank, limit))
 
 
 def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", pool_seeds: int = 50, expand: int = 3,
@@ -58,7 +58,8 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
     query = q["variants"][info(dataset).default_variant]
     p = pt.part(dataset, q)
     pt.ingest(embedder, dataset, chunking_name, [qi])  # encoded once (embedded when not yet)
-    seg, head, sims, units_all, texts_all = asyncio.run(_first(embedder, dataset, chunking_name, p, query, expand))
+    seg, head, sims, units_all, texts_all = asyncio.run(_first(embedder, dataset, chunking_name, p, query, expand,
+                                                               max(FIRST_STAGE_LIMIT, pool_seeds)))
     head = np.asarray(head)
     spans = pt.gold_spans(dataset, q, p)
     g = pt.gold(spans, p, seg)

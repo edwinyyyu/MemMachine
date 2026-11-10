@@ -1,8 +1,9 @@
 """Replay reading for every dataset: one tidy row per (query, ranker).
 
 Per query, inside the EventMemory partition it searches (memory.py, partitions.py):
-  1. The first stage: EventMemory.query without a reranker, at a vector search limit deep
-     enough to fill the largest reader budget (FIRST_STAGE_LIMIT), at each expand_context.
+  1. The first stage: EventMemory.query without a reranker, at each expand_context, as deep as
+     the deepest pool scored (the run's vector search limit, depth.py; at least
+     FIRST_STAGE_LIMIT).
      Its seeds in similarity order, and each seed's context (the seed, or its window) exactly
      as EventMemory returns it. Reranker inputs are those contexts rendered as EventMemory's
      query renders them for its reranker (partitions.formats).
@@ -34,8 +35,9 @@ Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>.p
                                            prefix cache computes them (prompt and query once)
   oracle_pairs                             the depth the perfect reranker reorders
   metrics.FIELDS                           coverage costs (reader tokens), ranks, recall, precision
-  admitted                                 segments admitted before reading stopped (past
-                                           MAX_COST, or at the end of the reranked pool)
+  admitted                                 segments admitted: reading runs to the end of the
+                                           pool (the first stage's: its whole vector search), so
+                                           no curve is cut short of its plateau
   seg_chars, seg_tokens                    the partition's mean segment size, measured
   unit_tokens                              the mean segment-text tokens one retrieved seed's
                                            context holds at the row's expand_context (the seed
@@ -67,8 +69,7 @@ from rbench.schema import queries
 
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: I001
 
-MAX_COST = 16000  # reading stops past the largest reader budget measured
-FIRST_STAGE_LIMIT = 400  # seeds: enough to fill the largest reader budget at the smallest segments
+FIRST_STAGE_LIMIT = 400  # the first stage's vector search limit when no deeper pool was scored
 COLUMNS = ["pairs", "rr_tokens", "rr_prefix_tokens", "oracle_pairs", *metrics.FIELDS]
 EVENTS = ("first", "every", "first_touch", "every_touch")
 
@@ -111,12 +112,12 @@ def keys_for(query: str, prompt: str, texts: list[str]) -> list[str]:
 
 def read(contexts: list[list[int]], seeds: list[int], seg: pt.Segments, lazy: bool = False
          ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(admitted segment ids, cumulative rendered cost, the context each came from), stopping
-    past MAX_COST. lazy: contexts enter the query result only as admission reaches them (the
+    """(admitted segment ids, cumulative rendered cost, the context each came from), reading
+    every context. lazy: contexts enter the query result only as admission reaches them (the
     first stage without a vector search limit, whose limit is the seeds it reads)."""
     pairs = admission(contexts, seeds)
     order, ctx = [s for s, _ in pairs], [k for _, k in pairs]
-    cum = reading(contexts, order, seg.event, seg.inner, seg.run, MAX_COST, ctx if lazy else None)
+    cum = reading(contexts, order, seg.event, seg.inner, seg.run, context_of=ctx if lazy else None)
     return np.asarray(order[: len(cum)], dtype=np.int64), cum, np.asarray(ctx[: len(cum)], dtype=np.int64)
 
 
@@ -131,11 +132,12 @@ def counts(values: list[float], cum: np.ndarray, ctx: np.ndarray) -> list[float]
     return at + segs + [float(seen[n - 1]) if n else 0.0 for n in segs]
 
 
-async def first_stage(partition, seg: pt.Segments, query: str, expansions: tuple[int, ...], rerank_format):
+async def first_stage(partition, seg: pt.Segments, query: str, expansions: tuple[int, ...], rerank_format,
+                      limit: int = FIRST_STAGE_LIMIT):
     """(seed ids in similarity order, their similarities, {expand: each seed's context as
     segment ids}, {expand: each context rendered for the reranker}) from EventMemory.query
     without a reranker."""
-    results = {e: await partition.query(query, vector_search_limit=FIRST_STAGE_LIMIT, expand_context=e,
+    results = {e: await partition.query(query, vector_search_limit=limit, expand_context=e,
                                         format_options=rerank_format) for e in (0, *expansions)}
     index = {u: i for i, u in enumerate(seg.uuid)}
     first = results[0].scored_segment_contexts
@@ -150,21 +152,24 @@ async def first_stage(partition, seg: pt.Segments, query: str, expansions: tuple
 
 
 def run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
-        expansions: tuple[int, ...] | None = None, scope: str | None = None, variant: str | None = None) -> pd.DataFrame:
+        expansions: tuple[int, ...] | None = None, scope: str | None = None, variant: str | None = None,
+        limit: int | None = None) -> pd.DataFrame:
     """expansions: expand_context values to replay (default: config.EVAL.expansions); scope and
-    variant default to the dataset's own."""
+    variant default to the dataset's own; limit: the first stage's vector search limit (the
+    deepest pool scored; default FIRST_STAGE_LIMIT)."""
     expansions = config.EVAL.expansions if expansions is None else expansions
     return asyncio.run(_run(embedder, dataset, chunking, sample_name, models, expansions,
-                            pt.scope_of(dataset, scope), variant or info(dataset).default_variant))
+                            pt.scope_of(dataset, scope), variant or info(dataset).default_variant,
+                            max(FIRST_STAGE_LIMIT, limit or 0)))
 
 
 async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
-               expansions: tuple[int, ...], scope: str, variant: str) -> pd.DataFrame:
+               expansions: tuple[int, ...], scope: str, variant: str, limit: int) -> pd.DataFrame:
     rows = queries(dataset)
     fmt = pt.formats(dataset)
     prompts = {m: prompt_key(RERANKERS[m].template) for m in models}
     caches = {m: ScoreCache(m) for m in models}
-    all_rankers = rankers.for_models(models, expansions, limited_first_stage=True)
+    all_rankers = rankers.for_models(models, expansions, rankers.depths(limit), limited_first_stage=True)
     records: dict[str, list] = {r.id: [] for r in all_rankers}
     dropped: dict[str, str] = {}
     order: list[int] = []
@@ -178,7 +183,7 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
             for qi in members:
                 q = rows[qi]
                 query = q["variants"][variant]
-                head, sims, units, texts = await first_stage(partition, seg, query, expansions, fmt.rerank)
+                head, sims, units, texts = await first_stage(partition, seg, query, expansions, fmt.rerank, limit)
                 g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
                 _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, prompts, caches,
                         all_rankers, records, dropped)

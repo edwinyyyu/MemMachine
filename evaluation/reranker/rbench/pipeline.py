@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from rbench import config, simulation
+from rbench import config, depth, simulation
 from rbench import partitions as pt
 from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.grid import Run
@@ -26,19 +26,21 @@ _PREPARED: set[tuple] = set()  # (embedder, dataset, scope, chunking, sample) do
 
 
 def prepare(run: Run, embedder: str = EMBEDDER) -> None:
-    """Encode the partitions the run's queries search (each embedded once; the stores are kept)."""
+    """Encode the partitions the run's queries search (each embedded once; the stores are kept),
+    then, for a run without a set pool, measure the depth its pool needs (depth.py, free)."""
     for c in run.chunkings:
         if (embedder, run.dataset, run.scope, c, run.sample) in _PREPARED:
             continue  # the same stage's other scoring position
         _PREPARED.add((embedder, run.dataset, run.scope, c, run.sample))
         pt.ingest(embedder, run.dataset, c, sample(run.dataset, run.sample), run.scope)
+        print(f"{run.dataset} {c} {run.sample}: pool {depth.pool(run, c, embedder)} seeds", flush=True)
 
 
 def rerank(run: Run, model: str, max_usd: float | None, embedder: str = EMBEDDER) -> None:
     spec = RERANKERS[model]
     for c in run.chunkings:
-        work = simulation.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand, run.pool_seeds,
-                                       run.scope, run.variant)
+        work = simulation.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand,
+                                       depth.pool(run, c, embedder), run.scope, run.variant)
         pairs = sum(len(items) for _, items in work)
         tokens = sum(len(r) for q, items in work for r in pair_ids(q, [d for _, d in items], spec.template))
         label = f"{run.dataset}/{run.scope}/{run.variant}/{c}{f'+x{run.expand}' if run.expand else ''}"
@@ -53,11 +55,16 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     rerankers and the replayed expansions plus any whose windows a run scored, then write each
     (dataset, scope, variant, sample) report."""
     jobs: dict[tuple, set[int]] = defaultdict(lambda: set(config.EVAL.expansions))
+    limits: dict[tuple, int] = defaultdict(int)  # the first stage searches as deep as the deepest pool
     for run in runs:
         for c in run.chunkings:
-            jobs[(run.dataset, run.scope, run.variant, run.sample, c)] |= {run.expand} - {0}
-    for (dataset, scope, variant, sample_name, c), expansions in sorted(jobs.items()):
-        simulation.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)), scope, variant)
+            key = (run.dataset, run.scope, run.variant, run.sample, c)
+            jobs[key] |= {run.expand} - {0}
+            limits[key] = max(limits[key], depth.pool(run, c, embedder))
+    for key, expansions in sorted(jobs.items()):
+        dataset, scope, variant, sample_name, c = key
+        simulation.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)), scope, variant,
+                       limits[key])
     written = []
     for dataset, scope, variant, sample_name in sorted({k[:4] for k in jobs}):
         results = load(embedder, dataset, scope, variant, sample_name)

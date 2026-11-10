@@ -88,14 +88,16 @@ def test_simulated_rows_are_consistent():
     assert (d[d.ranker == "first_stage"].admitted > 5).all() and (d[d.ranker == "rerank:q06-local@n5"].admitted <= 5).all()
     # count normalizations: contexts read when events happen, and segments / contexts within budgets
     limited = d[d.ranker == "first_stage@n10+x3"]
-    assert (limited.admitted <= 40).all() and (limited.ctx_t16000 <= 10).all()
+    top = max(int(c.removeprefix("ctx_t")) for c in d.columns if c.startswith("ctx_t"))  # the largest stored budget
+    assert (limited.admitted <= 40).all() and (limited[f"ctx_t{top}"] <= 10).all()
     for e in ("first", "every"):
         found = np.isfinite(d[f"{e}_k"])
         assert (d.loc[found, f"{e}_ctx"] <= d.loc[found, f"{e}_k"]).all()  # a seed admits at least one segment
         assert np.isinf(d.loc[~found, f"{e}_ctx"]).all()
     plain = d[d.ranker == "first_stage"]
     assert (plain.segs_t1000 == plain.ctx_t1000).all()  # no expansion: one segment per seed
-    assert (np.diff(d[[f"segs_t{b}" for b in (250, 500, 1000, 2000)]].to_numpy(), axis=1) >= 0).all()
+    stored = sorted(int(c.removeprefix("segs_t")) for c in d.columns if c.startswith("segs_t"))
+    assert (np.diff(d[[f"segs_t{b}" for b in stored]].to_numpy(), axis=1) >= 0).all()
 
 
 @pytest.mark.skipif(not READY, reason="needs prepared LongMemEval-S")

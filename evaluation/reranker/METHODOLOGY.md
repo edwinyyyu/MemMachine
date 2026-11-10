@@ -77,9 +77,9 @@ The benchmark runs MemMachine's EventMemory itself, from the repository it lives
 | chunker | EventMemory's TextSegmenter (`seg<N>`); the simple chunker (`cut<N>`, optional stage `lme-cut`) | one embedding per chunking |
 | reranking | none; rerank the seeds; rerank each seed's window (expand, then rerank) | seeds scored; windows scored at `expand_context` 3 |
 | reading (`expand_context`) | the seeds (0), or their windows at 1, 2, 3, 6 | replayed; free except expand-then-rerank, which needs its windows scored |
-| rerank depth = vector search limit L | 5, 10, 20 (EventMemory's default), 30, 50 seeds in the core, where each question's top 50 seeds are scored; up to 200 in the depth stage | replayed from cached scores |
+| rerank depth = vector search limit L | every L up to the pool D: the depth that holds all of a question's evidence for 95% of the sample's questions, measured per segment length and chunker after embedding (`rbench/depth.py`; D at 99% is reported too). The whole pool is scored, so 5, 10, 20 (EventMemory's default), 30, 50, … up to D replay | replayed from cached scores |
 | first stage's vector search limit | the same L values, or none (as many seeds as the budget reads) | replayed |
-| reader budget | continuous, 0–16,000 tokens (500–4,000 the realistic range); charts mark every 500, recall and precision are measured every 250 | replayed |
+| reader budget | continuous: every ranking is read to the end of its pool, so no curve stops short of its plateau (500–4,000 tokens is the realistic range); charts mark every 500, recall and precision are measured every 250 up to 16,000 | replayed |
 | seeds kept (k), segments read (m) | any count | replayed |
 
 Units follow EventMemory's settings: segment length in characters, `expand_context` and the vector search limit in counts. Tokens measure what things cost: reader budgets, reranker input, and the first stage's head (16,384 tokens of seed text, enough to fill the largest budget). Pools and depths are seed counts rather than tokens because the vector search limit is a count; equal reranker input across segment lengths is compared through each configuration's measured reranker tokens (§5 of the report). A segment length is a limit, not a size: the simulation records each history's measured mean segment (characters and tokens) and the mean unit each configuration reads (the seed, or its window), and the reports state those measured sizes. Where a comparison pairs units by size (the expansion comparison, §11), it pairs by measured size and flags pairs further apart than `config.EVAL.size_tolerance` (25%).
@@ -134,6 +134,6 @@ There is no dev split (§6), so the choice and the measurement use the same ques
 1. `python -m pytest -q tests`
 2. `python -m rbench run lme-test`: local and free, 8 LongMemEval-S histories end to end.
 3. `python -m rbench smoke` and `python -m rbench embed-fidelity`: fractions of a cent.
-4. `python -m rbench estimate lme-core lme-sizes lme-depth --embedder gemma300m-di-raw`
+4. Embed (`run lme-core --only prepare --embedder gemma300m-di-raw`, which also measures each pool's depth), then `python -m rbench estimate lme-core lme-sizes --embedder gemma300m-di-raw`: the reranking price at the measured depths, for the user to approve.
 5. `python -m rbench run lme-pilot --max-usd 3 --embedder gemma300m-di-raw`: 100 questions; reused by the core.
-6. Review, then `run lme-core`, `lme-sizes` and `lme-depth`, raising the cap stage by stage.
+6. Review, then `run lme-core` and `lme-sizes`, raising the cap stage by stage.

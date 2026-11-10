@@ -36,7 +36,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-COUNT_DEPTHS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300)
+# vector search limits replayed (those up to the deepest pool, and the pool itself: depths())
+COUNT_DEPTHS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 7500, 10000)
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,12 @@ class Depth:
 
 
 DEPTHS = tuple(Depth(v) for v in COUNT_DEPTHS)
+
+
+def depths(deepest: int) -> tuple[Depth, ...]:
+    """The vector search limits replayed for pools up to `deepest` seeds: COUNT_DEPTHS up to it,
+    and the pool itself (a measured depth need not be on the grid)."""
+    return tuple(Depth(v) for v in sorted({v for v in COUNT_DEPTHS if v <= deepest} | {deepest}))
 
 
 @dataclass(frozen=True)

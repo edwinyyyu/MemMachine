@@ -17,8 +17,8 @@ from collections import defaultdict
 
 import numpy as np
 
+from rbench import depth, simulation
 from rbench import partitions as pt
-from rbench import simulation
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.embedding import EMBEDDERS
 from rbench.memory import MEMORY
@@ -56,13 +56,21 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
                 groups[(run.dataset, run.scope, run.variant, c, run.expand, m)].append(run)
     per_model: dict[str, float] = {}
     basis: dict[str, set[str]] = defaultdict(set)
+    unknown: list[str] = []  # groups whose pool depth is not measured yet
+    pools_used: dict[str, int] = {}
     for (dataset, scope, variant, c, expand, model), members in groups.items():
         sample_name = max((r.sample for r in members), key=ORDER.index)  # the largest holds the others
-        pool_seeds = max(r.pool_seeds for r in members)
         template = RERANKERS[model].template
         rows, picked = queries(dataset), sample_of(dataset, sample_name)
         keys = pt.groups(dataset, picked, scope)
-        if all(encoded(dataset, c, k) for k in keys):
+        ready = all(encoded(dataset, c, k) for k in keys)
+        pools = [depth.pool(r, c, embedder, measure_if_missing=ready) for r in members]
+        if any(p is None for p in pools):  # the pool is the measured depth, known only once the partitions are encoded
+            unknown.append(f"{model} {dataset} {c} {sample_name}{f' +x{expand}' if expand else ''}")
+            continue
+        pool_seeds = max(pools)
+        pools_used[f"{dataset} {c} {sample_name}"] = pool_seeds
+        if ready:
             work = simulation.scoring_work(embedder, dataset, c, sample_name, model, expand, pool_seeds, scope, variant)
             tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], template)))
             basis[model].add("exact (partitions encoded; cached pairs excluded)")
@@ -100,4 +108,8 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     summary["embedding"] = {"embedder": embedder, "tokens_M": embed_tok / 1e6,
                             "usd": embed_tok / 1e6 * EMBEDDERS[embedder].usd_per_mtok,
                             "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600, "estimate": True}
+    if pools_used:
+        summary["pools (seeds)"] = pools_used
+    if unknown:
+        summary["not priced (pool depth not measured: encode the partitions first)"] = unknown
     return {"summary": summary}

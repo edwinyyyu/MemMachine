@@ -7,6 +7,7 @@
   explain <dataset> <chunking> <qid> [--model M] [--pool-seeds N]
                                      a dry run of one query through every measurement
   estimate <stage> ...               reranker tokens, DeepInfra dollars and hours per stage
+  depth <dataset> <chunking> <sample>  how deep the vector search must go to hold all evidence (depth.py)
   run <stage> [--only prepare|rerank|report] [--models m,...] [--max-usd X]
                                      --models runs the stage with these registered models instead of its own
                                      --max-usd caps TOTAL DeepInfra reranker spend, all models and runs so far
@@ -61,6 +62,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--expand", type=int, default=3, help="expand_context of the windows traced")
     p = sub.add_parser("examples")
     p.add_argument("-n", type=int, default=3)
+    p = sub.add_parser("depth")
+    for name in ("dataset", "chunking", "sample"):
+        p.add_argument(name)
     p = sub.add_parser("estimate")
     p.add_argument("stages", nargs="+", choices=grid.STAGES)
     p = sub.add_parser("run")
@@ -92,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("embed-fidelity")
     p.add_argument("--dataset", default="longmemeval_m")
     p.add_argument("--chunking", default="seg500")
-    for name in ("run", "adhoc", "estimate", "explain"):
+    for name in ("run", "adhoc", "estimate", "explain", "depth"):
         sub.choices[name].add_argument("--embedder", default=EMBEDDER, choices=EMBEDDERS)
     p = sub.add_parser("smoke")
     p.add_argument("--models", default="q06,q4,q8")
@@ -145,6 +149,10 @@ def main(argv: list[str] | None = None) -> None:
         from rbench import examples
 
         print(examples.write(args.n))
+    elif args.command == "depth":
+        from rbench import depth
+
+        print(json.dumps(depth.measure(args.embedder, args.dataset, args.chunking, args.sample), indent=1))
     elif args.command == "estimate":
         result = _estimate([r for s in args.stages for r in grid.STAGES[s]], args.embedder)
         print(json.dumps(result["summary"], indent=1))
