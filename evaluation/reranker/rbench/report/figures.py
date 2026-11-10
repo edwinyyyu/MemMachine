@@ -65,7 +65,6 @@ from rbench.report.data import (  # noqa: E402
     default_segment,
     price,
     query_labels,
-    size_label,
     unit_tokens,
 )
 from rbench.report.stats import interval  # noqa: E402
@@ -160,8 +159,12 @@ def _human(v: float) -> str:
 
 
 def _sized(r: Results, c: str) -> str:
-    """A chunking named with its measured size (data.size_label)."""
-    return f"{c} ({size_label(r, c)})"
+    """A chunking named with its measured mean segment, plainly: "seg500, mean segment 299
+    characters" (the full measured unit is in report section 1)."""
+    from rbench.report.data import segment_size
+
+    size = segment_size(r, c)
+    return f"{c}, mean segment {size[0]:,.0f} characters" if size else c
 
 
 def _unit_title(r: Results, c: str, e: int) -> str:
