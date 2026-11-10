@@ -287,6 +287,7 @@ class EqualSpend:
     where the reranker alone costs more than the spend."""
 
     gain: np.ndarray
+    same: np.ndarray  # identical on every question (both sides read the same evidence: e.g. all L seeds)
     lo: np.ndarray  # 95% bootstrap interval over question clusters (nan with too few clusters)
     hi: np.ndarray
     tokens: float  # R
@@ -319,6 +320,7 @@ def equal_spend(results: Results, model: str, rr_price: float, limit: int, event
     d = np.stack(diffs, 1)  # [q, price, spend]
     gain = np.nanmean(d, 0) if d.size else np.full((len(prices), len(spends)), np.nan)
     gain = np.where(np.isnan(d).all(0), np.nan, gain)
+    same = np.isfinite(gain) & np.all(np.nan_to_num(d) == 0, axis=0)
     labels, inverse = np.unique(base.cluster.to_numpy(), return_inverse=True)
     lo = hi = np.full_like(gain, np.nan)
     if len(labels) >= MIN_CLUSTERS:
@@ -329,7 +331,7 @@ def equal_spend(results: Results, model: str, rr_price: float, limit: int, event
         means = np.tensordot(draws, sums, axes=1) / (draws @ counts)[:, None, None]  # [resample, price, spend]
         lo, hi = np.percentile(means, [2.5, 97.5], axis=0)
         lo, hi = np.where(np.isnan(gain), np.nan, lo), np.where(np.isnan(gain), np.nan, hi)
-    return EqualSpend(gain, lo, hi, R, np.asarray(prices), np.asarray(spends))
+    return EqualSpend(gain, same, lo, hi, R, np.asarray(prices), np.asarray(spends))
 
 
 def same_everywhere(es: EqualSpend, spend: float) -> bool:

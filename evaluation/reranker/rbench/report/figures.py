@@ -75,6 +75,8 @@ SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 SERIES = {"first_stage": "#2a78d6", **{m: spec.color for m, spec in RERANKERS.items()}}
 ORACLE = "#8f8e89"
 MUTED = "#e4e3df"  # cost chart: no clear difference (the grid's gray, lighter than the diverging scale's ends)
+SAME = "#f3f2ef"  # cost chart: identical on every question (lighter than the no-clear-difference gray), hatched
+SAME_HATCH = "#bcbab4"
 FIRST_ONLY = "#c6b3ea"  # cost chart: only the first stage reaches the target (a hue outside the diverging scale)
 # Markers sit only on measured points of sampled curves (hollow, in the line's color); lines
 # measured everywhere (coverage steps, the recall grids) have none: each line has its own color
@@ -624,6 +626,7 @@ def expansion_compare(r: Results, out, head: str) -> None:
                       "Same for every line in a panel: the vector search limit (row) and how the seeds are ordered "
                       "(column).",
                       "Reader tokens on x count the windows' extra text too.",
+                      f"Expand, then rerank appears only where the windows were scored: up to L {config.EVAL.pool_windows}.",
                       "Details: report section 12."])
 
 
@@ -716,6 +719,10 @@ def best_settings(r: Results, out, head: str, reading: str) -> None:
                   "Lines: coverage at each reader budget (lighter: smaller budget), reranked in the model's hue and "
                   "without reranking in blue, with 95% intervals.",
                   "Star: the best value. Diamond: the cheapest value within the best's 95% interval.",
+                  ("Seeds kept k: the lines for different budgets coincide until the budget binds." if "k" in factors
+                   else ""),
+                  ("Chunker: readings in full penalize the simple chunker for splitting evidence turns; the touched "
+                   "readings are in chunker_compare." if "chunker" in factors else ""),
                   ("Not run in this stage: " + "; ".join(missing) + "." if missing else ""),
                   "Details: report sections 14 and 15."])
 
@@ -924,7 +931,7 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
     high = max(0.05, float(np.nanmax([np.nanmax(p[3].gain) for p in panels])))
     norm = TwoSlopeNorm(0, low, high)
     fig, axes = _figure(len(models), columns, panel=(4.6, 3.8), sharey=True)
-    lines = False
+    lines, identical = False, False
     for row, m in enumerate(models):
         mine = [p for p in panels if p[0] == m]
         for col in range(columns):
@@ -933,11 +940,18 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
                 ax.set_visible(False)
                 continue
             _, L, what, es = mine[col]
-            clear = np.isfinite(es.gain) if few else (es.lo > 0) | (es.hi < 0)
+            clear = (np.isfinite(es.gain) if few else (es.lo > 0) | (es.hi < 0)) & ~es.same
             im = ax.pcolormesh(es.prices, es.spends, np.where(clear, es.gain, np.nan).T, cmap=DIVERGING, norm=norm,
                                shading="nearest")
-            ax.pcolormesh(es.prices, es.spends, np.where(np.isfinite(es.gain) & ~clear, 1.0, np.nan).T, shading="nearest",
-                          cmap=LinearSegmentedColormap.from_list("muted", [MUTED, MUTED]))
+            ax.pcolormesh(es.prices, es.spends, np.where(np.isfinite(es.gain) & ~clear & ~es.same, 1.0, np.nan).T,
+                          shading="nearest", cmap=LinearSegmentedColormap.from_list("muted", [MUTED, MUTED]))
+            ax.pcolormesh(es.prices, es.spends, np.where(es.same, 1.0, np.nan).T, shading="nearest",
+                          cmap=LinearSegmentedColormap.from_list("same", [SAME, SAME]))
+            if es.same.any():  # a light 45-degree hatch: identical by construction, not "no clear difference"
+                with matplotlib.rc_context({"hatch.color": SAME_HATCH, "hatch.linewidth": 0.6}):
+                    ax.contourf(es.prices, es.spends, es.same.T.astype(float), levels=[0.5, 1.5], colors="none",
+                                hatches=["///"])
+            identical = identical or bool(es.same.any())
             edge = np.nan_to_num(es.gain if few else es.lo, nan=-1.0).T  # where the gain (its lower bound) crosses 0
             if (edge > 0).any() and (edge <= 0).any():
                 ax.contour(es.prices, es.spends, edge, levels=[0.0], colors=[INK], linewidths=LINE)
@@ -959,6 +973,10 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
     fig.colorbar(im, ax=[a for row in axes for a in row],
                  label=f"coverage gained by reranking for the same money ({EVENT_TEXT[reading]})")
     legend = [(Patch(color=MUTED), "no clear difference (the gain's 95% interval includes 0)")] if not few else []
+    if identical:
+        legend.append((Patch(facecolor=SAME, edgecolor=SAME_HATCH, hatch="///", linewidth=0),
+                       "identical on every question: both read all L seeds"))
+    legend.append((Patch(facecolor=SURFACE, edgecolor=GRID), "blank: the reranker alone costs more than this spend"))
     if lines:
         legend.insert(0, (_key(INK), "break-even: reranking clearly gets more for the money inside the line" if not few
                           else "break-even (point estimate): reranking gets more inside the line"))
