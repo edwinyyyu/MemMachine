@@ -82,9 +82,13 @@ from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa
 MEMORY = DATA / "memory"
 RERANK_FORMAT = FormatOptions(time_style="short")  # what EventMemory.query renders for its reranker
 RENDER = "em"  # score-cache render tag: units are EventMemory-rendered contexts
-# Segments per encode_events call. MemMachine's SQLite vector store binds one SQL variable per
-# vector in an upsert, and SQLite allows 32,766 per statement: one call with more fails ("too
-# many SQL variables"; a corpus partition, or a LongMemEval-M history at 250 characters).
+# Segments per encode_events call: a workaround for a MemMachine limitation, left unchanged
+# upstream (the user's decision, 2026-11-09: "work around it"). MemMachine's SQLiteVectorStore
+# binds one SQL variable per vector in an upsert, and SQLite allows 32,766 per statement: one
+# call with more fails ("too many SQL variables"; a corpus partition, or a LongMemEval-M history
+# at 250 characters), and the failed upsert's pending operations then keep the store from
+# reopening. Batches stay under the limit (with save_threshold=1, one index save per batch);
+# tests/test_memory.py checks a partition encoded in batches stores the same segments.
 ENCODE_SEGMENTS = 20_000
 
 
@@ -229,9 +233,7 @@ class EmbeddingCache:
     its done marker is written (Memory.ingest), so the cache holds only the partitions in
     flight, never a second copy of the index: duplicate texts are paid once among those, and a
     duplicate in a later partition, or re-encoding a finished partition whose stores were
-    deleted, pays again. (Embedding ahead of ingest, e.g. through DeepInfra's batch API, would
-    keep the cache for a whole stage instead: about 64 GB at float64 for LongMemEval-M at
-    seg500 with 1,024 dimensions, 32 GB at float32.)"""
+    deleted, pays again."""
 
     def __init__(self, spec: emb.Embedder) -> None:
         import sqlite3

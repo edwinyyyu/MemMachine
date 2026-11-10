@@ -32,6 +32,20 @@ from memmachine_server.episodic_memory.event_memory.event_memory import EventMem
 MAC_EMBED_TOK_PER_S = 10500
 
 
+# Disk per stored segment besides its vector (float16 x dimensions in the index), measured
+# 2026-11-09 on LongMemEval-S proto at seg500 (163,303 segments, 768 dimensions): index 1,544 B
+# (1,536 of vector), segments.sqlite 1,135 B with texts averaging 299 characters (taken as 835 B
+# plus the text), vectors.sqlite 163 B (the vectors live in the index), the simulation's segment
+# table 92 B (text-free format). An approximation from one store: segments.sqlite's fixed part
+# is not separately measured at other lengths.
+INDEX_EXTRA, SEGMENT_ROW, VECTOR_ROW, TABLE_ROW = 8, 835, 163, 92
+
+
+def disk_bytes(segments: float, chars: float, dims: int) -> float:
+    """Estimated disk of `segments` stored segments averaging `chars` characters."""
+    return segments * (2 * dims + INDEX_EXTRA + SEGMENT_ROW + chars + VECTOR_ROW + TABLE_ROW)
+
+
 IN_FLIGHT = 16  # the adaptive limit's start (limits.START): it grows while DeepInfra allows, so hours are an upper bound
 
 
@@ -90,6 +104,9 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
                 continue
             pools = [g[0] for g in guesses]
             label += f" (depth from {guesses[0][1]})"
+            early_risk = RERANKERS[model].backend != "local"  # overlapped: scored early to EARLY x this estimate
+        else:
+            early_risk = False
         pool_seeds = max(pools)
         if ready:
             work = simulation.scoring_work(embedder, dataset, c, sample_name, model, expand, pool_seeds, scope, variant)
@@ -112,10 +129,15 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
                              "segment lengths; ignores cached pairs)")
         per_model[model] = per_model.get(model, 0.0) + tokens
         share = depth.evidence_in_pool(members[0], c, embedder)
+        usd = tokens / 1e6 * (RERANKERS[model].usd_per_mtok or 0.0)
         by_group[f"{model} {label}"] = {"pool": pool_seeds,
                                         "evidence in pool": None if share is None else round(share, 3),
-                                        "tokens_M": round(tokens / 1e6, 2),
-                                        "usd": round(tokens / 1e6 * (RERANKERS[model].usd_per_mtok or 0.0), 2)}
+                                        "tokens_M": round(tokens / 1e6, 2), "usd": round(usd, 2)}
+        if early_risk:  # pairs past the measured pool, if it comes out 25% below its estimate (pipeline.EARLY)
+            from rbench.pipeline import EARLY
+
+            by_group[f"{model} {label}"]["early scoring: usd past the pool if it comes out 25% below the estimate"] = (
+                round(usd * max(0.0, EARLY - 0.75), 2))
 
     to_embed: set[tuple[str, str, str, str]] = set()  # (dataset, scope, chunking, partition) not encoded yet
     for run in runs:
@@ -123,11 +145,17 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
             to_embed |= {(run.dataset, run.scope, c, k) for k in pt.groups(run.dataset, sample_of(run.dataset, run.sample),
                                                                              run.scope) if not encoded(run.dataset, c, k)}
     per_partition: dict[tuple[str, str, str], float] = {}
-    for dataset, scope, c in {x[:3] for x in to_embed}:
+    disk: dict[str, dict] = {}
+    for dataset, scope, c in sorted({x[:3] for x in to_embed}):
         ks = sorted(k for d, s, n, k in to_embed if (d, s, n) == (dataset, scope, c))
         probe = ks[:: max(1, len(ks) // probes)][:probes]
         per_partition[(dataset, scope, c)] = float(np.mean([pt.embedding_tokens(dataset, k, c, scope, embedder)
                                                             for k in probe]))
+        stored = [pt.offline(dataset, k, c, scope)[1] for k in probe]  # MemMachine Segments (cached by offline)
+        segments = float(np.mean([len(s) for s in stored])) * len(ks)
+        chars = float(np.mean([len(x.block.text) for s in stored for x in s]))
+        disk[f"{dataset} {c}"] = {"partitions": len(ks), "segments_M": round(segments / 1e6, 2),
+                                  "GB": round(disk_bytes(segments, chars, EMBEDDERS[embedder].dimensions) / 1e9, 1)}
     embed_tok = sum(per_partition[x[:3]] for x in to_embed)  # each partition without vectors is embedded once
     summary = {m: {"billed_M": t / 1e6, "deepinfra_usd": t / 1e6 * (RERANKERS[m].usd_per_mtok or 0.0),
                    "local_hours": t / RERANKERS[m].local_tok_per_s / 3600 if RERANKERS[m].local_tok_per_s else None,
@@ -135,6 +163,14 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     summary["embedding"] = {"embedder": embedder, "tokens_M": embed_tok / 1e6,
                             "usd": embed_tok / 1e6 * EMBEDDERS[embedder].usd_per_mtok,
                             "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600, "estimate": True}
+    if disk:
+        import shutil
+
+        from rbench.paths import DATA
+
+        summary["disk for the stores not yet encoded (estimate)"] = disk | {
+            "total GB": round(sum(v["GB"] for v in disk.values()), 1),
+            "free GB now": round(shutil.disk_usage(DATA).free / 1e9, 1)}
     if by_group:
         summary["by scoring job (pool in seeds)"] = by_group
     if unknown:

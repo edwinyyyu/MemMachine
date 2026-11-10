@@ -110,41 +110,51 @@ def needed(order: list[int], g) -> tuple[float, float]:
     return float(every), float(first)
 
 
+async def measure_partition(m: Memory, dataset: str, k: str, p, members: list[int], variant: str,
+                            expansions: tuple[int, ...], progress=None) -> dict:
+    """Each of a partition's queries' depths (keyed by qid), from its open Memory: what
+    _measure records per query. Engine calls run in order, one at a time."""
+    rows, fmt = queries(dataset), pt.formats(dataset)
+    out = {}
+    seg = await pt.table(m, dataset, p)
+    partition = await (await m.event_memory()).open_or_create_partition(k)
+    index = {u: i for i, u in enumerate(seg.uuid)}
+    for qi in members:
+        q = rows[qi]
+        query = q["variants"][variant]
+        result = await partition.query(query, vector_search_limit=len(seg), expand_context=0, format_options=fmt.rerank)
+        order = [index[str(c.seed_segment_uuid)] for c in result.scored_segment_contexts]
+        g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
+        every, first = needed(order, g)
+        top = max(budgets())
+        seeds = fill_costs([[s] for s in order], seg, top)
+        fill = {"0": {str(b): fill_depth(seeds, b) for b in budgets()}}
+        holds = {"0": every}  # the pool depth at which all of some answer's evidence is in it
+        for e in [e for e in expansions if e]:  # windows fill a budget with no more contexts than seeds
+            windowed = await partition.query(query, vector_search_limit=len(seeds), expand_context=e,
+                                             format_options=fmt.rerank)
+            contexts = [[index[str(x.uuid)] for x in c.segments] for c in windowed.scored_segment_contexts]
+            costs = fill_costs(contexts, seg, top)
+            fill[str(e)] = {str(b): fill_depth(costs, b) for b in budgets()}
+            holds[str(e)] = windows_hold(contexts, g)
+        out[q["qid"]] = {"every": every, "first": first, "segments": len(seg), "fill": fill, "holds": holds}
+        if progress is not None:
+            progress.step()
+    return out
+
+
 async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope: str, variant: str,
                    expansions: tuple[int, ...]) -> dict:
     from rbench.progress import Progress
 
-    rows, fmt = queries(dataset), pt.formats(dataset)
+    rows = queries(dataset)
     out = {}
     keyed = pt.groups(dataset, sample(dataset, sample_name), scope)
     progress = Progress(f"{dataset} {chunking} depth", sum(len(v) for v in keyed.values()), "queries")
     for k, members in keyed.items():
         p = pt.part(dataset, rows[members[0]], scope)
         async with Memory(embedder, dataset, chunking) as m:
-            seg = await pt.table(m, dataset, p)
-            partition = await (await m.event_memory()).open_or_create_partition(k)
-            index = {u: i for i, u in enumerate(seg.uuid)}
-            for qi in members:
-                q = rows[qi]
-                query = q["variants"][variant]
-                result = await partition.query(query, vector_search_limit=len(seg), expand_context=0,
-                                               format_options=fmt.rerank)
-                order = [index[str(c.seed_segment_uuid)] for c in result.scored_segment_contexts]
-                g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
-                every, first = needed(order, g)
-                top = max(budgets())
-                seeds = fill_costs([[s] for s in order], seg, top)
-                fill = {"0": {str(b): fill_depth(seeds, b) for b in budgets()}}
-                holds = {"0": every}  # the pool depth at which all of some answer's evidence is in it
-                for e in [e for e in expansions if e]:  # windows fill a budget with no more contexts than seeds
-                    windowed = await partition.query(query, vector_search_limit=len(seeds), expand_context=e,
-                                                     format_options=fmt.rerank)
-                    contexts = [[index[str(x.uuid)] for x in c.segments] for c in windowed.scored_segment_contexts]
-                    costs = fill_costs(contexts, seg, top)
-                    fill[str(e)] = {str(b): fill_depth(costs, b) for b in budgets()}
-                    holds[str(e)] = windows_hold(contexts, g)
-                out[q["qid"]] = {"every": every, "first": first, "segments": len(seg), "fill": fill, "holds": holds}
-                progress.step()
+            out.update(await measure_partition(m, dataset, k, p, members, variant, expansions, progress))
     return out
 
 
@@ -154,6 +164,13 @@ def measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope:
     scope, variant = pt.scope_of(dataset, scope), variant or info(dataset).default_variant
     expansions = tuple(sorted({0, *expansions}))
     per = asyncio.run(_measure(embedder, dataset, chunking, sample_name, scope, variant, expansions))
+    return save(embedder, dataset, chunking, sample_name, per, expansions)
+
+
+def save(embedder: str, dataset: str, chunking: str, sample_name: str, per: dict, expansions: tuple[int, ...]) -> dict:
+    """Summarize and save per-query depths (measure's, or those an overlapped ingest measured
+    partition by partition: pipeline.prepare_and_score); returns the summary."""
+    expansions = tuple(sorted({0, *expansions}))
     summary = {"embedder": embedder, "dataset": dataset, "chunking": chunking, "sample": sample_name,
                "queries": len(per), "segments_median": float(np.median([v["segments"] for v in per.values()]))}
     for reading in ("every", "first"):

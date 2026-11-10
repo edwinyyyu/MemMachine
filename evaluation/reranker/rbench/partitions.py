@@ -274,8 +274,11 @@ def groups(dataset: str, picked: list[int], scope: str | None = None) -> dict[st
     return out
 
 
-def ingest(embedder: str, dataset: str, chunking: str, picked: list[int], scope: str | None = None) -> None:
-    """Encode each sampled query's partition (embedding it), skipping those already in."""
+def ingest(embedder: str, dataset: str, chunking: str, picked: list[int], scope: str | None = None,
+           after=None) -> None:
+    """Encode each sampled query's partition (embedding it), skipping those already in. after:
+    an async callable (memory, key, members, part) run on each partition once it is in, in the
+    same loop and Memory, so every engine call stays sequential (pipeline.prepare_and_score)."""
     rows = queries(dataset)
 
     from rbench.progress import Progress
@@ -287,7 +290,9 @@ def ingest(embedder: str, dataset: str, chunking: str, picked: list[int], scope:
             p = part(dataset, rows[members[0]], scope)
             async with Memory(embedder, dataset, chunking) as m:
                 encoded += await m.ingest(k, list(p.events), formats(dataset).embed)
-            progress.step(note=f"{encoded} embedded now, the rest already were")
+                if after is not None:
+                    await after(m, k, members, p)
+            progress.step(note=f"{encoded} encoded by this run")
 
     asyncio.run(go())
 

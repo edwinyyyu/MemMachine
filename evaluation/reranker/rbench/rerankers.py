@@ -315,20 +315,21 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
         raise RuntimeError(f"{len(failures)} of {len(requests)} requests failed ({cached} are cached): {failures[0]}")
 
 
-def score(reranker: str, work: Work, note: str) -> None:
+def score(reranker: str, work: Work, note: str, progress: bool = True) -> None:
     """Score work, each request cached as it returns: a local model in groups of GROUP_QUERIES
     queries, a hosted one all at once through its adaptive limit (limits.py). A hosted model
     stops cleanly when DeepInfra's credits run out (credits.py) or it fails for an hour."""
     from rbench.progress import Progress
 
     spec, cache_ = RERANKERS[reranker], ScoreCache(reranker)
-    progress = Progress(f"  {reranker} {note}", sum(len(items) for _, items in work), "pairs")
+    shown = Progress(f"  {reranker} {note}", sum(len(items) for _, items in work), "pairs") if progress else None
     if spec.backend == "local":
         for g in range(0, len(work), GROUP_QUERIES):
             group = work[g : g + GROUP_QUERIES]
             _local(spec.hf_model, group, spec.template, cache_, note)
-            progress.step(sum(len(items) for _, items in group))
+            if shown is not None:
+                shown.step(sum(len(items) for _, items in group))
         return
     if spec.template != QWEN3_CARD:
         raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself; other templates run locally")
-    asyncio.run(_deepinfra(spec.hf_model, work, spec.template, cache_, note, progress))
+    asyncio.run(_deepinfra(spec.hf_model, work, spec.template, cache_, note, shown))

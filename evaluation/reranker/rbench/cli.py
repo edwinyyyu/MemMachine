@@ -220,10 +220,13 @@ def main(argv: list[str] | None = None) -> None:
         from rbench.memory import EMBEDDED_TOKENS
 
         started, spent = time.monotonic(), rerankers.total_spent_usd()
-        if args.only in (None, "prepare"):
+        early: list[str] = []
+        if args.only is None:  # hosted rerankers score while later histories embed (pipeline.prepare_and_score)
+            early = pipeline.prepare_and_score(runs, embedder)
+        if args.only == "prepare":
             for run in runs:
                 pipeline.prepare(run, embedder)
-        if args.only in (None, "rerank"):
+        if args.only == "rerank":
             for run in runs:
                 for m in run.models:
                     pipeline.rerank(run, m, embedder)
@@ -236,6 +239,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"done in {elapsed(started)}: DeepInfra reranking ${rerankers.total_spent_usd() - spent:.2f} (call logs); "
               f"embedding {embedded / 1e6:.2f}M tokens, ${embedded / 1e6 * EMBEDDERS[embedder].usd_per_mtok:.2f} "
               "(counted as sent)", flush=True)
+        for line in early:
+            print(f"early scoring: {line}", flush=True)
     elif args.command == "show":
         from rbench.report import figures
         from rbench.report.data import load
