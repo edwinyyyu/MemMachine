@@ -44,7 +44,7 @@ import numpy as np
 from rbench import config
 from rbench import partitions as pt
 from rbench.datasets import info
-from rbench.memory import Memory
+from rbench.memory import QUERY_SEEDS, Memory
 from rbench.paths import RESULTS
 from rbench.reading import Reader
 from rbench.samples import sample
@@ -122,7 +122,9 @@ async def measure_partition(m: Memory, dataset: str, k: str, p, members: list[in
     for qi in members:
         q = rows[qi]
         query = q["variants"][variant]
-        result = await partition.query(query, vector_search_limit=len(seg), expand_context=0, format_options=fmt.rerank)
+        # every segment ranked, up to the SQLite variable limit (memory.QUERY_SEEDS): deeper evidence counts as unreached
+        result = await partition.query(query, vector_search_limit=min(len(seg), QUERY_SEEDS), expand_context=0,
+                                       format_options=fmt.rerank)
         order = [index[str(c.seed_segment_uuid)] for c in result.scored_segment_contexts]
         g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
         every, first = needed(order, g)

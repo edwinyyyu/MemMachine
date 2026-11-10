@@ -29,10 +29,11 @@ from rbench.schema import queries
 _PREPARED: set[tuple] = set()  # (embedder, dataset, scope, chunking, sample) done in this process
 
 
-def prepare(run: Run, embedder: str = EMBEDDER) -> None:
+def prepare(run: Run, embedder: str = EMBEDDER, chunkings: tuple[str, ...] | None = None) -> None:
     """Encode the partitions the run's queries search (each embedded once; the stores are kept),
-    then, for a run without a set pool, measure the depth its pool needs (depth.py, free)."""
-    for c in run.chunkings:
+    then, for a run without a set pool, measure the depth its pool needs (depth.py, free).
+    chunkings: only these of the run's (default all)."""
+    for c in chunkings or run.chunkings:
         if (embedder, run.dataset, run.scope, c, run.sample) in _PREPARED:
             continue  # the same stage's other scoring position
         _PREPARED.add((embedder, run.dataset, run.scope, c, run.sample))
@@ -40,9 +41,10 @@ def prepare(run: Run, embedder: str = EMBEDDER) -> None:
         print(f"{run.dataset} {c} {run.sample}: pool {depth.pool(run, c, embedder)} seeds", flush=True)
 
 
-def rerank(run: Run, model: str, embedder: str = EMBEDDER) -> None:
+def rerank(run: Run, model: str, embedder: str = EMBEDDER, chunkings: tuple[str, ...] | None = None) -> None:
+    """Score a run's pairs at one model, for its chunkings (or only these, already encoded)."""
     spec = RERANKERS[model]
-    for c in run.chunkings:
+    for c in chunkings or run.chunkings:
         work = simulation.scoring_work(embedder, run.dataset, c, run.sample, model, run.expand,
                                        depth.pool(run, c, embedder), run.scope, run.variant)
         pairs = sum(len(items) for _, items in work)
@@ -68,6 +70,7 @@ class _Scorer(threading.Thread):
         self.queue: queue.Queue = queue.Queue()
         self.error: BaseException | None = None
         self.pairs = 0
+        self.cancel = threading.Event()  # set: send nothing more (requests in flight finish and are cached)
 
     def submit(self, work) -> None:
         if work:
@@ -86,9 +89,9 @@ class _Scorer(threading.Thread):
                     item = self.queue.get_nowait()
                 except queue.Empty:
                     break
-            if work and self.error is None:
+            if work and self.error is None and not self.cancel.is_set():
                 try:
-                    score(self.model, work, self.note, progress=False)
+                    score(self.model, work, self.note, progress=False, cancel=self.cancel)
                     self.pairs += sum(len(items) for _, items in work)
                 except BaseException as err:  # SystemExit too: raised again by check() in the main thread
                     self.error = err
@@ -105,6 +108,13 @@ class _Scorer(threading.Thread):
         self.join()
         self.check()
 
+    def abort(self) -> None:
+        """Stop: queued work is dropped and nothing more is sent; the requests in flight finish
+        and are cached (a paid request is never left unrecorded)."""
+        self.cancel.set()
+        self.queue.put(None)
+        self.join()
+
 
 def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_name: str, c: str, members: list[Run],
                 hosted: list[str], caps: dict[int, int]) -> list[str]:
@@ -120,6 +130,7 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
     per: dict = {}
     early: dict[tuple[str, int], list[tuple[int, int]]] = defaultdict(list)  # (model, expand) -> (rank, tokens)
     rows, fmt, top = queries(dataset), pt.formats(dataset), str(config.EVAL.token_top)
+    wanted = {(m, r.expand) for r in members for m in r.models if m in hosted}
     submitted: dict[str, set[str]] = {m: set() for m in hosted}  # keys queued but maybe not cached yet: sent once
 
     async def after(m, k, idx, p) -> None:
@@ -130,6 +141,8 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
         for model in hosted:
             template = RERANKERS[model].template
             for e, cap in caps.items():
+                if (model, e) not in wanted:  # only the (model, expansion) pairs a run asked for
+                    continue
                 reranker = CachedReranker(model, mode="record")
                 partition = await (await m.event_memory(reranker)).open_or_create_partition(k)
                 for qi in idx:
@@ -139,8 +152,8 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
                                           expand_context=e, format_options=fmt.rerank)
                 work = []
                 for query, items in reranker.work.items():
-                    items = [(key, d) for key, d in items if key not in submitted[model]]  # e.g. a window that is its seed
-                    submitted[model].update(key for key, _ in items)
+                    # once each, in order (e.g. a window that is its seed, or two identical segments)
+                    items = [(key, d) for key, d in items if key not in submitted[model] and not submitted[model].add(key)]
                     if items:
                         work.append((query, items))
                 for query, items in work:
@@ -152,11 +165,12 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
     failure: BaseException | None = None
     try:
         pt.ingest(embedder, dataset, c, sample(dataset, sample_name), scope, after=after)
-    except BaseException as err:  # stop the scorers cleanly before raising
+    except BaseException as err:  # stop the scorers cleanly before raising (Ctrl-C too)
         failure = err
     for s in scorers.values():
         try:
-            s.close()
+            s.abort() if failure is not None else s.close()  # after a failure: only what is in flight finishes
+            s.check()
         except BaseException as err:
             failure = failure or err
     if failure is not None:
@@ -168,7 +182,7 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
               + (f" (windows x{r.expand})" if r.expand else ""), flush=True)
     for r in members:  # the rest, up to the measured pools (pairs scored early are cached)
         for m in r.models:
-            rerank(r, m, embedder)
+            rerank(r, m, embedder, (c,))
     for (model, e), pairs in sorted(early.items()):
         pool = depth.pool(next(r for r in members if r.expand == e), c, embedder)
         usd = (RERANKERS[model].usd_per_mtok or 0.0) / 1e6
@@ -214,10 +228,10 @@ def prepare_and_score(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
                 caps[r.expand] = int(EARLY * est[0])
         if not hosted or ready or not caps:
             for r in members:
-                prepare(r, embedder)
+                prepare(r, embedder, (c,))
             for r in members:
                 for m in r.models:
-                    rerank(r, m, embedder)
+                    rerank(r, m, embedder, (c,))
             continue
         lines += _overlapped(embedder, dataset, scope, variant, sample_name, c, members, hosted, caps)
     return lines

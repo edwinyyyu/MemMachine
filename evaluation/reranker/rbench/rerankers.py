@@ -234,7 +234,8 @@ def _local(model: str, work: Work, t: Template, cache_: ScoreCache, note: str) -
 RETRY = (429, 500, 502, 503, 504)
 
 
-async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, note: str, progress=None) -> None:
+async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, note: str, progress=None,
+                     cancel=None) -> None:
     """Score with DeepInfra through the model's adaptive concurrency limit (limits.py), caching
     and logging each request as soon as it returns. Retryable failures back off for up to an
     hour per request. A request that cannot succeed (out of credits, a non-retryable answer, or
@@ -263,8 +264,8 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
             t0, failing, attempt = time.monotonic(), None, 0
             while True:
                 async with gate:
-                    if stop:
-                        return False  # another request cannot succeed: send nothing more
+                    if stop or (cancel is not None and cancel.is_set()):
+                        return False  # another request cannot succeed, or the run is stopping: send nothing more
                     try:
                         response = await client.post(DEEPINFRA_URL + model, json=body)
                         last = f"HTTP {response.status_code}"
@@ -315,10 +316,11 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
         raise RuntimeError(f"{len(failures)} of {len(requests)} requests failed ({cached} are cached): {failures[0]}")
 
 
-def score(reranker: str, work: Work, note: str, progress: bool = True) -> None:
+def score(reranker: str, work: Work, note: str, progress: bool = True, cancel=None) -> None:
     """Score work, each request cached as it returns: a local model in groups of GROUP_QUERIES
     queries, a hosted one all at once through its adaptive limit (limits.py). A hosted model
-    stops cleanly when DeepInfra's credits run out (credits.py) or it fails for an hour."""
+    stops cleanly when DeepInfra's credits run out (credits.py) or it fails for an hour. cancel:
+    a threading.Event; once set, nothing more is sent (requests in flight finish and are cached)."""
     from rbench.progress import Progress
 
     spec, cache_ = RERANKERS[reranker], ScoreCache(reranker)
@@ -332,4 +334,4 @@ def score(reranker: str, work: Work, note: str, progress: bool = True) -> None:
         return
     if spec.template != QWEN3_CARD:
         raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself; other templates run locally")
-    asyncio.run(_deepinfra(spec.hf_model, work, spec.template, cache_, note, shown))
+    asyncio.run(_deepinfra(spec.hf_model, work, spec.template, cache_, note, shown, cancel))

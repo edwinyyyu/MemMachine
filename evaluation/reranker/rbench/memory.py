@@ -93,6 +93,9 @@ RENDER = "em"  # score-cache render tag: units are EventMemory-rendered contexts
 # drops the partition's records table and unlinks its index rather than deleting rows by an IN
 # list, so it avoids the limit by construction.
 ENCODE_SEGMENTS = 20_000
+# The same limitation bounds a query: EventMemory fetches its vector_search_limit seeds in one
+# statement, so no query asks for more than this (depth.py ranks a partition this deep at most).
+QUERY_SEEDS = 30_000
 
 
 class FixedCutSegmenter(Segmenter):
@@ -438,14 +441,20 @@ class CachedReranker(Reranker):
     async def score(self, query: str, candidates: list[str]) -> list[float]:
         keys = self.keys(query, candidates)
         known = {k for k, _ in self.asked.setdefault(query, [])}
-        self.asked[query] += [(k, c) for k, c in zip(keys, candidates, strict=True) if k not in known]
+        for k, c in zip(keys, candidates, strict=True):  # in order, each key once (identical contexts render alike)
+            if k not in known:
+                known.add(k)
+                self.asked[query].append((k, c))
         got = self.cache.get(keys)
         missing = [(k, c) for k, c in zip(keys, candidates, strict=True) if k not in got]
         if missing and self.mode == "replay":
             raise KeyError(f"{self.model}: {len(missing)} of {len(keys)} contexts for {query[:60]!r} are not scored")
         if missing:
             seen = {k for k, _ in self.work.setdefault(query, [])}
-            self.work[query] += [(k, c) for k, c in missing if k not in seen]
+            for k, c in missing:  # each key once: a duplicate would be billed twice
+                if k not in seen:
+                    seen.add(k)
+                    self.work[query].append((k, c))
         raw = np.asarray([got[k][0] if k in got else np.nan for k in keys], dtype=np.float64)
         return np.nan_to_num(to_logit(self.model, raw), nan=0.0).tolist()
 

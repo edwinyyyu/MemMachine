@@ -220,8 +220,10 @@ def _table(dataset: str, p: Part, segments: list[Segment]) -> Segments:
     number = {e.uuid: i for i, e in enumerate(p.events)}
     event = [number[s.event_uuid] for s in segments]
     bounds: list[tuple[int, int]] = [(0, 0)] * len(segments)
-    for e in sorted(set(event)):
-        rows = [i for i, x in enumerate(event) if x == e]
+    by_event: dict[int, list[int]] = {}  # one pass (grouping per event by scanning was O(events x segments))
+    for i, x in enumerate(event):
+        by_event.setdefault(x, []).append(i)
+    for e, rows in sorted(by_event.items()):
         for i, b in zip(rows, offsets(p.texts[e], [segments[i].block.text for i in rows]), strict=True):
             bounds[i] = b
     tokens, inner, run = _costs(segments, formats(dataset).read)
@@ -231,9 +233,15 @@ def _table(dataset: str, p: Part, segments: list[Segment]) -> Segments:
 
 
 def _save_table(path, stamp: str, seg: Segments) -> None:
+    """Written to a temporary file and moved into place, so an interrupted write never leaves a
+    truncated table."""
+    import os
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, stamp=np.str_(stamp), uuid=np.asarray(seg.uuid, dtype="S"),
+    temporary = path.with_name(path.stem + ".partial.npz")
+    np.savez_compressed(temporary, stamp=np.str_(stamp), uuid=np.asarray(seg.uuid, dtype="S"),
                         **{c: getattr(seg, c) for c in COLUMNS})
+    os.replace(temporary, path)
 
 
 async def table(m: Memory, dataset: str, p: Part) -> Segments:
@@ -245,11 +253,16 @@ async def table(m: Memory, dataset: str, p: Part) -> Segments:
     path = m.root / "tables" / f"{p.key}.npz"
     stamp = m.done(p.key).read_text()
     if path.exists():
-        data = np.load(path, allow_pickle=False)
-        if str(data["stamp"]) == stamp and all(c in data for c in ("uuid", *COLUMNS)):
-            seg = Segments(tuple(data["uuid"].astype(str).tolist()), *(data[c] for c in COLUMNS))
-            if "texts" in data:  # the earlier form: drop the copy of the texts
-                data.close()
+        try:
+            data = np.load(path, allow_pickle=False)
+            fresh = str(data["stamp"]) == stamp and all(c in data for c in ("uuid", *COLUMNS))
+            seg = Segments(tuple(data["uuid"].astype(str).tolist()), *(data[c] for c in COLUMNS)) if fresh else None
+            old = fresh and "texts" in data
+            data.close()
+        except Exception:  # unreadable (written by an interrupted run before writes were atomic): rebuilt below
+            seg, old = None, False
+        if seg is not None:
+            if old:  # the earlier form: drop the copy of the texts
                 _save_table(path, stamp, seg)
             return seg
     segment_store, _, _ = await m.stores()
@@ -297,7 +310,7 @@ def ingest(embedder: str, dataset: str, chunking: str, picked: list[int], scope:
     asyncio.run(go())
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=8)  # estimate probes 8 partitions twice (tokens, then disk)
 def offline(dataset: str, k: str, chunking: str, scope: str | None = None) -> tuple[Segments, tuple[Segment, ...], tuple[str, ...]]:
     """(segments, MemMachine Segment objects, embedding texts) of partition k without a store:
     its events through the chunking's segmenter and MemMachine's WholeTextDeriver in process.

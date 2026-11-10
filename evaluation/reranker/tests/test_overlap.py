@@ -3,6 +3,7 @@ hosted reranker (both replaced by in-process transports), the reranker scores ea
 pairs while later histories embed, the measured depths are saved as `depth` would save them,
 nothing needed is left unscored, and nothing is scored twice."""
 
+import hashlib
 import json
 
 import httpx
@@ -35,7 +36,7 @@ def test_reranking_overlaps_ingest_and_completes(tmp_path, monkeypatch):
         events.append("embed")
         n = body.get("dimensions") or 1024
         data = [{"object": "embedding", "index": i,
-                 "embedding": np.random.default_rng(abs(hash(t)) % 2**32).normal(size=n).tolist()}
+                 "embedding": np.random.default_rng(int(hashlib.sha1(t.encode()).hexdigest()[:8], 16)).normal(size=n).tolist()}
                 for i, t in enumerate(body["input"])]
         return httpx.Response(200, json={"object": "list", "data": data, "model": body["model"],
                                          "usage": {"prompt_tokens": 1, "total_tokens": 1}})

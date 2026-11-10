@@ -225,6 +225,37 @@ def test_a_table_in_the_earlier_form_is_rewritten_without_texts(tmp_path, monkey
     _run(go())
 
 
+def test_a_truncated_table_is_rebuilt(tmp_path, monkeypatch):
+    events = _events(12)
+    monkeypatch.setattr(pt, "formats", lambda dataset: pt.CHAT)
+    p = pt.Part("h", tuple(events), tuple(f"turn {i}" for i in range(len(events))),
+                tuple(e.blocks[0].text for e in events))
+
+    async def go():
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
+            await m.ingest("h", events)
+            seg = await pt.table(m, "synthetic", p)
+            path = m.root / "tables" / "h.npz"
+            path.write_bytes(path.read_bytes()[: path.stat().st_size // 2])  # as if a write had been cut off
+            again = await pt.table(m, "synthetic", p)
+            assert all(np.array_equal(getattr(again, c), getattr(seg, c)) for c in pt.COLUMNS)
+            assert not list(path.parent.glob("*.partial.npz"))
+
+    _run(go())
+
+
+def test_record_mode_queues_each_context_once(tmp_path, monkeypatch):
+    """Identical contexts in one call (two segments that render alike) are queued and billed once."""
+    from rbench import rerankers
+    from rbench.memory import CachedReranker
+
+    monkeypatch.setattr(rerankers, "SCORES", tmp_path)
+    reranker = CachedReranker("q06", mode="record")
+    _run(reranker.score("q?", ["same text", "other", "same text"]))
+    assert [c for _, c in reranker.work["q?"]] == ["same text", "other"]
+    assert [c for _, c in reranker.asked["q?"]] == ["same text", "other"]
+
+
 def test_simple_chunker_cuts_every_n_characters_within_each_turn():
     """cut<N> pieces are N characters (the last shorter), join back to the turn exactly, and
     never span events; seg<N> is MemMachine's TextSegmenter."""

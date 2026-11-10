@@ -289,8 +289,7 @@ def scoring_work(embedder: str, dataset: str, chunking: str, sample_name: str, m
                                    pt.scope_of(dataset, scope), variant or info(dataset).default_variant))
     work, seen = [], set()
     for query, items in reranker.work.items():
-        items = [(key, t) for key, t in items if key not in seen]  # queued for another query already
-        seen.update(key for key, _ in items)
+        items = [(key, t) for key, t in items if key not in seen and not seen.add(key)]  # once each, in order
         if items:
             work.append((query, items))
     return work
