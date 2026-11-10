@@ -56,9 +56,9 @@ from rbench import config  # noqa: E402
 from rbench.metrics import CURVE_BUDGETS, CURVE_KS  # noqa: E402
 from rbench.paths import FIGURES  # noqa: E402
 from rbench.report import frontier  # noqa: E402
+from rbench.report import readings as rd  # noqa: E402
 from rbench.report.data import (  # noqa: E402
     Results,
-    coverage,
     default_segment,
     price,
     query_labels,
@@ -86,8 +86,12 @@ DIVERGING = LinearSegmentedColormap.from_list("red_gray_blue", ["#a12a2a", "#e34
                                                                   "#3987e5", "#104281"])  # equal steps per arm
 # What each coverage event means, in words (metrics.py has the definitions).
 EVENT_TEXT = {"first": "some evidence read in full", "every": "all evidence read in full",
-              "first_touch": "some evidence at least partly read", "every_touch": "all evidence at least partly read"}
+              "first_touch": "some evidence at least partly read", "every_touch": "all evidence at least partly read",
+              "share": "share of evidence turns read in full", "share_touch": "share of evidence turns at least partly read"}
 EVENT_NOTE = "Evidence: the turns marked as holding the answer; in full = all their segments read, partly = any."
+SHARE_NOTE = (" Share readings: each question counts the share of its evidence turns read (each turn once), averaged over "
+              "questions; with one evidence turn it equals the all/some readings. Partly read is generous on long assistant "
+              "turns, in full is strict.")
 
 plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE, "axes.edgecolor": GRID,
@@ -127,15 +131,16 @@ def _plot(ax, x, y, **kwargs):
 
 
 def _steps(ax, costs: np.ndarray, lo: float, hi: float, marks=None, marker: str | None = None, **kwargs):
-    """Coverage as the exact step function of per-question costs on [lo, hi]: it rises by
-    1/questions at each question's cost, so it is measured at every budget, not interpolated.
-    With a marker, the series' shape is drawn at `marks` (the labelled ticks) to identify it."""
-    finite = np.sort(costs[np.isfinite(costs)])
+    """Coverage as the exact step function of a reading's costs on [lo, hi] (readings.py): it
+    rises at each question's cost (or evidence turn's), so it is measured at every budget, not
+    interpolated. With a marker, the series' shape is drawn at `marks` (the labelled ticks)."""
+    finite = rd.steps(costs)
     xs = np.concatenate([[lo], finite[(finite > lo) & (finite <= hi)], [hi]])
-    lines = _plot(ax, xs, coverage(costs, xs), drawstyle="steps-post", **kwargs)
+    lines = _plot(ax, xs, rd.coverage(costs, xs), drawstyle="steps-post", **kwargs)
     if marker and marks is not None:
         marks = np.asarray([m for m in marks if lo <= m <= hi], dtype=float)
-        ax.plot(marks, coverage(costs, marks), linestyle="none", zorder=3, **_hollow({"marker": marker, "color": kwargs.get("color")}))
+        ax.plot(marks, rd.coverage(costs, marks), linestyle="none", zorder=3,
+                **_hollow({"marker": marker, "color": kwargs.get("color")}))
     return lines
 
 
@@ -382,7 +387,7 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                         ax.set_visible(False)
                         continue
                     for key, name, color, ls in _series(r, c, limit, e, bound=reading == "every"):
-                        _steps(ax, r.rows(c, name)[reading].to_numpy(), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
+                        _steps(ax, rd.costs(r.rows(c, name), reading), 0, 16000, TOKEN_MARKS, _marker(key), color=color,
                                linestyle=ls)
                         keys.add(key)
                     _token_x(ax)
@@ -391,10 +396,12 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
                     if i == len(expansions) - 1:
                         ax.set_xlabel("reader tokens (rendered context)\nexact at every budget; markers every 1,000")
                     if j == 0:
-                        ax.set_ylabel(f"share of questions: {EVENT_TEXT[reading]}")
+                        ax.set_ylabel(("mean over questions: " if rd.is_share(reading) else "share of questions: ")
+                                      + EVENT_TEXT[reading])
             _save(fig, out / (f"coverage_tokens_{reading}" + (f"_{c}" if len(r.chunkings) > 1 else "") + ".png"),
                   f"Coverage ({EVENT_TEXT[reading]}) vs reader tokens, {_sized(r, c)} — {head}", groups=_ranker_groups(r, keys),
-                  note=TOKENS_EQUAL + (BOUND if reading == "every" else "") + " " + EVENT_NOTE)
+                  note=TOKENS_EQUAL + (BOUND if reading == "every" else "") + " " + EVENT_NOTE
+                       + (SHARE_NOTE if rd.is_share(reading) else ""))
 
 
 def recall_precision_f1(r: Results, out, head: str) -> None:
@@ -517,7 +524,8 @@ def rerank_cost(r: Results, out, head: str, reading: str) -> None:
                 for d in r.depths_at(c, m):
                     rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
                     if not rows.empty and not base.empty:
-                        pts.append((rows.rr_tokens.mean(), (rows[reading] <= b).mean(), (base[reading] <= b).mean()))
+                        pts.append((rows.rr_tokens.mean(), rd.hit(rd.costs(rows, reading), b).mean(),
+                                    rd.hit(rd.costs(base, reading), b).mean()))
                 if not pts:
                     continue
                 xs, ys, bs = zip(*sorted(pts), strict=True)
@@ -568,7 +576,7 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
                     means, los, his = [], [], []
                     for c in chunkings:
                         rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
-                        gain = (rows[reading].to_numpy() <= b).astype(float) - (base[reading].to_numpy() <= b)
+                        gain = rd.hit(rd.costs(rows, reading), b) - rd.hit(rd.costs(base, reading), b)
                         lo, hi = interval(gain, base.cluster.to_numpy())
                         means.append(gain.mean())
                         los.append(gain.mean() - lo if np.isfinite(lo) else 0.0)
@@ -668,9 +676,9 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
     fig, axes = _figure(1, len(budgets), panel=(3.4, 0.34 * len(groups) + 1.2), sharey=True)
     for j, b in enumerate(budgets):
         ax = axes[0][j]
-        hit = (base[reading].to_numpy() <= b).astype(float)
+        hit = rd.hit(rd.costs(base, reading), b)
         for k, m in enumerate(r.models):
-            gain = (r.rows(c, f"rerank:{m}@{limit}")[reading].to_numpy() <= b).astype(float) - hit
+            gain = rd.hit(rd.costs(r.rows(c, f"rerank:{m}@{limit}"), reading), b) - hit
             for g, (f, v) in enumerate(groups):
                 mask = labels[f] == v
                 lo, hi = interval(gain[mask], base.cluster.to_numpy()[mask])
@@ -702,7 +710,7 @@ def first_stage_sizes(r: Results, out, head: str, reading: str) -> None:
         ax = axes[0][j]
         for fam, chunkings in families.items():
             color, marker, ls = CHUNKERS[fam]
-            ys = [(r.rows(c, "first_stage")[reading] <= b).mean() for c in chunkings]
+            ys = [rd.hit(rd.costs(r.rows(c, "first_stage"), reading), b).mean() for c in chunkings]
             _plot(ax, [measured[c] for c in chunkings], ys, color=color, marker=marker, linestyle=ls)
         _measured_x(ax, {c: measured[c] for cs in families.values() for c in cs})
         _share_y(ax)
@@ -797,7 +805,7 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
         i, j = expands.index(p.expand), models.index(p.model)
         ax = axes[i][j]
         for label, c, name in p.items:
-            _steps(ax, r.rows(c, name)[reading].to_numpy(), 0, 16000, TOKEN_MARKS, EXPANSION_MARKERS[label],
+            _steps(ax, rd.costs(r.rows(c, name), reading), 0, 16000, TOKEN_MARKS, EXPANSION_MARKERS[label],
                    color=colors[label])
             present.add(label)
         _token_x(ax)

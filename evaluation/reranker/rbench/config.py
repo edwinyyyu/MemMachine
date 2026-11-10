@@ -8,8 +8,9 @@ reads them from EVAL rather than hard-coding them.
   limits       vector search limits shown, besides the deepest scored (EventMemory's default
                is 20)
   readings     coverage readings the single-reading charts are drawn for: every, first,
-               every_touch, first_touch (metrics.py). Every is the headline (all of a
-               question's evidence is needed)
+               every_touch, first_touch (metrics.py), share, share_touch (the share of a
+               question's evidence turns read: report/readings.py). Every is the headline (all
+               of a question's evidence is needed)
   expansions   expand_context values replayed by the history simulation (EventMemory's default
                is 0). Rerank-then-expand is free at all of them; expand-then-rerank exists only
                where a run scored the windows (grid.py)
@@ -40,7 +41,7 @@ class Evaluation:
 
 
 EVAL = Evaluation()
-READINGS = ("first", "every", "first_touch", "every_touch")
+READINGS = ("first", "every", "first_touch", "every_touch", "share", "share_touch")  # report/readings.py
 
 
 def configure(**changes) -> None:

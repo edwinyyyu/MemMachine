@@ -30,16 +30,23 @@ import numpy as np
 from rbench.paths import SUMMARY
 from rbench import config
 from rbench.report import frontier
-from rbench.report.data import Results, coverage, query_labels, size_label, unit_tokens
+from rbench.report import readings as rd
+from rbench.report.data import Results, query_labels, size_label, unit_tokens
 from rbench.report.stats import delta
 
-EVENTS = ("first", "every", "first_touch", "every_touch")  # complete and touched readings (metrics.py)
+EVENTS = rd.ALL  # the event readings (complete, touched) and the share readings (readings.py)
 RERANK_BUDGETS = (1000, 2000, 4000, 8000, 16000, 32000, 64000)
 SHOW_TARGETS = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
 
 
+def _name(event: str) -> str:
+    """A reading's name in prose: first-gold, every-gold, ... or the share of evidence turns."""
+    return {"share": "share-of-evidence-turns (complete)", "share_touch": "share-of-evidence-turns (touched)"}.get(
+        event, f"{event}-gold")
+
+
 def _cov(rows, event: str, budgets) -> list[str]:
-    return [f"{x:.3f}" for x in coverage(rows[event].to_numpy(), np.asarray(budgets))]
+    return [f"{x:.3f}" for x in rd.coverage(rd.costs(rows, event), budgets)]
 
 
 def _pairs(r: Results) -> list[tuple[str, str]]:
@@ -58,7 +65,7 @@ def _sizes(r: Results, a: str, b: str) -> str:
 
 def first_stage(r: Results, event: str) -> list[str]:
     out = ["## 1. First stage alone (embedding and chunking)\n",
-           f"{event}-gold coverage by reader budget, no reranker"
+           f"{_name(event)} coverage by reader budget, no reranker"
            + "; `+xE` reads each seed's EventMemory window (expand_context E)"
            + (". Δ rows: the simple chunker minus EventMemory's TextSegmenter at the same character limit, with both "
               "measured sizes (the limit is not the size).\n" if _pairs(r) else ".\n"),
@@ -76,13 +83,14 @@ def first_stage(r: Results, event: str) -> list[str]:
     for seg, cut in _pairs(r):
         a, b = r.rows(seg, "first_stage"), r.rows(cut, "first_stage")
         out.append(f"| Δ cut−seg {seg[3:]} | {_sizes(r, seg, cut)} | " + " | ".join(
-            delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
+            delta(rd.hit(rd.costs(b, event), x) - rd.hit(rd.costs(a, event), x), a.cluster.to_numpy())
             for x in config.EVAL.columns) + " |")
     return out + [""]
 
 
 HEADROOM = {"first": "some gold span complete", "every": "every gold span of one answer complete",
-            "first_touch": "some gold span touched", "every_touch": "every gold span of one answer touched"}
+            "first_touch": "some gold span touched", "every_touch": "every gold span of one answer touched",
+            "share": "their evidence turns complete (mean share)", "share_touch": "their evidence turns touched (mean share)"}
 
 
 def headroom(r: Results, event: str) -> list[str]:
@@ -98,7 +106,7 @@ def headroom(r: Results, event: str) -> list[str]:
             oracle = r.rows(c, f"oracle@{limit}")
             if oracle.empty:
                 continue
-            in_pool = (oracle[f"{event}_k"].to_numpy() <= oracle.oracle_pairs.to_numpy()).mean()
+            in_pool = rd.reachable(rd.costs(oracle, event)).mean()  # the oracle reads exactly its pool
             cells = []
             for m in r.models:
                 rows = r.rows(c, f"rerank:{m}@{limit}")
@@ -145,7 +153,7 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
                     if rows.empty or base.empty:
                         continue
                     ds = [] if name.startswith("first_stage") else [
-                        delta((rows[event].to_numpy() <= b).astype(float) - (base[event].to_numpy() <= b),
+                        delta(rd.hit(rd.costs(rows, event), b) - rd.hit(rd.costs(base, event), b),
                               base.cluster.to_numpy()) for b in config.EVAL.budgets]
                     out.append(f"| {c} | {name} | {rows.pairs.mean():.0f} | " + " | ".join(_cov(rows, event, config.EVAL.columns))
                                + " | " + " | ".join(ds or [""] * len(config.EVAL.budgets)) + " |")
@@ -159,13 +167,13 @@ def token_savings(r: Results, event: str) -> list[str]:
            "| chunking | model | L | " + " | ".join(f"at {b}" for b in config.EVAL.columns) + " |", "|---|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
         for limit in r.limits(c):
-            base = coverage(r.rows(c, f"first_stage@{limit}")[event].to_numpy(), grid)
+            base = rd.coverage(rd.costs(r.rows(c, f"first_stage@{limit}"), event), grid)
             for m in r.models_at(c):
                 rows = r.rows(c, f"rerank:{m}@{limit}")
                 if rows.empty:
                     continue
                 cells = []
-                for b, target in zip(config.EVAL.columns, coverage(rows[event].to_numpy(), np.asarray(config.EVAL.columns)), strict=True):
+                for b, target in zip(config.EVAL.columns, rd.coverage(rd.costs(rows, event), config.EVAL.columns), strict=True):
                     hit = np.flatnonzero(base >= target - 1e-12)
                     cells.append("never" if not len(hit) else f"{grid[hit[0]]:,.0f} ({grid[hit[0]] / b:.1f}×)")
                 out.append(f"| {c} | {m} | {limit[1:]} | " + " | ".join(cells) + " |")
@@ -221,14 +229,14 @@ def equal_reranker_tokens(r: Results, event: str) -> list[str]:
                     for (c, name), mean_tokens in cost.items():
                         if mean_tokens > R or (family != "any" and not c.startswith(family)):
                             continue
-                        score = (cands[(cands.chunking == c) & (cands.ranker == name)][event] <= b).mean()
+                        score = rd.hit(rd.costs(cands[(cands.chunking == c) & (cands.ranker == name)], event), b).mean()
                         if best is None or score > best[0]:
                             best = (score, c, name)
                     if best is None:
                         cells.append("–")
                     else:
                         t = test[(test.chunking == best[1]) & (test.ranker == best[2])]
-                        cells.append(f"{(t[event] <= b).mean():.3f} ({best[1]} {best[2].replace(f':{m}', '')})")
+                        cells.append(f"{rd.hit(rd.costs(t, event), b).mean():.3f} ({best[1]} {best[2].replace(f':{m}', '')})")
                 out.append(f"| {R:,} | {family} | " + " | ".join(cells) + " |")
         out.append("")
     return out
@@ -238,7 +246,7 @@ def worth_it(r: Results, event: str) -> list[str]:
     pick = ("the same questions they are measured on (no dev split), with a 95% interval whose every resample makes "
             "its own choice; the minimum over many reranked configurations leans optimistic for the reranker")
     out = ["## 7. Worth the money: break-even price ratio\n",
-           f"{event}-gold coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
+           f"{_name(event)} coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
            "exceeds r* (chart: the break-even lines in cost_saving.png). Candidates: every no-reranker configuration (segment length, "
            "expansion) against every reranked one (seeds or windows, expansion, depth). Configurations are chosen on "
            f"{pick}. '–': the chosen reranked configuration is not cheaper; 'only': only reranking reaches the target "
@@ -278,7 +286,7 @@ def chunkers(r: Results, event: str) -> list[str]:
             if a.empty or b.empty:
                 continue
             out.append(f"| {c[3:]} | {_sizes(r, c, other)} | {name} | " + " | ".join(
-                delta((b[event].to_numpy() <= x).astype(float) - (a[event].to_numpy() <= x), a.cluster.to_numpy())
+                delta(rd.hit(rd.costs(b, event), x) - rd.hit(rd.costs(a, event), x), a.cluster.to_numpy())
                 for x in config.EVAL.budgets) + " |")
     return out + [""]
 
@@ -314,8 +322,8 @@ def query_types(r: Results, event: str) -> list[str]:
                             continue
                         cells = []
                         for b in budgets:
-                            hit = base[event].to_numpy() <= b
-                            gain = (rows[event].to_numpy() <= b).astype(float) - hit
+                            hit = rd.hit(rd.costs(base, event), b)
+                            gain = rd.hit(rd.costs(rows, event), b) - hit
                             cells.append(f"{hit[mask].mean():.3f}, {delta(gain[mask], base.cluster.to_numpy()[mask])}")
                         out.append(f"| {feature} | {v} | {int(mask.sum())} | " + " | ".join(cells) + " |")
                 out.append("")
@@ -331,14 +339,17 @@ def help_harm(r: Results, event: str) -> list[str]:
            "|---|---|---|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
         for limit in r.limits(c):
-            a = r.rows(c, f"first_stage@{limit}")[event].to_numpy()
+            a = rd.costs(r.rows(c, f"first_stage@{limit}"), event)
             for m in r.models_at(c):
                 rows = r.rows(c, f"rerank:{m}@{limit}")
                 if rows.empty:
                     continue
-                b = rows[event].to_numpy()
-                cells = [f"{((a <= x) & (b > x)).mean():.3f} / {((a > x) & (b <= x)).mean():.3f}" for x in budgets]
-                out.append(f"| {c} | {m} | {limit[1:]} | {(b < a).mean():.3f} | {(b > a).mean():.3f} | " + " | ".join(cells) + " |")
+                b = rd.costs(rows, event)
+                cells = [f"{(rd.hit(a, x) > rd.hit(b, x)).mean():.3f} / {(rd.hit(b, x) > rd.hit(a, x)).mean():.3f}"
+                         for x in budgets]
+                # helped / hurt: the event's cost lowered / raised (a share reading has no single cost)
+                moved = "– | –" if rd.is_share(event) else f"{(b < a).mean():.3f} | {(b > a).mean():.3f}"
+                out.append(f"| {c} | {m} | {limit[1:]} | {moved} | " + " | ".join(cells) + " |")
     return out + [""]
 
 
@@ -377,10 +388,13 @@ def expansion(r: Results, event: str) -> list[str]:
 
 
 GLOSSARY = """**Metrics** (full definitions: rbench/metrics.py). Every number is a per-query value averaged over
-the evaluated (test) queries. A gold span is *complete* when every chunk overlapping it has been read and *touched* when any has
+the evaluated queries. A gold span is *complete* when every chunk overlapping it has been read and *touched* when any has
 (LongMemEval's notion of a retrieved unit; optimistic on long gold units). *first* / *every*: some span of some
 acceptable answer / every span of one answer, complete (`first`, `every`) or touched (`first_touch`,
-`every_touch`), within B reader tokens (whole chunks in ranked order). *Recall* is the share of gold characters
+`every_touch`), within B reader tokens (whole chunks in ranked order). *share* / *share_touch*: the share of a
+question's evidence turns (spans of the answer read in full first) complete / touched within B, each turn counted once,
+averaged over questions; with one evidence turn they equal *every* / *every_touch* (rbench/report/readings.py).
+*Recall* is the share of gold characters
 read (between the two readings); *precision* the share of characters read that are gold. Intervals are 95% paired
 bootstraps over the dataset's clusters (questions for LongMemEval; documents, dialogues or issues elsewhere).
 """
@@ -402,7 +416,7 @@ def equal_counts(r: Results, event: str) -> list[str]:
     if f"{event}_ctx" not in r.df:
         return []
     out = ["## 13. Equal counts: vector search limit, seeds kept, segments read\n",
-           f"{event}-gold coverage normalized by counts instead of tokens. L: vector search limit (seeds retrieved; a "
+           f"{_name(event)} coverage normalized by counts instead of tokens. L: vector search limit (seeds retrieved; a "
            "reranker scores all L, and nothing beyond L is read). k: seeds kept after reranking (contexts given to the "
            "LLM). m: segments read after expansion (EventMemory's max_num_segments). 'all': every one of the L seeds "
            "read (up to 16k reader tokens). Without a reranker, the same L seeds in similarity order.\n",
@@ -416,7 +430,7 @@ def equal_counts(r: Results, event: str) -> list[str]:
                     continue
                 cells = [f"{(rows[f'{event}_ctx'] <= k).mean():.3f}" for k in KEPT]
                 cells += [f"{(rows[f'{event}_k'] <= m).mean():.3f}" for m in SEGMENTS]
-                cells.append(f"{np.isfinite(rows[event]).mean():.3f}")
+                cells.append(f"{rd.reachable(rd.costs(rows, event)).mean():.3f}")
                 out.append(f"| {c} | {L} | {name.split('@')[0]}{'+x' + name.split('+x')[1] if '+x' in name else ''} | "
                            + " | ".join(cells) + " |")
     return out + [""]
@@ -432,7 +446,7 @@ def settings(r: Results, event: str) -> list[str]:
         return []
     skipped = [b for b in config.EVAL.budgets if b not in budgets]
     out = ["## 14. EventMemory settings at each reader budget\n",
-           f"Each cell: {event}-gold coverage · max_num_segments · seeds read, as the median (10th percentile) over "
+           f"Each cell: {_name(event)} coverage · max_num_segments · seeds read, as the median (10th percentile) over "
            "questions. Segment counts vary with the text, so a limit that keeps 90% of questions within the budget is "
            "the 10th percentile. Without a reranker, the seeds read are the vector_search_limit to set; with one, the "
            "vector_search_limit is the depth in the name (every one of those seeds is reranked)."
@@ -453,7 +467,7 @@ def settings(r: Results, event: str) -> list[str]:
             cells = []
             for b in budgets:
                 segs, ctx = rows[f"segs_t{b}"], rows[f"ctx_t{b}"]
-                cells.append(f"{(rows[event] <= b).mean():.2f} · {segs.median():.0f} ({segs.quantile(0.1):.0f}) · "
+                cells.append(f"{rd.hit(rd.costs(rows, event), b).mean():.2f} · {segs.median():.0f} ({segs.quantile(0.1):.0f}) · "
                              f"{ctx.median():.0f} ({ctx.quantile(0.1):.0f})")
             out.append(f"| {c} | {name} | " + " | ".join(cells) + " |")
     return out + [""]
@@ -492,7 +506,7 @@ def clear(r: Results) -> None:
 
 
 def write(r: Results, event: str = "first") -> str:
-    head = [f"# {r.dataset} · {r.scope} · {r.variant} · {r.sample} · {event} gold\n", GLOSSARY,
+    head = [f"# {r.dataset} · {r.scope} · {r.variant} · {r.sample} · {_name(event)}\n", GLOSSARY,
             f"Embedder {r.embedder}. {r.df.qid.nunique()} questions, all evaluated (no dev split). "
             f"Rerankers: {', '.join(r.models) or 'none'}.\n"]
     body = (first_stage(r, event) + headroom(r, event) + equal_reader_tokens(r, event) + token_savings(r, event)

@@ -52,3 +52,27 @@ def test_expansion_pairs_plain_chunks_by_measured_size():
     assert panels[1].plain == "seg9000" and panels[1].matched
     assert panels[3].plain == "seg100" and panels[3].matched
     assert panels[6].plain == "seg100" and not panels[6].matched and "NOT size-matched" in panels[6].sizes()
+
+
+@pytest.mark.skipif(not SIMULATED.exists(), reason="needs the lme-test stage's simulation")
+def test_share_readings_sit_between_the_event_readings():
+    """At every budget, per question: every <= share <= first (one answer on LongMemEval), the
+    touched share is at least the complete one, and one evidence turn makes share = every."""
+    import numpy as np
+    import pandas as pd
+
+    from rbench.report import readings as rd
+
+    d = pd.read_parquet(SIMULATED)
+    full, touch = rd.costs(d, "share"), rd.costs(d, "share_touch")
+    one = np.asarray([len(x) == 1 for x in full])
+    for b in (0, 250, 1000, 4000, 16000, np.inf):
+        s, st = rd.hit(full, b), rd.hit(touch, b)
+        every, first = rd.hit(rd.costs(d, "every"), b), rd.hit(rd.costs(d, "first"), b)
+        assert np.all(every <= s + 1e-12) and np.all((s > 0) == (first > 0)) and np.all(st >= s - 1e-12)
+        assert np.all(s[one] == every[one])
+    # coverage and the minimum budget for a target are consistent
+    c = rd.costs(d[d.ranker == "first_stage"], "share")
+    for target, budget in zip((0.3, 0.6), rd.min_budgets(c, np.asarray([0.3, 0.6])), strict=True):
+        if np.isfinite(budget):
+            assert rd.coverage(c, [budget])[0] >= target - 1e-9 and rd.coverage(c, [budget - 1])[0] < target

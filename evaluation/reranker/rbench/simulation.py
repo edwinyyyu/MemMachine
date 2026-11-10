@@ -42,6 +42,9 @@ Output: results/sim/<embedder>/<dataset>/<scope>/<variant>/<sample>/<chunking>.p
   unit_tokens                              the mean segment-text tokens one retrieved seed's
                                            context holds at the row's expand_context (the seed
                                            alone, or its window), over every seed retrieved
+  share_full, share_touch                  per evidence turn (span) of the answer read in full first:
+                                           the reader cost at which it is read in full / touched
+                                           (lists; report/readings.py's share readings)
   <event>_ctx                              contexts (seeds) read when the event happens:
                                            coverage after reranking at k kept seeds is <= k
   segs_t<B>, ctx_t<B>                      segments and contexts read within reader budget B
@@ -81,7 +84,7 @@ def stored_budgets() -> tuple[int, ...]:
 
 def extra() -> list[str]:
     budgets = stored_budgets()
-    return (["admitted", "seg_chars", "seg_tokens", "unit_tokens"] + [f"{e}_ctx" for e in EVENTS]
+    return (["admitted", "seg_chars", "seg_tokens", "unit_tokens", "share_full", "share_touch"] + [f"{e}_ctx" for e in EVENTS]
             + [f"segs_t{b}" for b in budgets] + [f"ctx_t{b}" for b in budgets])
 
 
@@ -233,8 +236,9 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
         admitted, cum, ctx = read(contexts, seeds, seg, lazy=r.kind == "first_stage" and r.depth is None)
         values = metrics.evaluate(admitted, cum, chars, g)
         prefix = cost - max(0, n - 1) * overheads[r.model] if r.model is not None else 0.0
+        full, touched = metrics.span_costs(admitted, cum, g)
         records[r.id].append([n if r.model else 0, cost, prefix, n if r.kind == "oracle" else 0, *values,
-                              len(admitted), *sizes, unit_tokens[r.expand], *counts(values, cum, ctx)])
+                              len(admitted), *sizes, unit_tokens[r.expand], full, touched, *counts(values, cum, ctx)])
 
 
 def report_dropped(dataset: str, chunking: str, dropped: dict[str, str], kept: set[str]) -> None:

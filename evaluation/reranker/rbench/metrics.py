@@ -160,3 +160,29 @@ def evaluate(order: np.ndarray, cum: np.ndarray, chars: np.ndarray, g: Gold) -> 
     return [cost(first_pos), cost(every_pos), rank, first_pos + 1, every_pos + 1,
             cost(first_touch), cost(every_touch), first_touch + 1, every_touch + 1,
             *(r for r, _ in by_budget), *(p for _, p in by_budget), *(r for r, _ in by_k), *(p for _, p in by_k)]
+
+
+def span_costs(order: np.ndarray, cum: np.ndarray, g: Gold) -> tuple[list[float], list[float]]:
+    """(in full, touched): the reader cost at which each span of one answer is read in full and
+    touched (inf where not), for the share readings (report/readings.py). The answer is the one
+    read in full first (as every counts it); when none is, the one with the most spans read in
+    full, then the first."""
+    cum = np.maximum.accumulate(np.asarray(cum, dtype=np.float64))
+    position = {int(c): i for i, c in enumerate(order)}
+    cost = lambda p: float(cum[int(p)]) if p < INF else INF  # noqa: E731
+
+    def last(span) -> float:
+        ps = [position.get(c) for c, _ in span]
+        return INF if not ps or None in ps else max(ps)
+
+    def first_of(span) -> float:
+        ps = [position[c] for c, _ in span if c in position]
+        return min(ps) if ps else INF
+
+    if not g.alternatives:
+        return [], []
+    lasts = [[last(s) for s in alt] for alt in g.alternatives]
+    every = [max(alt) if alt else INF for alt in lasts]
+    best = int(np.argmin(every)) if np.isfinite(min(every)) else int(np.argmax([sum(np.isfinite(alt)) for alt in lasts]))
+    alt = g.alternatives[best]
+    return [cost(p) for p in lasts[best]], [cost(first_of(s)) for s in alt]

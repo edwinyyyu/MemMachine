@@ -37,6 +37,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from rbench.report.data import Results
+from rbench.report import readings as rd
 from rbench.report.stats import RESAMPLES
 
 BUDGET_GRID = np.unique(np.round(np.geomspace(50, 16000, 121)))  # 1/14-octave steps
@@ -46,18 +47,17 @@ RERANKED = ("rerank", "xrerank")
 
 
 def min_budgets(costs: np.ndarray, targets: np.ndarray = TARGETS) -> np.ndarray:
-    """For each target tau, the smallest reader budget whose coverage reaches it: coverage at B
-    is the share of costs <= B, so that budget is exactly the ceil(tau N)-th smallest cost
-    (inf if it is not reached)."""
-    s = np.sort(np.asarray(costs, dtype=np.float64))
-    k = np.ceil(np.asarray(targets) * len(s) - 1e-9).astype(int) - 1
-    return s[np.clip(k, 0, len(s) - 1)] if len(s) else np.full(len(targets), np.inf)
+    """For each target tau, the smallest reader budget whose coverage reaches it (inf if it is
+    not reached): an order statistic of the costs (readings.min_budgets; a share reading's
+    costs are per evidence turn)."""
+    c = costs if np.asarray(costs).dtype == object else np.asarray(costs, dtype=np.float64)
+    return rd.min_budgets(c, targets)
 
 
 @dataclass
 class Config:
     name: tuple[str, str]  # (chunking, ranker)
-    costs: np.ndarray  # event cost per query (sorted by qid)
+    costs: np.ndarray  # the reading's costs per query (sorted by qid; readings.costs)
     tokens: np.ndarray  # reranker tokens per query
 
 
@@ -69,7 +69,7 @@ def configurations(results: Results, model: str | None, token_field: str = "rr_t
     out = []
     for name, g in d.groupby(["chunking", "ranker"]):
         g = g.sort_values("qid")
-        out.append(Config(name, g[event].to_numpy(), g[token_field].to_numpy()))
+        out.append(Config(name, rd.costs(g, event), g[token_field].to_numpy()))
     return out
 
 
