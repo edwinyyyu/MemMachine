@@ -27,7 +27,8 @@
                                      first stage under each embedding prompt setup, or across embedders (no reranker)
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
   embed-checks [--embedder E]                                preflight for a hosted embedder (Qwen3-Embedding-8B):
-                                     card scores, batch invariance, dimensions, billed tokens, MemMachine's path (cents)
+                                     card scores, batch invariance, dimensions, billed tokens, MemMachine's path,
+                                     server vs client truncation to 1,024 / 2,048 (cents)
                                      (default: LongMemEval-M's EventMemory embedding text at seg500)
 
 run, adhoc and show take --budgets, --limits and --readings: the values reports are drawn at

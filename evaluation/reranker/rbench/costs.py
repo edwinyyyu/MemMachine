@@ -32,21 +32,27 @@ from memmachine_server.episodic_memory.event_memory.event_memory import EventMem
 MAC_EMBED_TOK_PER_S = 10500
 
 
-# Disk per stored segment besides its vector (float16 x dimensions in the index), measured
-# 2026-11-09 on LongMemEval-S proto at seg500 (163,303 segments, 768 dimensions): index 1,544 B
-# (1,536 of vector), segments.sqlite 1,135 B with texts averaging 299 characters (taken as 835 B
-# plus the text), vectors.sqlite 163 B (the vectors live in the index), the simulation's segment
-# table 92 B (text-free format). An approximation from one store: segments.sqlite's fixed part
-# is not separately measured at other lengths.
-INDEX_EXTRA, SEGMENT_ROW, VECTOR_ROW, TABLE_ROW = 8, 835, 163, 92
-CACHE_ROW = 60  # the embedding cache's key and row besides the float32 vector (memory.EmbeddingCache, kept)
+# Disk per stored segment, in the benchmark's own vector store (vectorstore.py). Measured
+# 2026-11-10 on 5 LongMemEval-S histories at seg500 (8,096 segments): segments.sqlite 1,157 B
+# with texts averaging about 300 characters (taken as 835 B plus the text, as measured
+# 2026-11-09 on 163,303 segments), records.sqlite 192 B, the simulation's segment table 92 B
+# (text-free format). Per distinct derived text, one row of the permanent copy
+# (EmbeddingCache): the float32 vector plus 625 B (key, hash, their two indexes, page slack),
+# measured on 3,000 rows at 1,024, 2,048 and 4,096 dimensions (4,720, 8,819 and 17,009 B); a
+# row whose vector fits in a 4 KB page takes the page (4,220 B at 768). segments.sqlite's
+# fixed part is not separately measured at other lengths.
+SEGMENT_ROW, RECORD_ROW, TABLE_ROW = 835, 192, 92
+CONTENT_ROW, CONTENT_PAGE_ROW = 625, 4220
 
 
-def disk_bytes(segments: float, chars: float, dims: int) -> float:
-    """Estimated disk of `segments` stored segments averaging `chars` characters: the index
-    (float16), the segment and vector stores, the segment table, and the kept embedding cache
-    (float32 vector and key)."""
-    return segments * (2 * dims + INDEX_EXTRA + SEGMENT_ROW + chars + VECTOR_ROW + TABLE_ROW + 4 * dims + CACHE_ROW)
+def disk_bytes(segments: float, chars: float, dims: int, distinct: float | None = None) -> float:
+    """Estimated disk of `segments` stored segments averaging `chars` characters: the segment
+    store, the vector store's records and the segment table per segment; one row of the kept
+    permanent copy (float32 vector, key and hash) per distinct derived text (default: one per
+    segment), at the stored width `dims`."""
+    distinct = segments if distinct is None else distinct
+    return (segments * (SEGMENT_ROW + chars + RECORD_ROW + TABLE_ROW)
+            + distinct * max(4 * dims + CONTENT_ROW, CONTENT_PAGE_ROW))
 
 
 IN_FLIGHT = 16  # the adaptive limit's start (limits.START): it grows while DeepInfra allows, so hours are an upper bound
@@ -66,6 +72,68 @@ def _hours(model: str, tokens: float) -> float | str:
     return round(tokens / (rate * IN_FLIGHT) / 3600, 2)
 
 
+def exact_counts(dataset: str, chunking: str, keys: list[str], scope: str, embedder: str) -> dict:
+    """Exact counts for partitions not yet encoded, from the production segmenter and deriver
+    (CPU only, free; the user, 2026-11-10: count, do not extrapolate): segments (each one row in
+    the segment store and one record in the vector store), distinct derived texts (each one row
+    of the kept permanent copy, which dedups by text), their characters and the embedding tokens of the distinct texts (what
+    is billed). Cached in data/counts/ by the partitions' keys, so later estimates are instant."""
+    import asyncio
+    import hashlib
+    import json
+
+    from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import WholeTextDeriver
+
+    from rbench.dbs import replace_atomically
+    from rbench.memory import segmenter
+    from rbench.paths import DATA
+    from rbench.progress import Progress
+    from rbench.text import count
+
+    spec = EMBEDDERS[embedder]
+    name = hashlib.sha1(json.dumps([dataset, chunking, scope, sorted(keys), spec.tokenizer, spec.special_tokens])
+                        .encode()).hexdigest()[:16]
+    path = DATA / "counts" / f"{dataset}__{chunking}__{name}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    rows, fmt = queries(dataset), pt.formats(dataset).embed
+    by_key = {pt.key(dataset, r, scope): i for i, r in enumerate(rows)}
+    seen: set[int] = set()
+    out = {"segments": 0, "segment_chars": 0, "distinct_texts": 0, "distinct_chars": 0, "tokens": 0,
+           "partitions": len(keys)}
+    progress = Progress(f"{dataset} {chunking} exact counts", len(keys), "partitions")
+
+    async def derive(p) -> tuple[list[str], int]:
+        s, d = segmenter(chunking), WholeTextDeriver()
+        texts, chars = [], 0
+        for e in p.events:
+            for seg in await s.segment(e, format_options=fmt):
+                chars += len(seg.block.text)
+                texts += [x.block.text for x in await d.derive(seg, format_options=fmt)]
+        return texts, chars
+
+    for k in keys:
+        texts, chars = asyncio.run(derive(pt.part(dataset, rows[by_key[k]], scope)))
+        out["segments"] += len(texts)
+        out["segment_chars"] += chars
+        new = []
+        for text in texts:
+            h = int.from_bytes(hashlib.sha1(text.encode()).digest()[:8], "big")
+            if h not in seen:
+                seen.add(h)
+                new.append(text)
+        out["distinct_texts"] += len(new)
+        out["distinct_chars"] += sum(map(len, new))
+        out["tokens"] += int(count(new, spec.tokenizer).sum()) + spec.special_tokens * len(new)
+        progress.step()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    replace_atomically(path, lambda temporary: temporary.write_text(json.dumps(out) + "\n"))
+    return out
+
+
 def disk_need(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> float:
     """GB the stores not yet encoded will take (estimate's disk rows, alone)."""
     def encoded(dataset: str, c: str, k: str) -> bool:
@@ -79,11 +147,9 @@ def disk_need(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> float:
     total = 0.0
     for dataset, scope, c in sorted({x[:3] for x in todo}):
         ks = sorted(k for d, s, n, k in todo if (d, s, n) == (dataset, scope, c))
-        probe = ks[:: max(1, len(ks) // probes)][:probes]
-        stored = [pt.offline(dataset, k, c, scope)[1] for k in probe]
-        segments = float(np.mean([len(s) for s in stored])) * len(ks)
-        chars = float(np.mean([len(x.block.text) for s in stored for x in s])) if any(stored) else 0.0
-        total += disk_bytes(segments, chars, EMBEDDERS[embedder].dimensions) / 1e9
+        n = exact_counts(dataset, c, ks, scope, embedder)
+        total += disk_bytes(n["segments"], n["segment_chars"] / max(1, n["segments"]), EMBEDDERS[embedder].dimensions,
+                            n["distinct_texts"]) / 1e9
     return total
 
 
@@ -159,21 +225,20 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     disk: dict[str, dict] = {}
     for dataset, scope, c in sorted({x[:3] for x in to_embed}):
         ks = sorted(k for d, s, n, k in to_embed if (d, s, n) == (dataset, scope, c))
-        probe = ks[:: max(1, len(ks) // probes)][:probes]
-        per_partition[(dataset, scope, c)] = float(np.mean([pt.embedding_tokens(dataset, k, c, scope, embedder)
-                                                            for k in probe]))
-        stored = [pt.offline(dataset, k, c, scope)[1] for k in probe]  # MemMachine Segments (cached by offline)
-        segments = float(np.mean([len(s) for s in stored])) * len(ks)
-        chars = float(np.mean([len(x.block.text) for s in stored for x in s]))
-        disk[f"{dataset} {c}"] = {"partitions": len(ks), "segments_M": round(segments / 1e6, 2),
-                                  "GB": round(disk_bytes(segments, chars, EMBEDDERS[embedder].dimensions) / 1e9, 1)}
-    embed_tok = sum(per_partition[x[:3]] for x in to_embed)  # each partition without vectors is embedded once
+        n = exact_counts(dataset, c, ks, scope, embedder)  # counted, not extrapolated (CPU, cached)
+        per_partition[(dataset, scope, c)] = float(n["tokens"])
+        disk[f"{dataset} {c}"] = {"partitions": len(ks), "segments (exact)": n["segments"],
+                                  "distinct texts (exact)": n["distinct_texts"],
+                                  "GB": round(disk_bytes(n["segments"], n["segment_chars"] / max(1, n["segments"]),
+                                                         EMBEDDERS[embedder].dimensions, n["distinct_texts"]) / 1e9, 1)}
+    embed_tok = sum(per_partition.values())  # each text of a partition without vectors, embedded once
     summary = {m: {"billed_M": t / 1e6, "deepinfra_usd": t / 1e6 * (RERANKERS[m].usd_per_mtok or 0.0),
                    "local_hours": t / RERANKERS[m].local_tok_per_s / 3600 if RERANKERS[m].local_tok_per_s else None,
                    "deepinfra_hours": _hours(m, t), "basis": sorted(basis[m])} for m, t in per_model.items()}
     summary["embedding"] = {"embedder": embedder, "tokens_M": embed_tok / 1e6,
                             "usd": embed_tok / 1e6 * EMBEDDERS[embedder].usd_per_mtok,
-                            "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600, "estimate": True}
+                            "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600,
+                            "basis": "exact: every distinct derived text counted with the embedder's tokenizer"}
     if disk:
         import shutil
 

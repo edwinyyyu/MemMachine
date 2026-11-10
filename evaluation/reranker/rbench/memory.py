@@ -2,14 +2,14 @@
 
 MemMachine is this repository's own packages/server and packages/common (path dependencies). Its
 own code does everything retrieval depends on: segmenting events (TextSegmenter), deriving the
-text to embed (WholeTextDeriver), storing segments (SQLAlchemySegmentStore on SQLite) and
-vectors (SQLiteVectorStore), vector search, context expansion, reranking, and rendering. The
-benchmark supplies only what MemMachine leaves to a deployment, as implementations of its
-interfaces:
+text to embed (WholeTextDeriver), storing segments (SQLAlchemySegmentStore on SQLite), context
+expansion, reranking, and rendering. The benchmark supplies only what MemMachine leaves to a
+deployment, as implementations of its interfaces:
 
-  ExactSearchEngine  a VectorSearchEngine that searches exhaustively. MemMachine's engines
-                     (hnswlib, usearch) are approximate; exact search keeps index misses out of
-                     the results. Its saved index is the partition's vectors (float16), kept.
+  ContentVectorStore a VectorStore (vectorstore.py) whose vectors are the permanent copy
+                     (EmbeddingCache), searched exhaustively: exact search keeps index misses
+                     out of the results. Stores written before it keep MemMachine's
+                     SQLiteVectorStore with ExactSearchEngine (float16), below.
   QueryCachingEmbedder  MemMachine's OpenAIEmbedder, against the local llama-server or DeepInfra
                      (embeddinggemma, or Qwen3-Embedding-8B with its query instruction), with
                      concurrency limited (adaptive for DeepInfra: limits.py), long retries,
@@ -80,6 +80,7 @@ from rbench.dbs import connect, sqlite_pragmas  # noqa: E402
 from rbench import embedding as emb  # noqa: E402
 from rbench.paths import DATA, EMBEDDINGS, SECRETS  # noqa: E402
 from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
+from rbench.vectorstore import ContentVectorStore, ensure_content, vector_hash  # noqa: E402
 
 MEMORY = DATA / "memory"
 RERANK_FORMAT = FormatOptions(time_style="short")  # what EventMemory.query renders for its reranker
@@ -291,8 +292,9 @@ class EmbeddingCache:
     it returns, so a failure mid-partition keeps what was paid for. Stored as float32: the
     engine casts each vector to float32 and normalizes it before rounding to float16, so a
     float32 copy rebuilds the index bit for bit (a float16 copy would round twice and could
-    reorder near ties). About 4 KB per segment at 1,024 dimensions: 31 GB for LongMemEval-M at
-    seg500 (costs.estimate counts it)."""
+    reorder near ties). It is also the content store's vectors (vectorstore.py), stored once:
+    about 4.7 KB per distinct text at 1,024 dimensions and 17 KB at 4,096, 32 GB and 116 GB for
+    LongMemEval-M at seg500 (costs.disk_bytes)."""
 
     @staticmethod
     def path_for(spec: emb.Embedder) -> Path:
@@ -306,7 +308,7 @@ class EmbeddingCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.db = connect(path)
-        self.db.execute("CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, v BLOB)")
+        ensure_content(self.db)
 
     @staticmethod
     def key(text: str) -> str:
@@ -322,8 +324,9 @@ class EmbeddingCache:
 
     def put(self, rows: dict[str, Sequence[float]]) -> None:
         with self.db:
-            self.db.executemany("INSERT OR REPLACE INTO vectors VALUES (?, ?)",
-                                [(k, np.asarray(v, dtype=np.float32).tobytes()) for k, v in rows.items()])
+            self.db.executemany("INSERT OR REPLACE INTO vectors (key, v, vhash) VALUES (?, ?, ?)",
+                                [(k, b, vector_hash(b)) for k, b in
+                                 ((k, np.asarray(v, dtype=np.float32).tobytes()) for k, v in rows.items())])
 
     def drop(self, keys: Iterable[str]) -> None:
         keys = list(keys)
@@ -545,36 +548,56 @@ class Memory:
     memory flat. A partition's events are encoded in one call (batches past ENCODE_SEGMENTS), so its index is saved once."""
 
     def __init__(self, embedder: str, dataset: str, chunking: str, root: Path | None = None,
-                 backend: Embedder | None = None) -> None:
+                 backend: Embedder | None = None, width: int | None = None, vector_store: str | None = None) -> None:
         """chunking: seg<C> or cut<C> (segmenter()). root and backend replace the stores'
-        directory and the embedder (tests)."""
+        directory and the embedder (tests). width: the dimensions searches use (the leading ones
+        of the stored vectors, re-normalized; default the embedder's search_dimensions, else all).
+        vector_store: "content" (vectorstore.ContentVectorStore) or "sqlite" (MemMachine's
+        SQLiteVectorStore with ExactSearchEngine); default "sqlite" for a root written by it
+        before (vectors.sqlite and no records.sqlite), else "content"."""
         self.embedder, self.dataset, self.chunking = embedder, dataset, chunking
         self.segmenter = segmenter(chunking)
         self.root = root or store_root(embedder, dataset, chunking)
         self.root.mkdir(parents=True, exist_ok=True)
         self._backend = backend
+        spec = emb.EMBEDDERS.get(embedder)
+        self.dimensions = spec.dimensions if spec else 768
+        self.width = width or (spec.search_dimensions if spec else None)
+        legacy = (self.root / "vectors.sqlite").exists() and not (self.root / "records.sqlite").exists()
+        self.vector_store = vector_store or ("sqlite" if legacy else "content")
+        if self.vector_store == "sqlite" and self.width not in (None, self.dimensions):
+            raise ValueError("the legacy SQLite vector store searches at the stored width only")
         self._embedder: Embedder | None = None
         self._stores = None
 
+    @property
+    def content_path(self) -> Path:
+        """Where the content store keeps the vectors: the embedder's permanent copy (EmbeddingCache),
+        or the root's own file for a test embedder."""
+        if self._backend is None and self.embedder in emb.EMBEDDERS:
+            return EmbeddingCache.path_for(emb.EMBEDDERS[self.embedder])
+        return self.root / "content.sqlite"
+
     async def stores(self):
         if self._stores is None:
-            engines = []
             lock_store(self.root)  # one process per store, readers too (they replay and save)
-            for name in ("segments", "vectors"):
+            schema = VectorStoreSchema(vector_dimensions=self.dimensions, similarity_metric=SimilarityMetric.COSINE,
+                                       indexed_properties=EventMemory.expected_vector_store_indexed_properties())
+            engines = []
+            for name in ("segments", "vectors") if self.vector_store == "sqlite" else ("segments",):
                 engine = create_async_engine(f"sqlite+aiosqlite:///{self.root / name}.sqlite")
                 event.listen(engine.sync_engine, "connect", lambda connection, _record: sqlite_pragmas(connection))
                 enable_sqlite_foreign_keys(engine)
                 enable_sqlite_explicit_begin(engine)
                 engines.append(engine)
             segment_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engines[0]))
-            vector_store = SQLiteVectorStore(SQLiteVectorStoreParams(
-                sqlalchemy_engine=engines[1], vector_store_name="rbench",
-                store_schema=VectorStoreSchema(vector_dimensions=emb.EMBEDDERS[self.embedder].dimensions
-                                               if self.embedder in emb.EMBEDDERS else 768,
-                                               similarity_metric=SimilarityMetric.COSINE,
-                                               indexed_properties=EventMemory.expected_vector_store_indexed_properties()),
-                vector_search_engine_factory=ExactSearchEngine, index_directory=str(self.root / "index"),
-                save_threshold=1))  # one upsert per encode_events call (ingest), so its index is saved once per batch
+            if self.vector_store == "sqlite":
+                vector_store = SQLiteVectorStore(SQLiteVectorStoreParams(
+                    sqlalchemy_engine=engines[1], vector_store_name="rbench", store_schema=schema,
+                    vector_search_engine_factory=ExactSearchEngine, index_directory=str(self.root / "index"),
+                    save_threshold=1))  # one upsert per encode_events call (ingest), so its index is saved once per batch
+            else:
+                vector_store = ContentVectorStore(self.root, schema, self.content_path, width=self.width)
             await segment_store.startup()
             await vector_store.startup()
             self._embedder = self._backend or QueryCachingEmbedder(self.embedder)

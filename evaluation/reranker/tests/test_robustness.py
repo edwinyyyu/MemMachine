@@ -71,7 +71,7 @@ def test_every_database_gets_the_pragmas(tmp_path):
         async with Memory("fake", "synthetic", "seg80", root=tmp_path / "s", backend=FakeEmbedder()) as m:
             await m.ingest("h", _events(5))
     asyncio.run(go())
-    for name in ("segments", "vectors"):
+    for name in ("segments", "records", "content"):  # the content store's: segments, records, and the vectors
         assert dbs.connect(tmp_path / "s" / f"{name}.sqlite").execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
@@ -176,6 +176,7 @@ def test_vectors_survive_losing_the_stores(tmp_path, monkeypatch):
     """The embedding cache is kept: delete a finished partition's stores and index files and
     re-ingest the same events, and nothing is embedded again; the rebuilt index ranks the same."""
     import shutil
+    import sqlite3
 
     from tests.test_memory import _events  # noqa: PLC0415
 
@@ -219,6 +220,10 @@ def test_vectors_survive_losing_the_stores(tmp_path, monkeypatch):
     again = asyncio.run(ingest_and_query())
     assert sent == [1] or sent == []  # at most the search's question (it is cached too after the first run)
     assert again == first
+    (cache,) = (tmp_path / "e").glob("*.sqlite")  # the store's vectors are the cache's: none stored twice
+    db = sqlite3.connect(cache)
+    assert db.execute("SELECT count(*) FROM vectors WHERE key LIKE 'v:%'").fetchone()[0] == 0
+    db.close()
 
 
 CHILD = r"""

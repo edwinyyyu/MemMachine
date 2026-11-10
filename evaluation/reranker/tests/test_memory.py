@@ -82,15 +82,19 @@ def stored(tmp_path):
         async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
             assert await m.ingest("h", events)
             assert not await m.ingest("h", events)  # encoded once
-            partition = await (await m.event_memory()).open_or_create_partition("h")
             segment_store, _, _ = await m.stores()
             part = await segment_store.open_partition("h")
             by_event = await part.get_segment_uuids_by_event_uuids([e.uuid for e in events])
             ids = [u for e in events for u in by_event.get(e.uuid, [])]
-            segments = pt._ordered([v[0] for v in (await part.get_segment_contexts(ids)).values()])
-            return segments, partition
+            return pt._ordered([v[0] for v in (await part.get_segment_contexts(ids)).values()])
 
-    return events, tmp_path, _run(go())
+    async def query(text: str, **kwargs):
+        """EventMemory's query on the stored partition, with its stores open."""
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
+            partition = await (await m.event_memory()).open_or_create_partition("h")
+            return await partition.query(text, **kwargs)
+
+    return events, tmp_path, (_run(go()), query)
 
 
 def test_exact_search_is_stable_and_survives_a_save(tmp_path):
@@ -133,12 +137,12 @@ def test_replayed_reranking_matches_eventmemory_query_at_each_limit(tmp_path):
 
 
 def test_admission_is_build_query_result_context_at_every_limit(stored):
-    _, _, (segments, partition) = stored
+    _, _, (segments, query) = stored
     index = {s.uuid: i for i, s in enumerate(segments)}
 
     async def go():
         for e in (0, 2, 3, 6):
-            result = await partition.query("bought apples", vector_search_limit=12, expand_context=e)
+            result = await query("bought apples", vector_search_limit=12, expand_context=e)
             contexts = [[index[s.uuid] for s in c.segments] for c in result.scored_segment_contexts]
             seeds = [index[c.seed_segment_uuid] for c in result.scored_segment_contexts]
             order = [s for s, _ in admission(contexts, seeds)]
@@ -152,7 +156,7 @@ def test_admission_is_build_query_result_context_at_every_limit(stored):
 def test_reader_cost_tracks_string_from_query_result(stored):
     """At every segment limit, for a reranked pool (every context in the result) and for the
     first stage (only the contexts reached), within a few percent of real tokenization."""
-    _, _, (segments, partition) = stored
+    _, _, (segments, query) = stored
     index = {s.uuid: i for i, s in enumerate(segments)}
     _, inner, run = pt._costs(segments, None)
     block = np.asarray([hash(s.event_uuid) for s in segments])
@@ -161,7 +165,7 @@ def test_reader_cost_tracks_string_from_query_result(stored):
     async def go():
         errors = []
         for e in (0, 3):
-            result = await partition.query("price was too high", vector_search_limit=10, expand_context=e)
+            result = await query("price was too high", vector_search_limit=10, expand_context=e)
             scored = result.scored_segment_contexts
             contexts = [[index[s.uuid] for s in c.segments] for c in scored]
             pairs = admission(contexts, [index[c.seed_segment_uuid] for c in scored])

@@ -55,6 +55,7 @@ class Embedder:
     doc_store: str | None = None  # where document vectors live: shared by setups with the same server and document prompt
     dimensions: int = 768  # stored vector size
     request_dimensions: int | None = None  # what the API is asked for (None: dimensions); longer vectors are truncated
+    search_dimensions: int | None = None  # what searches use (None: dimensions): the stored vectors' leading ones, re-normalized
     send_dimensions: bool = False  # whether direct requests carry a dimensions field (hosted Matryoshka models)
     tokenizer: str = GEMMA  # counts the tokens an input is billed for
     special_tokens: int = 2  # added per input (BOS and EOS for embeddinggemma; EOS for Qwen3)

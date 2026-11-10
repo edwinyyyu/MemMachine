@@ -164,14 +164,117 @@ def _raw(spec, texts: list[str], dimensions: int) -> tuple[np.ndarray, dict]:
     return vectors, data.get("usage", {})
 
 
+def _raw_all(spec, texts: list[str], dimensions: int) -> tuple[np.ndarray, int]:
+    """_raw over any number of texts, in requests of at most the embedder's inputs and
+    MemMachine's characters per request; the vectors and the billed tokens."""
+    from rbench.embedding import MAX_REQUEST_CHARS
+
+    batches, size = [[]], 0
+    for t in texts:
+        if batches[-1] and (len(batches[-1]) == spec.request_inputs or size + len(t) > MAX_REQUEST_CHARS):
+            batches.append([])
+            size = 0
+        batches[-1].append(t)
+        size += len(t)
+    parts = [_raw(spec, b, dimensions) for b in batches if b]
+    return np.concatenate([v for v, _ in parts]), sum(int(u.get("prompt_tokens", 0)) for _, u in parts)
+
+
+# The user's rule (2026-11-10, relayed by reranker-f6): keep 4,096 dimensions and truncate at
+# search, if client-side truncation gives what the server's own truncation gives; else 1,024.
+TRUNCATION_FLOOR = 1e-5  # the bound on element differences when the API is deterministic
+TRUNCATION_MARGIN = 1.5  # else: within this multiple of its own run-to-run difference at the width
+TRUNCATION_WIDTHS = (1024, 2048)
+
+
+def truncation_check(embedder: str = "qwen3-8b-di", probes: int = 16, partitions: int = 3, haystack: int = 600,
+                     seed: int = 0) -> dict:
+    """Server-side truncation (the API asked for w dimensions) against client-side (4,096 asked,
+    the leading w kept and re-normalized, as vectorstore.ContentVectorStore searches), both
+    re-normalized. (a) Element-wise on `probes` pilot questions (with the embedder's query
+    prompt) and `probes` pilot segments: the largest element difference and the smallest
+    cosine at each width, beside DeepInfra's own run-to-run difference (the same texts asked
+    twice at 4,096, truncated alike); passes within TRUNCATION_MARGIN x that difference, or
+    TRUNCATION_FLOOR if there is none. (b) Rankings at 1,024 on reduced pilot haystacks
+    (`haystack` random distinct segments of each of `partitions` pilot histories, searched by
+    the history's questions): the top 10 by the server's vectors against the top 10 by the
+    truncated ones, and, as the noise baseline, the truncated top 10 of a second 4,096 run.
+    Passes if every top 10 is identical. About 0.4M tokens (under half a cent)."""
+    from rbench import partitions as pt
+    from rbench.embedding import EMBEDDERS, FULL
+    from rbench.samples import sample
+
+    spec, dataset = EMBEDDERS[embedder], "longmemeval_m"
+    unit = lambda v: v / np.linalg.norm(v, axis=1, keepdims=True)  # noqa: E731
+    rows, picked = queries(dataset), sample(dataset, "proto")
+    keyed = list(pt.groups(dataset, picked, "history").items())[:partitions]
+    rng = np.random.default_rng(seed)
+    hays, asks = [], []
+    for k, members in keyed:
+        distinct = list(dict.fromkeys(pt.offline(dataset, k, "seg500", "history")[2]))
+        hays.append([distinct[i] for i in sorted(rng.choice(len(distinct), min(haystack, len(distinct)), replace=False))])
+        asks.append([spec.query_prompt + rows[i]["variants"]["question"] for i in members])
+    probe = [spec.query_prompt + rows[i]["variants"]["question"] for i in picked[:probes]] + hays[0][:probes]
+    tokens = 0
+
+    def ask(texts: list[str], dimensions: int) -> np.ndarray:
+        nonlocal tokens
+        vectors, billed = _raw_all(spec, texts, dimensions)
+        tokens += billed
+        return vectors
+
+    full_a, full_b = ask(probe, FULL), ask(probe, FULL)
+    out = {"texts": f"{probes} questions, {probes} segments",
+           "run to run at 4096": {"max element": float(np.abs(unit(full_a) - unit(full_b)).max()),
+                                  "min cosine": float((unit(full_a) * unit(full_b)).sum(1).min())}}
+    passed = True
+    for w in TRUNCATION_WIDTHS:
+        server = ask(probe, w)
+        client, client_b = unit(full_a[:, :w]), unit(full_b[:, :w])
+        diff, noise = float(np.abs(unit(server) - client).max()), float(np.abs(client - client_b).max())
+        bound = max(TRUNCATION_FLOOR, TRUNCATION_MARGIN * noise)
+        out[f"server {w} vs client {w}"] = {
+            "max element": diff, "min cosine": float((unit(server) * client).sum(1).min()),
+            "run to run max element at this width": noise, "bound": bound,
+            "server norms (min, max)": [float(np.linalg.norm(server, axis=1).min()), float(np.linalg.norm(server, axis=1).max())],
+            "pass": diff <= bound}
+        passed &= diff <= bound
+    w, top = TRUNCATION_WIDTHS[0], 10
+    same, baseline, queries_n, differing = 0, 0, 0, []
+    for k_index, (hay, qs) in enumerate(zip(hays, asks, strict=True)):
+        h_full, h_full_b, h_server = ask(hay, FULL), ask(hay, FULL), ask(hay, w)
+        q_full, q_full_b, q_server = ask(qs, FULL), ask(qs, FULL), ask(qs, w)
+        truncated = unit(q_full[:, :w]) @ unit(h_full[:, :w]).T
+        again = unit(q_full_b[:, :w]) @ unit(h_full_b[:, :w]).T
+        server = unit(q_server) @ unit(h_server).T
+        for qi in range(len(qs)):
+            a, b, c = (np.argsort(-m[qi], kind="stable")[:top].tolist() for m in (server, truncated, again))
+            queries_n += 1
+            same += a == b
+            baseline += c == b
+            if a != b:
+                first = next(r for r in range(top) if a[r] != b[r])
+                differing.append({"history": keyed[k_index][0], "first differing rank": first + 1,
+                                  "score gap there (truncated)": float(abs(truncated[qi, a[first]] - truncated[qi, b[first]]))})
+    out[f"top {top} at {w}"] = {"queries": queries_n, "haystack": haystack, "server = truncated": same,
+                                "noise baseline (second 4096 run = first, truncated)": baseline,
+                                "differing": differing, "pass": same == queries_n}
+    passed &= same == queries_n
+    out["billed tokens"] = tokens
+    out["usd"] = round(tokens * spec.usd_per_mtok / 1e6, 4)
+    out["pass"] = bool(passed)
+    return out
+
+
 def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
     """Before embedding anything at scale with a hosted model (cents), on the API's own vectors:
     (1) the model card's example scores reproduce at full size; (2) a text embeds the same
     alone and in a batch with longer ones (padding and pooling); (3) the stored size comes
     back at unit norm and equals the full vector truncated to it and re-normalized; (4) billed
     tokens equal our count (nothing cut silently); (5) the path ingest uses, MemMachine's
-    OpenAIEmbedder (base64, dimensions), gives the same vectors. Retrieval against
-    embeddinggemma and the instruction choice is compare-embedders."""
+    OpenAIEmbedder (base64, dimensions), gives the same vectors; (6) truncating 4,096 here equals
+    asking the server for fewer (truncation_check). Retrieval against embeddinggemma and the
+    instruction choice is compare-embedders."""
     import asyncio
 
     from rbench.embedding import EMBEDDERS, QWEN3_QUERY
@@ -228,4 +331,5 @@ def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
     out["5 MemMachine path"] = {"cosine": np.round(cos, 6).tolist(), "arrived as": sorted(arrived),
                                 "every value exact in float32 (the cache stores the API's output losslessly)": exact,
                                 "pass": bool(cos.min() >= 0.9999 and exact)}
+    out["6 truncation"] = truncation_check(embedder)
     return out
