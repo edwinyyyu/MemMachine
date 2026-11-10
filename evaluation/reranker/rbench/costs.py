@@ -72,12 +72,13 @@ def _hours(model: str, tokens: float) -> float | str:
     return round(tokens / (rate * IN_FLIGHT) / 3600, 2)
 
 
-def exact_counts(dataset: str, chunking: str, keys: list[str], scope: str, embedder: str) -> dict:
-    """Exact counts for partitions not yet encoded, from the production segmenter and deriver
-    (CPU only, free; the user, 2026-11-10: count, do not extrapolate): segments (each one row in
-    the segment store and one record in the vector store), distinct derived texts (each one row
-    of the kept permanent copy, which dedups by text), their characters and the embedding tokens of the distinct texts (what
-    is billed). Cached in data/counts/ by the partitions' keys, so later estimates are instant."""
+def _partition_counts(dataset: str, chunking: str, scope: str, k: str, q: dict, embedder: str) -> dict[str, np.ndarray]:
+    """One partition's derived texts, from the production segmenter and deriver: per text its
+    hash (the first 8 bytes of its sha1, as the permanent copy keys it), characters and billed
+    tokens (the embedder's tokenizer, special tokens included), and its segments' characters.
+    Cached per partition in data/counts/<dataset>/<chunking>/<key>.npz, stamped with what changes
+    them (the scope, the tokenizer, the prepared data's date), so a resumed run counts only what
+    it has not counted before."""
     import asyncio
     import hashlib
     import json
@@ -86,52 +87,82 @@ def exact_counts(dataset: str, chunking: str, keys: list[str], scope: str, embed
 
     from rbench.dbs import replace_atomically
     from rbench.memory import segmenter
-    from rbench.paths import DATA
-    from rbench.progress import Progress
+    from rbench.paths import DATA, PREPARED
     from rbench.text import count
 
     spec = EMBEDDERS[embedder]
-    name = hashlib.sha1(json.dumps([dataset, chunking, scope, sorted(keys), spec.tokenizer, spec.special_tokens])
-                        .encode()).hexdigest()[:16]
-    path = DATA / "counts" / f"{dataset}__{chunking}__{name}.json"
+    prepared = PREPARED / dataset / "stats.json"
+    stamp = json.dumps([scope, spec.tokenizer, spec.special_tokens, prepared.stat().st_mtime_ns if prepared.exists() else 0])
+    path = DATA / "counts" / dataset / chunking / f"{k}.npz"
     if path.exists():
         try:
-            return json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
+            with np.load(path, allow_pickle=False) as data:
+                if str(data["stamp"]) == stamp:
+                    return {c: data[c] for c in ("hash", "chars", "tokens", "segment_chars")}
+        except Exception:  # noqa: BLE001 - unreadable: counted again
             pass
-    rows, fmt = queries(dataset), pt.formats(dataset).embed
-    by_key = {pt.key(dataset, r, scope): i for i, r in enumerate(rows)}
-    seen: set[int] = set()
-    out = {"segments": 0, "segment_chars": 0, "distinct_texts": 0, "distinct_chars": 0, "tokens": 0,
-           "partitions": len(keys)}
-    progress = Progress(f"{dataset} {chunking} exact counts", len(keys), "partitions")
+    fmt = pt.formats(dataset).embed
 
-    async def derive(p) -> tuple[list[str], int]:
+    async def derive() -> tuple[list[str], int]:
         s, d = segmenter(chunking), WholeTextDeriver()
         texts, chars = [], 0
-        for e in p.events:
+        for e in pt.part(dataset, q, scope).events:
             for seg in await s.segment(e, format_options=fmt):
                 chars += len(seg.block.text)
                 texts += [x.block.text for x in await d.derive(seg, format_options=fmt)]
         return texts, chars
 
-    for k in keys:
-        texts, chars = asyncio.run(derive(pt.part(dataset, rows[by_key[k]], scope)))
-        out["segments"] += len(texts)
-        out["segment_chars"] += chars
-        new = []
-        for text in texts:
-            h = int.from_bytes(hashlib.sha1(text.encode()).digest()[:8], "big")
-            if h not in seen:
-                seen.add(h)
-                new.append(text)
-        out["distinct_texts"] += len(new)
-        out["distinct_chars"] += sum(map(len, new))
-        out["tokens"] += int(count(new, spec.tokenizer).sum()) + spec.special_tokens * len(new)
-        progress.step()
+    texts, chars = asyncio.run(derive())
+    out = {"hash": np.asarray([int.from_bytes(hashlib.sha1(t.encode()).digest()[:8], "big") for t in texts], dtype=np.uint64),
+           "chars": np.asarray([len(t) for t in texts], dtype=np.int64),
+           "tokens": (count(texts, spec.tokenizer) + spec.special_tokens).astype(np.int64),
+           "segment_chars": np.asarray(chars, dtype=np.int64)}
     path.parent.mkdir(parents=True, exist_ok=True)
-    replace_atomically(path, lambda temporary: temporary.write_text(json.dumps(out) + "\n"))
+    replace_atomically(path, lambda temporary: np.savez(temporary, stamp=np.str_(stamp), **out))
     return out
+
+
+def _in_copy(embedder: str) -> np.ndarray:
+    """The text hashes (as _partition_counts makes them) already in the embedder's permanent
+    copy: embedded and paid for, so not counted again."""
+    from rbench.dbs import connect
+    from rbench.memory import EmbeddingCache
+
+    path = EmbeddingCache.path_for(EMBEDDERS[embedder])
+    if not path.exists():
+        return np.zeros(0, dtype=np.uint64)
+    db = connect(path)
+    try:
+        keys = [int(k[:16], 16) for (k,) in db.execute("SELECT key FROM vectors WHERE key NOT LIKE 'v:%'")]
+    finally:
+        db.close()
+    return np.asarray(keys, dtype=np.uint64)
+
+
+def exact_counts(dataset: str, chunking: str, keys: list[str], scope: str, embedder: str) -> dict:
+    """Exact counts for partitions not yet encoded (CPU only, free; the user, 2026-11-10: count,
+    do not extrapolate): segments (each one row in the segment store and one record in the
+    vector store), and the distinct derived texts not yet in the permanent copy (each one row of
+    it, which dedups by text: what is embedded and billed), their characters and billed tokens.
+    Per-partition counts are cached (_partition_counts); the copy is read each time."""
+    from rbench.progress import Progress
+
+    rows = queries(dataset)
+    by_key = {pt.key(dataset, r, scope): i for i, r in enumerate(rows)}
+    progress = Progress(f"{dataset} {chunking} exact counts", len(keys), "partitions")
+    parts = []
+    for k in keys:
+        parts.append(_partition_counts(dataset, chunking, scope, k, rows[by_key[k]], embedder))
+        progress.step()
+    hashes = np.concatenate([p["hash"] for p in parts]) if parts else np.zeros(0, dtype=np.uint64)
+    chars = np.concatenate([p["chars"] for p in parts]) if parts else np.zeros(0, dtype=np.int64)
+    tokens = np.concatenate([p["tokens"] for p in parts]) if parts else np.zeros(0, dtype=np.int64)
+    distinct, first = np.unique(hashes, return_index=True)
+    copied = np.isin(distinct, _in_copy(embedder))
+    new = first[~copied]
+    return {"segments": int(len(hashes)), "segment_chars": int(sum(int(p["segment_chars"]) for p in parts)),
+            "distinct_texts": int(len(new)), "distinct_chars": int(chars[new].sum()), "tokens": int(tokens[new].sum()),
+            "already_in_copy": int(copied.sum()), "partitions": len(keys)}
 
 
 def disk_need(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> float:
@@ -228,7 +259,8 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
         n = exact_counts(dataset, c, ks, scope, embedder)  # counted, not extrapolated (CPU, cached)
         per_partition[(dataset, scope, c)] = float(n["tokens"])
         disk[f"{dataset} {c}"] = {"partitions": len(ks), "segments (exact)": n["segments"],
-                                  "distinct texts (exact)": n["distinct_texts"],
+                                  "distinct texts not yet in the permanent copy (exact)": n["distinct_texts"],
+                                  "distinct texts already in it": n["already_in_copy"],
                                   "GB": round(disk_bytes(n["segments"], n["segment_chars"] / max(1, n["segments"]),
                                                          EMBEDDERS[embedder].dimensions, n["distinct_texts"]) / 1e9, 1)}
     embed_tok = sum(per_partition.values())  # each text of a partition without vectors, embedded once
@@ -238,7 +270,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     summary["embedding"] = {"embedder": embedder, "tokens_M": embed_tok / 1e6,
                             "usd": embed_tok / 1e6 * EMBEDDERS[embedder].usd_per_mtok,
                             "local_hours": embed_tok / MAC_EMBED_TOK_PER_S / 3600,
-                            "basis": "exact: every distinct derived text counted with the embedder's tokenizer"}
+                            "basis": "exact: every distinct derived text not yet in the permanent copy, counted with the embedder's tokenizer"}
     if disk:
         import shutil
 

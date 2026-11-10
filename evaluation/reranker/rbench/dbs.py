@@ -15,11 +15,35 @@ PRAGMAS = ("PRAGMA busy_timeout=30000", "PRAGMA journal_mode=WAL", "PRAGMA synch
 
 
 def sqlite_pragmas(connection) -> None:
-    """Apply PRAGMAS to a DB-API connection (sqlite3, or aiosqlite's adapted one)."""
+    """Apply PRAGMAS to a DB-API connection (sqlite3, or aiosqlite's adapted one). Switching to
+    WAL does not wait on busy_timeout: while another process is creating the same file it fails
+    with "database is locked" (reranker-75 saw 2 of 12 simultaneous opens fail), so a locked
+    pragma is retried for up to 10 s."""
+    import time
+
     cursor = connection.cursor()
     for pragma in PRAGMAS:
-        cursor.execute(pragma)
+        for attempt in range(100):
+            try:
+                cursor.execute(pragma)
+                break
+            except Exception as error:  # sqlite3's OperationalError, or the async adapter's
+                if "locked" not in str(error) or attempt == 99:
+                    raise
+                time.sleep(0.1)
     cursor.close()
+
+
+def checkpoint(path) -> None:
+    """Copy a database's write-ahead log into the file and fsync it (PRAGMA wal_checkpoint(FULL)).
+    With synchronous=NORMAL a commit is durable only once checkpointed, and on a power cut each
+    file loses its own log tail, so a partition's files are checkpointed before its done marker
+    is written (memory.Memory.ingest)."""
+    db = connect(path)
+    try:
+        db.execute("PRAGMA wal_checkpoint(FULL)")
+    finally:
+        db.close()
 
 
 def connect(path) -> sqlite3.Connection:

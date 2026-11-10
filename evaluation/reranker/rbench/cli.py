@@ -282,9 +282,11 @@ def main(argv: list[str] | None = None) -> None:
         from rbench.memory import EmbeddingCache
 
         cache = EmbeddingCache.path_for(EMBEDDERS[embedder])
-        if cache.exists():  # the paid vectors: back this file up (with its -wal beside it while a run is open)
+        if cache.exists():  # the paid vectors, their only copy
             size = sum(p.stat().st_size for p in cache.parent.glob(cache.name + "*"))
-            print(f"embedding cache: {cache} ({size / 1e9:.2f} GB): back it up to keep the vectors paid for", flush=True)
+            print(f"permanent embedding copy: {cache} ({size / 1e9:.2f} GB), the only copy of the vectors paid for: back it "
+                  f"up, never delete it. Copy it with no run open, or while one is: sqlite3 {cache} \".backup <target>\" "
+                  "(a plain copy of a file being written can tear)", flush=True)
     elif args.command == "show":
         from rbench.report import figures
         from rbench.report.data import load

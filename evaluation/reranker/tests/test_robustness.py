@@ -70,9 +70,15 @@ def test_every_database_gets_the_pragmas(tmp_path):
 
         async with Memory("fake", "synthetic", "seg80", root=tmp_path / "s", backend=FakeEmbedder()) as m:
             await m.ingest("h", _events(5))
+            _, store, _ = await m.stores()
+            assert store.db.execute("PRAGMA content.synchronous").fetchone()[0] == 1  # the attached copy too
     asyncio.run(go())
-    for name in ("segments", "records", "content"):  # the content store's: segments, records, and the vectors
-        assert dbs.connect(tmp_path / "s" / f"{name}.sqlite").execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    import sqlite3
+
+    for name in ("segments", "records", "content"):  # read without dbs.connect, which would set WAL itself
+        plain = sqlite3.connect(tmp_path / "s" / f"{name}.sqlite")
+        assert plain.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        plain.close()
 
 
 def test_requests_stay_under_memmachines_per_call_cap(tmp_path, monkeypatch):
@@ -342,3 +348,105 @@ def test_kill_9_mid_ingest_keeps_the_cache_whole(tmp_path):
          embedding.EMBEDDERS["qwen3-8b-di"]) = saved[:6]
         limits._LIMITS.clear()
         limits._LIMITS.update(saved[6])
+
+
+# reranker-75's storage review (2026-11-10)
+
+
+def test_setups_that_embed_documents_alike_share_one_copy():
+    from rbench.embedding import EMBEDDERS
+
+    path = memory.EmbeddingCache.path_for
+    assert path(EMBEDDERS["qwen3-8b-di"]) == path(EMBEDDERS["qwen3-8b-di-raw"])  # the query instruction is query-side
+    assert path(EMBEDDERS["qwen3-8b-di-4096"]) == path(EMBEDDERS["qwen3-8b-di-raw-4096"])
+    assert path(EMBEDDERS["qwen3-8b-di"]) != path(EMBEDDERS["qwen3-8b-di-4096"])  # another width: other vectors
+    assert path(EMBEDDERS["gemma300m-q"]) == path(EMBEDDERS["gemma300m-raw"]) != path(EMBEDDERS["gemma300m"])
+    for a in EMBEDDERS.values():  # a store root is shared exactly when the copy is
+        for b in EMBEDDERS.values():
+            if a.documents == b.documents:
+                assert path(a) == path(b), (a.name, b.name)
+
+
+def test_a_stored_vector_is_never_replaced(tmp_path, monkeypatch):
+    from rbench.embedding import EMBEDDERS
+
+    monkeypatch.setattr(memory, "EMBEDDINGS", tmp_path)
+    cache = memory.EmbeddingCache(EMBEDDERS["qwen3-8b-di"])
+    cache.put({"k": [1.0, 0.0]})
+    cache.put({"k": [0.0, 1.0]})  # the API's vector for the same text, from another run
+    assert cache.get(["k"]) == {"k": [1.0, 0.0]}  # the first stays: records point at it by its hash
+    cache.close()
+
+
+def test_a_partition_is_checkpointed_before_it_is_marked_done(tmp_path, monkeypatch):
+    from tests.test_memory import FakeEmbedder, _events  # noqa: PLC0415
+
+    root = tmp_path / "s"
+    seen = []
+
+    def record(path):
+        seen.append((path.name, (root / "done" / "h").exists()))
+
+    monkeypatch.setattr(memory, "checkpoint", record)
+
+    async def go():
+        async with Memory("fake", "synthetic", "seg80", root=root, backend=FakeEmbedder()) as m:
+            await m.ingest("h", _events(5))
+
+    asyncio.run(go())
+    assert seen == [("segments.sqlite", False), ("records.sqlite", False), ("content.sqlite", False)]
+    assert (root / "done" / "h").read_text() and not list((root / "done").glob("*.partial*"))
+
+
+@pytest.mark.skipif(not (memory.DATA / "prepared" / "longmemeval_m" / "queries.jsonl").exists(),
+                    reason="needs LongMemEval-M prepared")
+def test_counts_are_cached_per_partition_and_skip_what_is_in_the_copy(tmp_path, monkeypatch):
+    from rbench import costs
+    from rbench import partitions as pt
+    from rbench.samples import sample
+
+    monkeypatch.setattr(costs, "_in_copy", lambda embedder: np.zeros(0, dtype=np.uint64))
+    import rbench.paths
+
+    monkeypatch.setattr(rbench.paths, "DATA", tmp_path)  # the counts cache, away from the real one
+    keys = sorted(pt.groups("longmemeval_m", sample("longmemeval_m", "tiny"), "history"))[:2]
+    full = costs.exact_counts("longmemeval_m", "seg500", keys, "history", "qwen3-8b-di")
+    assert list((tmp_path / "counts" / "longmemeval_m" / "seg500").glob("*.npz"))
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("counted again")
+
+    monkeypatch.setattr(pt, "part", refuse)  # cached: nothing is segmented again
+    assert costs.exact_counts("longmemeval_m", "seg500", keys, "history", "qwen3-8b-di") == full
+    first = costs._partition_counts("longmemeval_m", "seg500", "history", keys[0], None, "qwen3-8b-di")
+    monkeypatch.setattr(costs, "_in_copy", lambda embedder: first["hash"])  # the first history is embedded
+    rest = costs.exact_counts("longmemeval_m", "seg500", keys, "history", "qwen3-8b-di")
+    assert rest["segments"] == full["segments"]  # its stores are still to build
+    assert rest["distinct_texts"] == full["distinct_texts"] - len(np.unique(first["hash"]))
+    assert rest["already_in_copy"] == len(np.unique(first["hash"])) and rest["tokens"] < full["tokens"]
+
+
+OPENER = r"""
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from rbench import dbs
+start = float(sys.argv[3])
+while time.time() < start:
+    pass
+dbs.connect(sys.argv[2]).close()
+"""
+
+
+def test_processes_creating_one_database_at_once_all_succeed(tmp_path):
+    """Switching a new file to WAL fails with "database is locked" while another process is
+    doing the same; dbs retries it."""
+    import time
+
+    root = memory.__file__.rsplit("/rbench/", 1)[0]
+    for trial in range(3):
+        start = time.time() + 1.5
+        target = tmp_path / f"shared{trial}.sqlite"
+        procs = [subprocess.Popen([sys.executable, "-c", OPENER, root, str(target), str(start)], stderr=subprocess.PIPE)
+                 for _ in range(12)]
+        errors = [p.communicate()[1].decode() for p in procs]
+        assert all(p.returncode == 0 for p in procs), [e for e in errors if e][:1]

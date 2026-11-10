@@ -151,7 +151,9 @@ class ContentVectorStorePartition(VectorStorePartition):
             rows = store.db.execute("SELECT r.uuid, (SELECT v FROM content.vectors WHERE vhash = r.vhash LIMIT 1) "
                                     "FROM records r WHERE r.partition = ? ORDER BY r.seq", (self._key,)).fetchall()
             if any(v is None for _, v in rows):
-                raise RuntimeError(f"vectors of partition {self._key!r} are missing from {store._content}")
+                raise RuntimeError(f"vectors of partition {self._key!r} are missing from {store._content}: delete "
+                                   f"{store._root / 'done' / self._key} and rerun to encode it again (vectors still in "
+                                   "the copy cost nothing)")
             matrix = np.frombuffer(b"".join(v for _, v in rows), dtype=np.float32)
             matrix = matrix.reshape(len(rows), store.store_schema.vector_dimensions)[:, : store.width]
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)

@@ -199,7 +199,8 @@ def truncation_check(embedder: str = "qwen3-8b-di", probes: int = 16, partitions
     (`haystack` random distinct segments of each of `partitions` pilot histories, searched by
     the history's questions): the top 10 by the server's vectors against the top 10 by the
     truncated ones, and, as the noise baseline, the truncated top 10 of a second 4,096 run.
-    Passes if every top 10 is identical. About 0.4M tokens (under half a cent)."""
+    Passes if the server's top 10s equal the truncated ones at least as often as two 4,096 runs
+    agree with each other (every one, if the API is deterministic). About 0.4M tokens (under half a cent)."""
     from rbench import partitions as pt
     from rbench.embedding import EMBEDDERS, FULL
     from rbench.samples import sample
@@ -258,8 +259,8 @@ def truncation_check(embedder: str = "qwen3-8b-di", probes: int = 16, partitions
                                   "score gap there (truncated)": float(abs(truncated[qi, a[first]] - truncated[qi, b[first]]))})
     out[f"top {top} at {w}"] = {"queries": queries_n, "haystack": haystack, "server = truncated": same,
                                 "noise baseline (second 4096 run = first, truncated)": baseline,
-                                "differing": differing, "pass": same == queries_n}
-    passed &= same == queries_n
+                                "differing": differing, "pass": same == queries_n or same >= baseline}
+    passed &= same == queries_n or same >= baseline  # as often as DeepInfra agrees with itself
     out["billed tokens"] = tokens
     out["usd"] = round(tokens * spec.usd_per_mtok / 1e6, 4)
     out["pass"] = bool(passed)

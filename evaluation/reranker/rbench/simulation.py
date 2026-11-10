@@ -203,9 +203,9 @@ async def first_stage_cached(m: Memory, k: str, partition, seg: pt.Segments, que
                              rerank_format, limit: int):
     """first_stage with each rendered context kept as its hash (all the replay needs: the score
     cache's key), cached beside the stores per query: keyed by the partition's encoding (its done
-    stamp), the query, the expansions, the limit and the format. A metric, reading or ranker
-    change then replays without querying EventMemory again (the queries and rendering are about
-    80% of a simulation's time). Written atomically; an unreadable file is recomputed."""
+    stamp), the embedder (its query setup), the search width, the query, the expansions, the limit and
+    the format. A metric, reading or ranker change then replays without querying EventMemory again
+    (the queries and rendering are about 80% of a simulation's time). Written atomically; an unreadable file is recomputed."""
     import hashlib
     import json
     import os
@@ -213,7 +213,9 @@ async def first_stage_cached(m: Memory, k: str, partition, seg: pt.Segments, que
     from rbench.rerankers import _h
 
     expansions = tuple(sorted({0, *expansions}))
-    name = hashlib.sha1(json.dumps([m.done(k).read_text(), query, expansions, limit, repr(rerank_format)]).encode())
+    # the query setup and search width too: stores are shared by setups that embed documents alike
+    name = hashlib.sha1(json.dumps([m.done(k).read_text(), m.embedder, m.width, query, expansions, limit,
+                                    repr(rerank_format)]).encode())
     path = m.root / "first_stage" / k / f"{name.hexdigest()[:24]}.npz"
     if path.exists():
         try:

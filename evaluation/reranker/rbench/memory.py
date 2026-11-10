@@ -13,8 +13,8 @@ deployment, as implementations of its interfaces:
   QueryCachingEmbedder  MemMachine's OpenAIEmbedder, against the local llama-server or DeepInfra
                      (embeddinggemma, or Qwen3-Embedding-8B with its query instruction), with
                      concurrency limited (adaptive for DeepInfra: limits.py), long retries,
-                     document vectors cached by text until their partition is stored
-                     (EmbeddingCache), and question embeddings cached, so replaying
+                     document vectors kept by text in the permanent copy (EmbeddingCache: the
+                     only copy, never deleted), and question embeddings cached, so replaying
                      configurations does not re-embed them.
   FixedCutSegmenter  a Segmenter that cuts every N characters: the simple chunker, an option
                      beside MemMachine's TextSegmenter (chunking names: segmenter()).
@@ -76,7 +76,7 @@ from sqlalchemy import event  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from rbench import credits, limits  # noqa: E402
-from rbench.dbs import connect, sqlite_pragmas  # noqa: E402
+from rbench.dbs import checkpoint, connect, replace_atomically, sqlite_pragmas  # noqa: E402
 from rbench import embedding as emb  # noqa: E402
 from rbench.paths import DATA, EMBEDDINGS, SECRETS  # noqa: E402
 from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
@@ -280,10 +280,18 @@ EMBEDDED_TOKENS: dict[str, int] = {}  # document tokens sent per embedder in thi
 
 
 class EmbeddingCache:
-    """Document vectors by content, like the score cache: sha1 of the exact text EventMemory
-    sends (the deriver's output) -> its vector, in data/embeddings/<embedder>__<setup>.sqlite,
-    where the setup hashes everything that changes a vector (the model, server, dimensions asked
-    and kept, prompts, MemMachine's max input length, the stored precision).
+    """The permanent copy of the document vectors, by content: sha1 of the exact text EventMemory
+    sends (the deriver's output) -> its vector, in data/embeddings/<document store>__<setup>.sqlite,
+    where the setup hashes everything that changes a document's vector (the model, server,
+    dimensions asked and kept, the document prompt, MemMachine's max input length, the stored
+    precision) and nothing on the query side: setups that embed documents alike (with or without
+    a query instruction, as embedding.Embedder.documents says) share one store and so one copy.
+
+    It is the only copy of every vector (the content store, vectorstore.py, keeps records that
+    point into it): back it up, never delete it to free disk; deleting it breaks every finished
+    partition and pays for the embeddings again. A row is written once and never replaced
+    (INSERT OR IGNORE): the API's vectors differ slightly run to run, and a finished
+    partition's records point at the first one by its hash.
 
     Kept permanently (the user, 2026-11-10: the vectors must survive a failure of EventMemory's
     storage layers and be reusable without its id mappings), so re-encoding the same chunking
@@ -299,9 +307,9 @@ class EmbeddingCache:
     @staticmethod
     def path_for(spec: emb.Embedder) -> Path:
         """The cache file of an embedder setup (what to back up to keep the paid vectors)."""
-        setup = json.dumps([spec.model, spec.url, spec.route, spec.request_dimensions, spec.dimensions, spec.query_prompt,
-                            spec.doc_prompt, spec.max_input_chars, "float32"])
-        return EMBEDDINGS / f"{spec.name}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
+        setup = json.dumps([spec.model, spec.url, spec.route, spec.request_dimensions, spec.dimensions, spec.doc_prompt,
+                            spec.max_input_chars, "float32"])
+        return EMBEDDINGS / f"{spec.documents}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
 
     def __init__(self, spec: emb.Embedder) -> None:
         path = self.path_for(spec)
@@ -324,7 +332,7 @@ class EmbeddingCache:
 
     def put(self, rows: dict[str, Sequence[float]]) -> None:
         with self.db:
-            self.db.executemany("INSERT OR REPLACE INTO vectors (key, v, vhash) VALUES (?, ?, ?)",
+            self.db.executemany("INSERT OR IGNORE INTO vectors (key, v, vhash) VALUES (?, ?, ?)",
                                 [(k, b, vector_hash(b)) for k, b in
                                  ((k, np.asarray(v, dtype=np.float32).tobytes()) for k, v in rows.items())])
 
@@ -628,9 +636,18 @@ class Memory:
         partition = await memory.open_or_create_partition(key)
         for batch in await self._batches(events, format_options):
             await partition.encode_events(batch, format_options=format_options)
+        for path in self._databases():  # durable before the marker says so (dbs.checkpoint: power cuts)
+            checkpoint(path)
         self.done(key).parent.mkdir(parents=True, exist_ok=True)
-        self.done(key).write_text(str(uuid.uuid4()))  # an encoding's stamp: its segment uuids are new each time
+        stamp = str(uuid.uuid4())  # an encoding's stamp: its segment uuids are new each time
+        replace_atomically(self.done(key), lambda temporary: temporary.write_text(stamp))
         return True
+
+    def _databases(self) -> list[Path]:
+        """The SQLite files a partition's encoding writes."""
+        if self.vector_store == "sqlite":
+            return [self.root / "segments.sqlite", self.root / "vectors.sqlite"]
+        return [self.root / "segments.sqlite", self.root / "records.sqlite", self.content_path]
 
     async def _batches(self, events: list[Event], format_options: FormatOptions | None) -> list[list[Event]]:
         """Events in order, in groups of at most ENCODE_SEGMENTS segments (counted with the same
