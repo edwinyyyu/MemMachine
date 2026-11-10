@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -101,6 +101,11 @@ QWEN3 = dict(url="https://api.deepinfra.com/v1/openai", route="/embeddings", mod
              doc_store="qwen3-8b-di")
 EMBEDDERS |= {"qwen3-8b-di": Embedder("qwen3-8b-di", query_prompt=QWEN3_QUERY, doc_prompt="", **QWEN3),
               "qwen3-8b-di-raw": Embedder("qwen3-8b-di-raw", query_prompt="", doc_prompt="", **QWEN3)}
+# Full width (4,096): compare-embedders --widths scores 4,096, 2,048 and 1,024 from one response
+# (truncated and re-normalized), and keeps these vectors in their own cache and document store.
+FULL = 4096
+EMBEDDERS |= {f"{name}-{FULL}": replace(EMBEDDERS[name], name=f"{name}-{FULL}", dimensions=FULL,
+                                         doc_store=f"qwen3-8b-di-{FULL}") for name in ("qwen3-8b-di", "qwen3-8b-di-raw")}
 # max_input_chars 40,000: pieces of dense code (about 1.7 characters per token) stay under 32k tokens.
 PAID = "qwen3-8b-di"  # the paid stages' first stage; the instruction setting is pending compare-embedders
 

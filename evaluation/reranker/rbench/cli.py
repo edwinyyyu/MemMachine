@@ -129,6 +129,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--dataset", default="longmemeval_m")
     p.add_argument("--size", type=int, default=500)
     p.add_argument("--questions", type=int, default=100, help="the first N in the samples' hash order (100: the pilot's)")
+    p.add_argument("--widths", help="an embedder (e.g. qwen3-8b-di): score it at 4,096, 2,048 and 1,024 dimensions from "
+                                    "one full-width embedding, and decide whether 1,024 is enough")
     p = sub.add_parser("embed-fidelity")
     p.add_argument("--dataset", default="longmemeval_m")
     p.add_argument("--chunking", default="seg500")
@@ -294,7 +296,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "compare-embedders":
         from rbench import compare_embedders
 
-        if args.embedders:
+        if args.widths:
+            path, keep = compare_embedders.write_widths(args.widths, args.dataset, args.size, args.questions)
+            print(path)
+            print("keep 1,024 dimensions" if keep else "STOP: 1,024 dimensions are clearly worse than 4,096")
+        elif args.embedders:
             print(compare_embedders.write_embedders(args.embedders.split(","), args.dataset, args.size, args.questions))
         else:
             print(compare_embedders.write(args.server, args.dataset, args.size, args.questions))

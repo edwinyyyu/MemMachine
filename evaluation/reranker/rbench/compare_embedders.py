@@ -219,3 +219,95 @@ def _figure_embedders(results: dict[str, dict[str, np.ndarray]], dataset: str, n
           [_key(c, marker=mk) for c, mk in style.values()], list(results), ncol=3,
           note="Held equal: the questions and their haystacks (evidence sessions plus other sessions of the same "
                "history), embedded as EventMemory embeds them. No reranker.")
+
+
+WIDTHS = (4096, 2048, 1024)
+
+
+def measure_widths(embedder: str, dataset: str, size: int, picked: list[int]) -> dict[int, dict[str, np.ndarray]]:
+    """The same metrics at each width in WIDTHS, from one full-width embedding of each reduced
+    haystack: the documents and questions embedded at 4,096 dimensions through MemMachine's own
+    path (memory.QueryCachingEmbedder, so the vectors are cached under the full-width setup
+    exactly as an ingest would store them), each width the leading dimensions re-normalized (a
+    Matryoshka model's prefix is itself an embedding; embed-checks check 3 shows the API's own
+    shorter vectors are exactly this)."""
+    import asyncio
+
+    from rbench.memory import QueryCachingEmbedder
+
+    full = f"{embedder}-{emb.FULL}"
+    rows = queries(dataset)
+    out: dict[int, dict[str, list[float]]] = {w: {} for w in WIDTHS}
+
+    async def vectors(texts: list[str], question: str) -> tuple[np.ndarray, np.ndarray]:
+        e = QueryCachingEmbedder(full)
+        try:
+            docs = np.asarray(await e._ingest_embed(texts), dtype=np.float32)
+            query = np.asarray((await e._search_embed([question]))[0], dtype=np.float32)
+            return docs, query
+        finally:
+            await e.aclose()
+
+    def unit(v: np.ndarray) -> np.ndarray:
+        return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-12)
+
+    for n, qi in enumerate(picked):
+        q = rows[qi]
+        texts, gold = haystack(dataset, q, size)
+        docs, query = asyncio.run(vectors(texts, q["variants"]["question"]))
+        for w in WIDTHS:
+            sims = unit(docs[:, :w]) @ unit(query[:w])
+            rank = np.empty(len(sims), dtype=int)
+            rank[np.argsort(-sims, kind="stable")] = np.arange(1, len(sims) + 1)
+            complete = [max(rank[i] for i in turn) for turn in gold]
+            m = out[w]
+            for k in KS:
+                m.setdefault(f"every@{k}", []).append(float(max(complete) <= k))
+                m.setdefault(f"first@{k}", []).append(float(min(complete) <= k))
+            m.setdefault("MRR", []).append(1.0 / min(rank[i] for turn in gold for i in turn))
+        if (n + 1) % 10 == 0:
+            print(f"{n + 1}/{len(picked)} questions", flush=True)
+    return {w: {k: np.asarray(v) for k, v in m.items()} for w, m in out.items()}
+
+
+def write_widths(embedder: str, dataset: str = "longmemeval_m", size: int = 500, questions: int = 100) -> tuple[str, bool]:
+    """Is 1,024 dimensions enough? Metrics at 4,096 / 2,048 / 1,024, Δ vs 4,096 with 95% paired
+    intervals, and the decision rule (the user's, 2026-11-10): keep 1,024 unless it is clearly
+    worse than 4,096, i.e. the interval of every@k averaged over k or of MRR excludes 0 and the
+    loss is at least LOSS. Returns (report path, keep 1,024)."""
+    from rbench.report.stats import interval
+
+    rows = queries(dataset)
+    picked = sorted(sample_order(dataset)[:questions])
+    results = measure_widths(embedder, dataset, size, picked)
+    clusters = np.asarray([rows[i]["qid"] for i in picked])
+    metrics = [*(f"every@{k}" for k in KS), *(f"first@{k}" for k in KS), "MRR"]
+    lines = [f"# Embedding width: {embedder} · {dataset} · seg{size} · {len(picked)} questions\n",
+             "- One full-width embedding (4,096 dimensions) per text; each width keeps the leading dimensions, "
+             "re-normalized.",
+             f"- Reduced haystacks: each question's evidence sessions plus {EXTRA} others. Δ: minus 4,096, with its 95% "
+             "paired interval over questions.\n",
+             "| width | " + " | ".join(metrics) + " |", "|---|" + "---|" * len(metrics)]
+    lines += [f"| {w:,} | " + " | ".join(f"{m[x].mean():.3f}" for x in metrics) + " |" for w, m in results.items()]
+    lines += ["", "| Δ vs 4,096 | " + " | ".join(metrics) + " |", "|---|" + "---|" * len(metrics)]
+    lines += [f"| {w:,} | " + " | ".join(delta(m[x] - results[4096][x], clusters) for x in metrics) + " |"
+              for w, m in results.items() if w != 4096]
+    keep = True
+    verdicts = []
+    for label, f in (("every@k averaged", lambda m: np.mean([m[f"every@{k}"] for k in KS], axis=0)),
+                     ("MRR", lambda m: m["MRR"])):
+        d = f(results[1024]) - f(results[4096])
+        lo, hi = interval(d, clusters)
+        worse = bool(np.isfinite(hi) and hi < 0 and -d.mean() >= LOSS)
+        keep = keep and not worse
+        ci = f"[{lo:+.3f}, {hi:+.3f}]" if np.isfinite(lo) else "(no interval: too few questions)"
+        verdicts.append(f"{label}: {d.mean():+.3f} {ci}" + (" clearly worse" if worse else ""))
+    lines += ["", "**Decision** (keep 1,024 unless clearly worse: the interval excludes 0 and the loss is at least "
+              f"{LOSS}): " + "; ".join(verdicts) + f". **{'Keep 1,024' if keep else 'Stop: 1,024 is clearly worse'}.**\n"]
+    path = SUMMARY / f"widths__{dataset}__seg{size}__{len(picked)}q__{embedder}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    return str(path), keep
+
+
+LOSS = 0.01  # the loss at 1,024 that counts as clearly worse, with an interval excluding 0
