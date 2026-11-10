@@ -54,8 +54,8 @@ _LONGMEMEVAL = dict(
               "and human-screened (about 70% human-edited)",
     queries="Questions about the user's past conversations (single-session user/assistant/preference, multi-session, "
             "knowledge update, temporal reasoning), LLM-drafted and rewritten by human experts (~5% of drafts kept)",
-    gold="Every turn marked has_answer (1.9 per question; 94% are user turns, median 67 tokens; assistant evidence "
-         "turns median 248), all needed; the evidence sessions as a second, session-level view",
+    gold="Every turn marked has_answer (1.9 per question; 94% are user turns, median 66 tokens; assistant evidence "
+         "turns median 246), all needed; the evidence sessions as a second, session-level view",
     scope="history",
     scope_reason="a chatbot searches the memory of the user it is talking to: each question's own history",
     default_variant="question",
