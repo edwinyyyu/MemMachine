@@ -912,10 +912,69 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
                + ". Held equal: reader tokens (x). Not equal: reranker tokens and vector search limit.")
 
 
+def _shade(color: str, amount: float) -> str:
+    """A lighter tint (amount > 0, toward the surface) or darker shade (< 0, toward the ink) of
+    a color, so lines of one ranking stay in its hue."""
+    return _mix(color, SURFACE, amount) if amount >= 0 else _mix(color, INK, -amount)
+
+
+def _mix(color: str, toward: str, amount: float) -> str:
+    """A color moved `amount` of the way toward another."""
+    from matplotlib.colors import to_hex, to_rgb
+
+    a, b = np.asarray(to_rgb(color)), np.asarray(to_rgb(toward))
+    return to_hex(a + (b - a) * amount)
+
+
+ROUND = (1, 2, 3, 5, 10, 20, 30, 50, 100, 200, 300, 500, 1000, 2000)
+
+
+def _round_ticks(values, keep_last: bool = True) -> list[int]:
+    """Labelled ticks for a log axis of measured values: the round ones, and the last (a
+    pool), dropping round ones too close to it to label apart."""
+    values = sorted(values)
+    if not values:
+        return []
+    last = values[-1]
+    out = {v for v in values if v in ROUND and (not keep_last or last / v >= 1.3 or v == last)}
+    return sorted(out | ({last} if keep_last else set()))
+
+
+def _log_edges(values) -> np.ndarray:
+    """Cell edges for a heatmap of measured values on a log axis: geometric midpoints, the
+    outer edges as far out as the neighbouring step."""
+    v = np.asarray(values, dtype=float)
+    if len(v) == 1:
+        return np.asarray([v[0] / 1.5, v[0] * 1.5])
+    mids = np.sqrt(v[:-1] * v[1:])
+    return np.concatenate([[v[0] ** 2 / mids[0]], mids, [v[-1] ** 2 / mids[-1]]])
+
+
+def _end_labels(ax, items, gap: float = 0.045) -> None:
+    """Text labels at the right end of lines, (y, text) each, in the text ink (the line's color
+    carries what it is). Labels too close to read apart are spread evenly around their lines'
+    mean, so each stays as near its line as the others allow."""
+    items = sorted(items)
+    groups = [[i] for i in range(len(items))]
+    while True:  # merge neighbouring groups until no two overlap
+        spans = [(np.mean([items[i][0] for i in g]), g) for g in groups]
+        placed = [(c - gap * (len(g) - 1) / 2, c + gap * (len(g) - 1) / 2, g) for c, g in spans]
+        clash = next((n for n in range(len(placed) - 1) if placed[n + 1][0] - placed[n][1] < gap), None)
+        if clash is None:
+            break
+        groups[clash:clash + 2] = [groups[clash] + groups[clash + 1]]
+    for low, _, g in placed:
+        for n, i in enumerate(g):
+            ax.annotate(items[i][1], xy=(1.0, low + gap * n), xycoords=("axes fraction", "data"), xytext=(3, 0),
+                        textcoords="offset points", va="center", ha="left", fontsize=7, color=INK2,
+                        annotation_clip=False)
+
+
 def topk_recall(r: Results, out, head: str) -> None:
     """Recall with and without reranking across top-k, the asker's metric (report/topk.py):
     per model, a column per recall reading; the reranker's gain over (L, k), recall vs k at
-    fixed L, and recall vs L at fixed k."""
+    fixed L, and recall vs L at fixed k. Color is the ranking (the first stage's blue, the
+    model's color reranked) and lightness the setting within it; k and L on log axes."""
     from rbench.report import topk
 
     if not r.models or not topk.available(r):
@@ -924,71 +983,85 @@ def topk_recall(r: Results, out, head: str) -> None:
         grids = {x: topk.grid(r, m, x) for x in topk.READINGS}
         if not any(g["limits"] for g in grids.values()):
             continue
+        first, model = SERIES["first_stage"], SERIES[m]
+        seeds = RERANKERS[m].markers[0]  # every line here scores the seeds
         fig, axes = _figure(3, len(grids), panel=(4.4, 3.4))
         for j, (reading, g) in enumerate(grids.items()):
             limits, ks = g["limits"], g["ks"]
             ax = axes[0][j]
             clear = ~((g["low"] <= 0) & (g["high"] >= 0))
-            shown = np.where(clear, g["gain"], np.nan)
-            im = ax.pcolormesh(np.arange(len(ks) + 1), np.arange(len(limits) + 1), shown, cmap=DIVERGING,
-                               norm=TwoSlopeNorm(0, -0.3, 0.3))
-            muted = np.where(np.isfinite(g["gain"]) & ~clear, 1.0, np.nan)
-            ax.pcolormesh(np.arange(len(ks) + 1), np.arange(len(limits) + 1), muted,
+            xe, ye = _log_edges(ks), _log_edges(limits)
+            im = ax.pcolormesh(xe, ye, np.where(clear, g["gain"], np.nan), cmap=DIVERGING, norm=TwoSlopeNorm(0, -0.3, 0.3))
+            ax.pcolormesh(xe, ye, np.where(np.isfinite(g["gain"]) & ~clear, 1.0, np.nan),
                           cmap=LinearSegmentedColormap.from_list("muted", [MUTED, MUTED]))
-            for a, L in enumerate(limits):  # k = L: everything retrieved is kept, a gain of 0 by construction
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            for L in limits:  # k = L: everything retrieved is kept, a gain of 0 by construction
                 if L in ks:
-                    ax.text(ks.index(L) + 0.5, a + 0.5, "=", ha="center", va="center", fontsize=8, color=INK2)
-            ax.set_xticks(np.arange(len(ks)) + 0.5, [str(k) for k in ks], fontsize=7)
-            ax.set_yticks(np.arange(len(limits)) + 0.5, [str(L) for L in limits], fontsize=7)
+                    ax.text(L, L, "=", ha="center", va="center", fontsize=8, color=INK2)
+            ax.set_xticks(_round_ticks(ks, keep_last=False), [str(k) for k in _round_ticks(ks, keep_last=False)], fontsize=7)
+            ax.set_yticks(_round_ticks(limits), [str(L) for L in _round_ticks(limits)], fontsize=7)
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            ax.yaxis.set_minor_formatter(NullFormatter())
+            ax.tick_params(which="minor", length=0)
+            ax.set_xlim(xe[0], xe[-1])
+            ax.set_ylim(ye[0], ye[-1])
             ax.grid(False)
             ax.set_title(f"{topk.NAMES[reading]}: gain", loc="left")
-            ax.set_xlabel("k seeds kept")
+            ax.set_xlabel("k seeds kept (log)")
             if j == 0:
-                ax.set_ylabel("L (vector search limit)")
+                ax.set_ylabel("L, vector search limit (log)")
             ax = axes[1][j]
             bests = topk.best_limit(g)
-            series = [("first stage (top-k as L)", g["first"], SERIES["first_stage"], "x")]
+            series = [("first stage (top-k as L)", g["first"], first, "x")]
             if 20 in limits:
-                series.append(("reranked, L 20", g["reranked"][limits.index(20)], SERIES[m], RERANKERS[m].markers[0]))
+                series.append(("reranked, L 20 (EventMemory's default)", g["reranked"][limits.index(20)], model, seeds))
+            series.append((f"reranked, L {limits[-1]} (the pool)", g["reranked"][-1], _shade(model, 0.55), seeds))
             series.append(("reranked, best L per k", np.asarray([g["reranked"][limits.index(b), jj] if b else np.nan
-                                                                 for jj, b in enumerate(bests)]), INK, "+"))
-            series.append((f"reranked, pool (L {limits[-1]})", g["reranked"][-1], SERIES[m], RERANKERS[m].markers[1]))
-            for label, ys, color, marker in series:
-                _plot(ax, np.arange(len(ks)), ys, color=color, marker=marker, label=label)
-            ax.set_xticks(np.arange(len(ks)), [str(k) for k in ks], fontsize=7)
+                                                                for jj, b in enumerate(bests)]),
+                           _shade(model, -0.45), seeds))
+            for _, ys, color, marker in series:
+                _plot(ax, ks, ys, color=color, marker=marker)
+            _log_x(ax, 10, _round_ticks(ks, keep_last=False))
             _share_y(ax)
             ax.set_title(f"{topk.NAMES[reading]} vs k", loc="left")
-            ax.set_xlabel("k seeds kept")
+            ax.set_xlabel("k seeds kept (log)")
             if j == 0:
                 ax.set_ylabel("recall")
             ax = axes[2][j]
-            for k, color in zip(topk.SLICE_KS, RAMP[3], strict=True):
-                if k in ks:
-                    col = ks.index(k)
-                    _plot(ax, limits, g["reranked"][:, col], color=color, marker=RERANKERS[m].markers[0])
-                    _plot(ax, limits, np.full(len(limits), g["first"][col]), color=color, marker="x")  # first stage
-            pool = limits[-1]  # labelled ticks: round limits, and the pool (rounder ones too close to it dropped)
-            _log_x(ax, 10, sorted({L for L in limits if L in (5, 10, 20, 50, 100, 200, 500, 1000) and pool / L >= 1.3}
-                                  | {pool}))
+            ends = []
+            for k, amount in zip(topk.SLICE_KS, (0.55, 0.0, -0.45), strict=True):  # lighter: fewer kept
+                if k not in ks:
+                    continue
+                col = ks.index(k)
+                ys = g["reranked"][:, col]
+                _plot(ax, limits, ys, color=_shade(model, amount), marker=seeds)
+                _plot(ax, limits, np.full(len(limits), g["first"][col]), color=_shade(first, amount), marker="x")
+                last = ys[np.isfinite(ys)]
+                ends += [(float(last[-1]), f"k {k}")] if len(last) else []
+                ends += [(float(g["first"][col]), f"k {k}")]
+            _log_x(ax, 10, _round_ticks(limits))
             _share_y(ax)
+            _end_labels(ax, ends)
             ax.set_title(f"{topk.NAMES[reading]} vs L", loc="left")
-            ax.set_xlabel("L (vector search limit); x: the first stage at that k (the same at every L)")
+            ax.set_xlabel("L, vector search limit (log)")
             if j == 0:
                 ax.set_ylabel("recall")
         fig.colorbar(im, ax=axes[0].tolist(), label="recall gain (reranked minus first stage)")
-        handles = [_key(c, marker=mk) for _, _, c, mk in series] + [Patch(color=MUTED)] + \
-                  [_key(c, marker=RERANKERS[m].markers[0]) for c in RAMP[3]]
-        labels = [lab for lab, _, _, _ in series] + ["no clear difference (95% interval includes 0)"] + \
-                 [f"k = {k} (bottom row; x: first stage)" for k in topk.SLICE_KS]
+        handles = [_key(c, marker=mk) for _, _, c, mk in series] + [Patch(color=MUTED)]
+        labels = [lab for lab, _, _, _ in series] + ["no clear difference (95% interval includes 0)"]
         _save(fig, out / f"topk_recall_{m}.png",
               f"Recall with and without reranking across top-k (the asker's metric), {LABEL[m]} — {head}",
               handles, labels, ncol=3,
               note=f"{frontier.setting(r)[0]}, expand_context 0. Top-k read both ways: L, the vector search limit (all "
-                   "reranked), and k, the seeds kept after (re)ranking. Without a reranker top-k is both. Top row: the "
+                   "reranked), and k, the seeds kept after (re)ranking. Without a reranker top-k is both. Color is the "
+                   f"ranking (blue: the first stage; {LABEL[m]}'s color: reranked), lightness the setting. Top row: the "
                    "reranker's recall gain over (L, k), colored only where its 95% interval excludes 0; '=' marks k = L, "
-                   "where everything retrieved is kept, so reranking cannot change recall (0 by construction). L and k "
-                   "are chosen once for all questions. Recall: the share of a question's evidence turns found within k "
-                   "seeds (in full, or touched), and every-gold.")
+                   "where everything retrieved is kept, so reranking cannot change recall (0 by construction); k > L "
+                   "is blank. Middle row: recall vs k at L 20, at the pool and at the best L for each k (lightest to "
+                   "darkest). Bottom row: recall vs L at k 5, 10 and 20 (lightest to darkest, labelled at the right); "
+                   "the first stage is flat, the same at every L. L and k are chosen once for all questions. Recall: the "
+                   "share of a question's evidence turns found within k seeds (in full, or touched), and every-gold.")
 
 
 ALL_READINGS = ("coverage", "rpf", "topk")  # drawn for every reading or measure at once

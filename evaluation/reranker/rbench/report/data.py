@@ -121,7 +121,11 @@ def load(embedder: str, dataset: str, scope: str, variant: str, sample: str) -> 
         frames.append(pd.read_parquet(path))
     if not frames:
         raise FileNotFoundError(f"no simulated results under {base}")
-    return Results(embedder, dataset, scope, variant, sample, pd.concat(frames, ignore_index=True))
+    from rbench import config
+
+    df = pd.concat(frames, ignore_index=True)
+    df = df[~df.model.isin(config.EVAL.hide)].reset_index(drop=True)  # hidden rerankers (config.EVAL.hide)
+    return Results(embedder, dataset, scope, variant, sample, df)
 
 
 def coverage(costs: np.ndarray, budgets: np.ndarray) -> np.ndarray:

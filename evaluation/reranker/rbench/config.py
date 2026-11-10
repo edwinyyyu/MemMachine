@@ -24,6 +24,9 @@ reads them from EVAL rather than hard-coding them.
                segment length) and expand_context, so only the vector search limit varies, as
                a service would run (the user's decision, 2026-11-09). Other values draw other
                charts; re-picking among every configuration per target made the chart jagged
+  hide         rerankers left out of reports and charts though they have scores. The raw-pairs
+               format test (q06-local-raw) is settled (the model card's prompt won: METHODOLOGY
+               section 3), so it is hidden; `--hide ""` shows it (e.g. to redraw format-test)
   size_tolerance  how far apart (relative) two measured unit sizes may be and still be reported
                as matched, where a comparison pairs units by size (the expansion comparison);
                beyond it the report flags the pair as not size-matched
@@ -45,6 +48,7 @@ class Evaluation:
     size_tolerance: float = 0.25
     cost_chunking: str | None = None
     cost_expand: int = 0
+    hide: tuple[str, ...] = ("q06-local-raw",)
 
 
 EVAL = Evaluation()

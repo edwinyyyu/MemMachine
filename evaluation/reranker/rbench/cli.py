@@ -130,13 +130,16 @@ def main(argv: list[str] | None = None) -> None:
         sub.choices[name].add_argument("--limits", type=ints, help="vector search limits shown, e.g. 10,20,50")
         sub.choices[name].add_argument("--readings", type=lambda text: tuple(text.split(",")),
                                        help="single-reading charts for these readings, e.g. every,first")
+        sub.choices[name].add_argument("--hide", type=lambda text: tuple(x for x in text.split(",") if x),
+                                       help='rerankers left out of reports (default q06-local-raw; "" shows every one)')
         sub.choices[name].add_argument("--token-top", type=int,
                                        help="where reader-token axes end, and the budget pools are deep enough to fill")
     args = parser.parse_args(argv)
     if args.command in ("run", "adhoc", "show", "estimate"):
         from rbench import config
 
-        config.configure(budgets=args.budgets, limits=args.limits, readings=args.readings, token_top=args.token_top)
+        config.configure(budgets=args.budgets, limits=args.limits, readings=args.readings, token_top=args.token_top,
+                         hide=args.hide)
 
     if args.command == "prepare":
         for name in DATASETS if args.datasets == ["all"] else args.datasets:
