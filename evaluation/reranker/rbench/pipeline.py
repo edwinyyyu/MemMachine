@@ -61,5 +61,6 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     written = []
     for dataset, scope, variant, sample_name in sorted({k[:4] for k in jobs}):
         results = load(embedder, dataset, scope, variant, sample_name)
+        tables.clear(results)
         written += [tables.write(results, e) for e in tables.EVENTS] + [figures.write(results)]
     return written

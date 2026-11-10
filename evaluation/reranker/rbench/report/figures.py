@@ -542,21 +542,26 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
     stage over the same seeds (same vector search limit), at each configured budget, with 95%
     intervals; a panel per (model, limit), a line per (budget, chunker family)."""
     measured = {c: unit_tokens(r, c) for c in r.chunkings}
-    families = _families([c for c, t in measured.items() if t])
-    if sum(map(len, families.values())) < 2 or not r.models:
+    # models scored at two or more measured chunkings (a model scored at one has no gain curve)
+    models = [m for m in r.models if sum(1 for c in measured if measured[c] and m in r.models_at(c)) >= 2]
+    sized = [c for c, t in measured.items() if t and any(m in r.models_at(c) for m in models)]
+    families = _families(sized)
+    if not models:
         return
-    sized = [c for cs in families.values() for c in cs]
     limits = [d for d in _limit_grid(r) if all(d in r.limits(c, config.EVAL.limits) for c in sized)]
     if not limits:
         return
     budgets = config.EVAL.budgets
     ramp = dict(zip(budgets, RAMP[5] if len(budgets) > 3 else RAMP[3], strict=False))
-    fig, axes = _figure(len(r.models), len(limits), panel=(3.8, 3.2), sharey=True)
-    for i, m in enumerate(r.models):
+    fig, axes = _figure(len(models), len(limits), panel=(3.8, 3.2), sharey=True)
+    for i, m in enumerate(models):
         for j, d in enumerate(limits):
             ax = axes[i][j]
             for b in budgets:
-                for fam, chunkings in families.items():
+                for fam, members in families.items():
+                    chunkings = [c for c in members if m in r.models_at(c)]
+                    if not chunkings:
+                        continue
                     means, los, his = [], [], []
                     for c in chunkings:
                         rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
@@ -834,8 +839,12 @@ def _draw(r: Results, out, keys) -> None:
 
 
 def write(r: Results) -> str:
+    """Draw every chart of a run into its folder, cleared first so no chart from an earlier
+    version of the code or of the results is left beside the new ones."""
     out = FIGURES / r.embedder / f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}"
     out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("*.png"):
+        old.unlink()
     _draw(r, out, list(CHARTS))
     return str(out)
 

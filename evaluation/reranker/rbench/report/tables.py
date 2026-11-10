@@ -484,6 +484,13 @@ def latency(r: Results) -> list[str]:
             "pairs per second (median) |", "|---|---|---|---|---|---|---|", *rows, ""]
 
 
+def clear(r: Results) -> None:
+    """Remove a run's summaries before they are written again, so none from an earlier version
+    is left beside the new ones."""
+    for old in (SUMMARY / r.embedder).glob(f"{r.dataset}__{r.scope}__{r.variant}__{r.sample}__*.md"):
+        old.unlink()
+
+
 def write(r: Results, event: str = "first") -> str:
     head = [f"# {r.dataset} · {r.scope} · {r.variant} · {r.sample} · {event} gold\n", GLOSSARY,
             f"Embedder {r.embedder}. {r.df.qid.nunique()} questions, all evaluated (no dev split). "
