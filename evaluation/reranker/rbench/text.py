@@ -12,6 +12,7 @@ from tokenizers import Tokenizer
 
 GEMMA = "google/embeddinggemma-300m"
 QWEN = "Qwen/Qwen3-Reranker-0.6B"
+QWEN_EMBED = "Qwen/Qwen3-Embedding-0.6B"  # the Qwen3-Embedding tokenizer (the same for 0.6B, 4B and 8B)
 
 
 @cache

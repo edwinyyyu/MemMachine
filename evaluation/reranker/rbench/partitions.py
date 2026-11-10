@@ -293,11 +293,16 @@ def offline(dataset: str, k: str, chunking: str, scope: str | None = None) -> tu
     return _table(dataset, p, segments), tuple(segments), tuple(texts)
 
 
-def embedding_tokens(dataset: str, k: str, chunking: str, scope: str | None = None) -> int:
-    """Tokens a partition's embedding costs: its embedding texts plus special tokens (the
-    no-prompt setup EventMemory's OpenAIEmbedder sends)."""
+def embedding_tokens(dataset: str, k: str, chunking: str, scope: str | None = None, embedder: str | None = None) -> int:
+    """Tokens a partition's embedding costs: its embedding texts (sent as they are, as
+    EventMemory's OpenAIEmbedder sends them) plus the embedder's special tokens per text,
+    counted with the embedder's tokenizer (embeddinggemma's by default)."""
+    from rbench.embedding import EMBEDDERS
+
     _, _, texts = offline(dataset, k, chunking, scope)
-    return int(count(list(texts), GEMMA).sum()) + 2 * len(texts)
+    spec = EMBEDDERS.get(embedder) if embedder else None
+    tokenizer, special = (spec.tokenizer, spec.special_tokens) if spec else (GEMMA, 2)
+    return int(count(list(texts), tokenizer).sum()) + special * len(texts)
 
 
 def gold(spans: list[list[tuple[int, int, int]]], p: Part, seg: Segments) -> metrics.Gold:

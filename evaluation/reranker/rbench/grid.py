@@ -35,6 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from rbench.datasets import info
+from rbench.embedding import PAID as PAID_EMBEDDER
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class Run:
     models: tuple[str, ...]
     sample: str = "large"
     expand: int = 0  # > 0: score each seed's EventMemory window (expand_context = expand), not the seed
+    embedder: str | None = None  # the first stage (embedding.EMBEDDERS); None: embedding.DEFAULT, the local server
     pool_seeds: int | None = None  # seeds scored per query (its deepest vector search limit); None: the depth
     # that holds all evidence for depth.POOL_COVERAGE of the sample's queries, measured after embedding (depth.py)
     note: str = ""
@@ -68,6 +70,7 @@ LME = "longmemeval_m"
 def lme(chunkings: tuple[str, ...], models: tuple[str, ...], expand: int, **settings) -> Run:
     """A LongMemEval-M run on all 470 answerable questions. chunkings: seg<N> (EventMemory's
     TextSegmenter at N characters) or cut<N> (the simple chunker: memory.segmenter)."""
+    settings.setdefault("embedder", PAID_EMBEDDER)
     return Run(LME, "history", "question", chunkings, models, sample="all", expand=expand, **settings)
 
 

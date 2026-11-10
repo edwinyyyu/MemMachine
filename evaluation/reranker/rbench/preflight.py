@@ -135,3 +135,56 @@ def embed_fidelity(dataset: str = "longmemeval_m", chunking_name: str = "seg500"
     overlap = np.mean([len(set(x) & set(y)) / 10 for x, y in zip(top_a, top_b, strict=True)])
     return {"texts": len(cos), "cosine_min": float(cos.min()), "cosine_median": float(np.median(cos)),
             "top10_overlap": float(overlap), "top1_agreement": float(np.mean(top_a[:, 0] == top_b[:, 0]))}
+
+
+# Qwen3-Embedding-8B's model card example (checked 2026-11-09): its scores, and its own vLLM run's.
+CARD_QUERIES = ["What is the capital of China?", "Explain gravity"]
+CARD_DOCUMENTS = ["The capital of China is Beijing.",
+                  "Gravity is a force that attracts two bodies towards each other. It gives weight to physical objects "
+                  "and is responsible for the movement of planets around the sun."]
+CARD_SCORES = np.asarray([[0.7493, 0.0751], [0.0880, 0.6318]])
+CARD_TOLERANCE = 0.005
+
+
+def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
+    """Before embedding anything at scale with a hosted model (cents): (1) the model card's
+    example scores reproduce at full size; (2) a text embeds the same alone and in a batch
+    with longer ones (padding and pooling); (3) the stored size equals the full vector
+    truncated to it and re-normalized, at unit norm; (4) billed tokens equal our count (so
+    nothing is cut silently). Check 5, retrieval against embeddinggemma and the instruction
+    choice, is compare-embedders."""
+    from dataclasses import replace
+
+    import httpx
+
+    from rbench.embedding import EMBEDDERS, QWEN3_QUERY, embed
+    from rbench.paths import SECRETS
+    from rbench.text import count
+
+    spec = EMBEDDERS[embedder]
+    full = replace(spec, dimensions=4096, request_dimensions=None)
+    out = {}
+    q = embed(full, [QWEN3_QUERY + x for x in CARD_QUERIES], "")
+    d = embed(full, CARD_DOCUMENTS, "")
+    scores = q @ d.T
+    out["1 card scores"] = {"got": np.round(scores, 4).tolist(), "card": CARD_SCORES.tolist(),
+                            "pass": bool(np.abs(scores - CARD_SCORES).max() <= CARD_TOLERANCE)}
+    long = " ".join(["Gravity bends light and keeps the planets on their orbits."] * 60)
+    alone = embed(full, [CARD_DOCUMENTS[0]], "")[0]
+    batched = embed(full, [long, CARD_DOCUMENTS[0], long + " more"], "")[1]
+    out["2 batch invariance"] = {"cosine": float(alone @ batched), "pass": bool(alone @ batched >= 0.9999)}
+    short = embed(spec, CARD_DOCUMENTS, "")
+    prefix = d[:, : spec.dimensions] / np.linalg.norm(d[:, : spec.dimensions], axis=1, keepdims=True)
+    cos = (short * prefix).sum(1)
+    out["3 dimensions"] = {"asked": spec.dimensions, "cosine_to_truncated_full": np.round(cos, 6).tolist(),
+                           "norms": np.round(np.linalg.norm(short, axis=1), 6).tolist(),
+                           "pass": bool(cos.min() >= 0.9999 and np.allclose(np.linalg.norm(short, axis=1), 1, atol=1e-3))}
+    texts = [QWEN3_QUERY + CARD_QUERIES[0], *CARD_DOCUMENTS, long]
+    key = (SECRETS / spec.key_file).read_text().strip()
+    body = {"model": spec.model, "input": texts, "encoding_format": "float", "dimensions": spec.dimensions}
+    usage = httpx.post(spec.url + spec.route, json=body, headers={"Authorization": f"bearer {key}"},
+                       timeout=120).json().get("usage", {})
+    ours = int(count(texts, spec.tokenizer).sum()) + spec.special_tokens * len(texts)
+    out["4 billed tokens"] = {"billed": usage.get("prompt_tokens"), "ours": ours,
+                              "pass": usage.get("prompt_tokens") == ours}
+    return out

@@ -19,8 +19,11 @@
   fidelity <dataset> <chunking> <sample>   preflight: local vs DeepInfra 0.6B on the same pairs
   show <dataset> [--sample S] [--chart coverage,rpf,...] [--scope S] [--variant V]
                                      open a run's charts in zoomable windows, from its saved results
-  compare-embedders [--server S] [--questions N]   first stage under each embedding prompt setup (no reranker)
+  compare-embedders [--server S | --embedders a,b,c] [--questions N]
+                                     first stage under each embedding prompt setup, or across embedders (no reranker)
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
+  embed-checks [--embedder E]                                preflight for a hosted embedder (Qwen3-Embedding-8B):
+                                     card scores, batch invariance, dimensions, billed tokens (cents)
                                      (default: LongMemEval-M's EventMemory embedding text at seg500)
 
 run, adhoc and show take --budgets, --limits and --readings: the values reports are drawn at
@@ -39,6 +42,14 @@ from rbench import costs, grid, pipeline, preflight, profile, schema
 from rbench.datasets import DATASETS, prepare
 from rbench.embedding import DEFAULT as EMBEDDER, EMBEDDERS
 from rbench.rerankers import RERANKERS
+
+
+def _embedder(args, runs: list) -> str:
+    """The first stage for these runs: --embedder, else the runs' own, else the local default."""
+    own = {r.embedder for r in runs if r.embedder}
+    if len(own) > 1 and not getattr(args, "embedder", None):
+        raise SystemExit(f"these runs use several first stages ({sorted(own)}); pass --embedder")
+    return getattr(args, "embedder", None) or (own.pop() if own else EMBEDDER)
 
 
 def _estimate(runs: list, embedder: str) -> dict:
@@ -90,6 +101,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--embedder", default=EMBEDDER)
     p = sub.add_parser("compare-embedders")
     p.add_argument("--server", default="gemma300m", help="gemma300m (local llama-server) or gemma300m-di")
+    p.add_argument("--embedders", help="comma-separated embedders to compare instead of one server's prompt setups, "
+                                       "e.g. qwen3-8b-di,qwen3-8b-di-raw,gemma300m-di-raw (the first is the reference)")
     p.add_argument("--dataset", default="longmemeval_m")
     p.add_argument("--size", type=int, default=500)
     p.add_argument("--questions", type=int, default=100, help="the first N in the samples' hash order (100: the pilot's)")
@@ -97,7 +110,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--dataset", default="longmemeval_m")
     p.add_argument("--chunking", default="seg500")
     for name in ("run", "adhoc", "estimate", "explain", "depth"):
-        sub.choices[name].add_argument("--embedder", default=EMBEDDER, choices=EMBEDDERS)
+        sub.choices[name].add_argument("--embedder", choices=EMBEDDERS,
+                                       help=f"the first stage (default: the stage's own, else {EMBEDDER})")
+    p = sub.add_parser("embed-checks")
+    p.add_argument("--embedder", default="qwen3-8b-di")
     p = sub.add_parser("smoke")
     p.add_argument("--models", default="q06,q4,q8")
     p = sub.add_parser("fidelity")
@@ -146,7 +162,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "explain":
         from rbench import explain
 
-        print(explain.run(args.dataset, args.chunking, args.qid, args.model, args.pool_seeds, args.expand, args.embedder))
+        print(explain.run(args.dataset, args.chunking, args.qid, args.model, args.pool_seeds, args.expand, args.embedder or EMBEDDER))
     elif args.command == "examples":
         from rbench import examples
 
@@ -154,10 +170,12 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "depth":
         from rbench import depth
 
-        print(json.dumps(depth.measure(args.embedder, args.dataset, args.chunking, args.sample), indent=1))
+        print(json.dumps(depth.measure(args.embedder or EMBEDDER, args.dataset, args.chunking, args.sample), indent=1))
     elif args.command == "estimate":
-        result = _estimate([r for s in args.stages for r in grid.STAGES[s]], args.embedder)
-        print(json.dumps(result["summary"], indent=1))
+        for stage in args.stages:  # each at its own first stage unless --embedder says otherwise
+            runs = grid.STAGES[stage]
+            print(f"== {stage} ({_embedder(args, runs)})")
+            print(json.dumps(_estimate(runs, _embedder(args, runs))["summary"], indent=1))
     elif args.command in ("run", "adhoc"):
         if args.command == "run":
             runs = grid.STAGES[args.stage]
@@ -170,16 +188,18 @@ def main(argv: list[str] | None = None) -> None:
             runs = grid.adhoc(args.datasets.split(","), args.chunkings.split(","), args.models.split(","),
                               variant=args.variant, scope=args.scope, sample=args.sample, expand=args.expand,
                               pool_seeds=args.pool_seeds)
-            print(json.dumps(_estimate(runs, args.embedder)["summary"], indent=1))
+            print(json.dumps(_estimate(runs, _embedder(args, runs))["summary"], indent=1))
+        embedder = _embedder(args, runs)
+        print(f"first stage: {embedder}", flush=True)
         if args.only in (None, "prepare"):
             for run in runs:
-                pipeline.prepare(run, args.embedder)
+                pipeline.prepare(run, embedder)
         if args.only in (None, "rerank"):
             for run in runs:
                 for m in run.models:
-                    pipeline.rerank(run, m, args.max_usd, args.embedder)
+                    pipeline.rerank(run, m, args.max_usd, embedder)
         if args.only in (None, "report"):
-            for path in pipeline.simulate_and_report(runs, args.embedder):
+            for path in pipeline.simulate_and_report(runs, embedder):
                 print(path)
     elif args.command == "show":
         from rbench.report import figures
@@ -193,9 +213,14 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "compare-embedders":
         from rbench import compare_embedders
 
-        print(compare_embedders.write(args.server, args.dataset, args.size, args.questions))
+        if args.embedders:
+            print(compare_embedders.write_embedders(args.embedders.split(","), args.dataset, args.size, args.questions))
+        else:
+            print(compare_embedders.write(args.server, args.dataset, args.size, args.questions))
     elif args.command == "embed-fidelity":
         print(json.dumps(preflight.embed_fidelity(args.dataset, args.chunking), indent=1))
+    elif args.command == "embed-checks":
+        print(json.dumps(preflight.embed_checks(args.embedder), indent=1))
     elif args.command == "smoke":
         problems = preflight.smoke(args.models.split(","))
         print("smoke ok" if not problems else "\n".join(problems))

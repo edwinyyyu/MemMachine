@@ -66,7 +66,9 @@ Priced 2026-11-09 for the 8B at DeepInfra's $0.05/M, before the paid embeddings 
 | 12,000 | 150 / 58 | $1.16 | $3.41 | $1.06 | $5.64 |
 | **16,000** (chosen) | 199 / 93 | $1.70 | $5.05 | $1.61 | **$8.35** |
 
-The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Embedding LongMemEval-M costs about $1.37 per segment length on DeepInfra (all 470 histories). Windows cost about as much as seeds: fewer of them fill the axis, but each pair is longer.
+The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Windows cost about as much as seeds: fewer of them fill the axis, but each pair is longer.
+
+The first stage is Qwen3-Embedding-8B on DeepInfra (METHODOLOGY section 3), and embedding now costs more than reranking: about $6.29 for the core's segment length, $18.75 for the three other lengths and $6.13 for the simple chunker (`estimate`, 2026-11-09; embeddinggemma was about $1.37 per length). With the 8B the full plan comes to about $40 (embeddings about $31, reranking about $8.40); the 4B and 0.6B add about $6. The smallest useful run, the core alone, is about $8.
 
 Disk: keeping every history's vectors takes ~12 GB at 500 characters (float16); the four lengths together are estimated at 40–50 GB.
 

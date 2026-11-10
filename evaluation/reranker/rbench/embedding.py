@@ -34,7 +34,7 @@ import numpy as np
 
 from rbench.paths import SECRETS, VECTORS
 from rbench.schema import queries
-from rbench.text import GEMMA, token_starts
+from rbench.text import GEMMA, QWEN_EMBED, token_starts
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,11 @@ class Embedder:
     request_inputs: int = 32
     in_flight: int = 3  # the shared local server has 4 slots; one stays free for other clients
     doc_store: str | None = None  # where document vectors live: shared by setups with the same server and document prompt
+    dimensions: int = 768  # stored vector size
+    request_dimensions: int | None = None  # what the API is asked for (None: dimensions); longer vectors are truncated
+    send_dimensions: bool = False  # whether direct requests carry a dimensions field (hosted Matryoshka models)
+    tokenizer: str = GEMMA  # counts the tokens an input is billed for
+    special_tokens: int = 2  # added per input (BOS and EOS for embeddinggemma; EOS for Qwen3)
 
     @property
     def documents(self) -> str:
@@ -80,6 +85,24 @@ EMBEDDERS = {
                                   doc_store=server if d else f"{server}-nodoc", **GEMMA_LIMITS, **settings)
     for server, settings in SERVERS.items() for suffix, (q, d) in SETUPS.items()
 }
+# Qwen3-Embedding-8B on DeepInfra (the user's decision, 2026-11-09: the default first stage, at
+# 1,024 dimensions; production may use it). Model card (checked 2026-11-09): queries are
+# "Instruct: {task}\nQuery:{query}" (the card's Python has no space after "Query:"), documents get
+# no instruction, last-token pooling then L2 normalization, 32k context, Matryoshka 32-4,096.
+# DeepInfra $0.010 per million tokens; its "Custom Instruction" field (prepended to every input)
+# stays empty, so queries are formatted here. The instruction setting is chosen by
+# compare-embedders (the user's rule: whatever performs best): "-raw" sends no instruction.
+QWEN3_TASK = "Given a web search query, retrieve relevant passages that answer the query"  # the card's example
+QWEN3_QUERY = f"Instruct: {QWEN3_TASK}\nQuery:"
+QWEN3 = dict(url="https://api.deepinfra.com/v1/openai", route="/embeddings", model="Qwen/Qwen3-Embedding-8B",
+             key_file="deepinfra_api_key", usd_per_mtok=0.010, request_inputs=64, in_flight=16, max_tokens=32768,
+             max_input_chars=40000, dimensions=1024, send_dimensions=True, tokenizer=QWEN_EMBED, special_tokens=1,
+             doc_store="qwen3-8b-di")
+EMBEDDERS |= {"qwen3-8b-di": Embedder("qwen3-8b-di", query_prompt=QWEN3_QUERY, doc_prompt="", **QWEN3),
+              "qwen3-8b-di-raw": Embedder("qwen3-8b-di-raw", query_prompt="", doc_prompt="", **QWEN3)}
+# max_input_chars 40,000: pieces of dense code (about 1.7 characters per token) stay under 32k tokens.
+PAID = "qwen3-8b-di"  # the paid stages' first stage; the instruction setting is pending compare-embedders
+
 # No prompts (compare_embedders.py, 200 LongMemEval-M questions, 2026-11-06): the query prompt
 # makes the first stage slightly worse (every@5 -0.05, MRR -0.06, intervals excluding 0); the
 # document prompt's effect (+0.01) cannot be told from none. No prompts is also exactly what
@@ -161,13 +184,23 @@ async def _post(client: httpx.AsyncClient, route: str, body: dict) -> httpx.Resp
     raise RuntimeError(f"{route}: no answer after {ATTEMPTS} attempts")
 
 
+def fit_dimensions(spec: Embedder, vectors: np.ndarray) -> np.ndarray:
+    """Vectors longer than the stored size truncated to it and re-normalized (a Matryoshka
+    model's prefix is itself an embedding)."""
+    if vectors.shape[1] <= spec.dimensions:
+        return vectors
+    v = vectors[:, : spec.dimensions]
+    norms = np.linalg.norm(v, axis=1, keepdims=True)
+    return np.divide(v, norms, out=np.zeros_like(v), where=norms > 0)
+
+
 def _fit(spec: Embedder, text: str) -> str:
     """The text, cut at the last whole token that fits the context (as sentence-transformers
     truncates), measured with the model's own tokenizer."""
-    budget = spec.max_tokens - 2  # BOS and EOS
+    budget = spec.max_tokens - spec.special_tokens
     if len(text.encode()) <= budget:
         return text
-    starts = token_starts([text], GEMMA)[0]
+    starts = token_starts([text], spec.tokenizer)[0]
     return text if len(starts) <= budget else text[: int(starts[budget])]
 
 
@@ -177,13 +210,16 @@ async def _embed_all(spec: Embedder, texts: list[str]) -> np.ndarray:
     out: list[np.ndarray | None] = [None] * len(batches)
     headers = {"Authorization": f"bearer {(SECRETS / spec.key_file).read_text().strip()}"} if spec.key_file else {}
     extra = {"model": spec.model, "encoding_format": "float"} if spec.model else {}
+    if spec.send_dimensions:
+        extra["dimensions"] = spec.request_dimensions or spec.dimensions
     async with httpx.AsyncClient(base_url=spec.url, timeout=600, headers=headers) as client:
 
         async def run(i: int) -> None:
             inputs = [_fit(spec, t) for t in batches[i]]
             async with semaphore:
                 data = (await _post(client, spec.route, {"input": inputs, **extra})).json()["data"]
-            out[i] = np.asarray([d["embedding"] for d in sorted(data, key=lambda d: d["index"])], dtype=np.float32)
+            out[i] = fit_dimensions(spec, np.asarray([d["embedding"] for d in sorted(data, key=lambda d: d["index"])],
+                                                     dtype=np.float32))
 
         window = spec.in_flight * 4  # bounded fan-out keeps memory flat
         for start in range(0, len(batches), window):

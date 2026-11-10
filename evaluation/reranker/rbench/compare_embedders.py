@@ -159,3 +159,53 @@ def _figure(results: dict[str, dict[str, np.ndarray]], dataset: str, size: int, 
     out.mkdir(parents=True, exist_ok=True)
     _save(fig, out / f"embedders__{dataset}__seg{size}__{n}q.png", f"First stage by embedding prompt setup — {dataset}, {n} questions",
           [_key(colors[k], marker=markers[k]) for k in emb.SETUPS], [LABEL[k] for k in emb.SETUPS], ncol=2)
+
+
+def measure_embedders(embedders: list[str], dataset: str, size: int, picked: list[int]) -> dict[str, dict[str, np.ndarray]]:
+    """measure() for any embedders (embedding.EMBEDDERS names), not only one server's setups."""
+    rows = queries(dataset)
+    out: dict[str, dict[str, list[float]]] = {e: {} for e in embedders}
+    for n, qi in enumerate(picked):
+        q = rows[qi]
+        texts, gold = haystack(dataset, q, size)
+        for e in embedders:
+            sims = _vectors(e, dataset, q["qid"], texts, size).astype(np.float32) @ \
+                emb.query_vectors(e, dataset, "question")[qi].astype(np.float32)
+            rank = np.empty(len(sims), dtype=int)
+            rank[np.argsort(-sims, kind="stable")] = np.arange(1, len(sims) + 1)
+            complete = [max(rank[i] for i in turn) for turn in gold]
+            m = out[e]
+            for k in KS:
+                m.setdefault(f"every@{k}", []).append(float(max(complete) <= k))
+                m.setdefault(f"first@{k}", []).append(float(min(complete) <= k))
+            m.setdefault("MRR", []).append(1.0 / min(rank[i] for turn in gold for i in turn))
+        if (n + 1) % 10 == 0:
+            print(f"{n + 1}/{len(picked)} questions", flush=True)
+    return {e: {k: np.asarray(v) for k, v in m.items()} for e, m in out.items()}
+
+
+def write_embedders(embedders: list[str], dataset: str = "longmemeval_m", size: int = 500, questions: int = 100) -> str:
+    """Compare first stages on the reduced haystacks (the first `questions` of the samples'
+    order): every@k, first@k and MRR per embedder, and each minus the first one listed, with
+    95% paired bootstrap intervals over questions. The user's rule picks among them:
+    whatever performs best (Qwen3-Embedding-8B with or without its query instruction)."""
+    rows = queries(dataset)
+    picked = sorted(sorted(sample(dataset, "all"),
+                           key=lambda i: hashlib.sha1(f"sample:{rows[i]['qid']}".encode()).hexdigest())[:questions])
+    results = measure_embedders(embedders, dataset, size, picked)
+    clusters = np.asarray([rows[i]["qid"] for i in picked])
+    metrics = [*(f"every@{k}" for k in KS), *(f"first@{k}" for k in KS), "MRR"]
+    ref = embedders[0]
+    lines = [f"# First stages: {dataset} · seg{size} · {len(picked)} questions\n",
+             f"Each question searches its evidence sessions plus {EXTRA} other sessions of its own history, embedded as "
+             f"EventMemory embeds them; absolute values are higher than over the whole history. Δ: minus {ref}, 95% "
+             "paired bootstrap over questions.\n",
+             "| embedder | " + " | ".join(metrics) + " |", "|---|" + "---|" * len(metrics)]
+    lines += [f"| {e} | " + " | ".join(f"{m[x].mean():.3f}" for x in metrics) + " |" for e, m in results.items()]
+    lines += ["", f"| Δ vs {ref} | " + " | ".join(metrics) + " |", "|---|" + "---|" * len(metrics)]
+    lines += [f"| {e} | " + " | ".join(delta(m[x] - results[ref][x], clusters) for x in metrics) + " |"
+              for e, m in results.items() if e != ref]
+    path = SUMMARY / f"embedders__{dataset}__seg{size}__{len(picked)}q__{'_'.join(embedders)}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)

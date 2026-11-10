@@ -109,7 +109,8 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     for dataset, scope, c in {x[:3] for x in to_embed}:
         ks = sorted(k for d, s, n, k in to_embed if (d, s, n) == (dataset, scope, c))
         probe = ks[:: max(1, len(ks) // probes)][:probes]
-        per_partition[(dataset, scope, c)] = float(np.mean([pt.embedding_tokens(dataset, k, c, scope) for k in probe]))
+        per_partition[(dataset, scope, c)] = float(np.mean([pt.embedding_tokens(dataset, k, c, scope, embedder)
+                                                            for k in probe]))
     embed_tok = sum(per_partition[x[:3]] for x in to_embed)  # each partition without vectors is embedded once
     summary = {m: {"billed_M": t / 1e6, "deepinfra_usd": t / 1e6 * (RERANKERS[m].usd_per_mtok or 0.0),
                    "local_hours": t / RERANKERS[m].local_tok_per_s / 3600 if RERANKERS[m].local_tok_per_s else None,

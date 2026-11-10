@@ -10,9 +10,10 @@ interfaces:
   ExactSearchEngine  a VectorSearchEngine that searches exhaustively. MemMachine's engines
                      (hnswlib, usearch) are approximate; exact search keeps index misses out of
                      the results. Its saved index is the partition's vectors (float16), kept.
-  QueryCachingEmbedder  MemMachine's OpenAIEmbedder (the no-prompt path), against the local
-                     llama-server or DeepInfra, with concurrency bounded and question
-                     embeddings cached, so replaying configurations does not re-embed them.
+  QueryCachingEmbedder  MemMachine's OpenAIEmbedder, against the local llama-server or DeepInfra
+                     (embeddinggemma, or Qwen3-Embedding-8B with its query instruction), with
+                     concurrency bounded and question embeddings cached, so replaying
+                     configurations does not re-embed them.
   FixedCutSegmenter  a Segmenter that cuts every N characters: the simple chunker, an option
                      beside MemMachine's TextSegmenter (chunking names: segmenter()).
   CachedReranker     Qwen3-Reranker scores from the score cache (rerankers.py). EventMemory calls
@@ -171,19 +172,24 @@ class ExactSearchEngine(VectorSearchEngine):
 
 class QueryCachingEmbedder(Embedder):
     """MemMachine's OpenAIEmbedder with bounded concurrency, and question embeddings cached on
-    disk by text (replays query the same questions many times)."""
+    disk by text (replays query the same questions many times). Documents are sent as they
+    are (MemMachine's OpenAIEmbedder adds no prompt); a query prompt (Qwen3-Embedding's
+    instruction) is put before each question, as a deployment would format its queries.
+    Vectors come back at the embedder's size: asked for directly, or truncated and
+    re-normalized when the API is asked for more (request_dimensions)."""
 
     def __init__(self, embedder: str) -> None:
         super().__init__()
         spec = emb.EMBEDDERS[embedder]
-        if spec.query_prompt or spec.doc_prompt:
-            raise ValueError(f"{embedder} uses prompts; EventMemory's OpenAIEmbedder sends none (use a -raw embedder)")
+        if spec.doc_prompt:
+            raise ValueError(f"{embedder} has a document prompt; EventMemory's OpenAIEmbedder sends documents as they are")
         key = (SECRETS / spec.key_file).read_text().strip() if spec.key_file else "none"
         base = spec.url + spec.route.removesuffix("/embeddings")
         self._spec = spec
         self._client = openai.AsyncOpenAI(base_url=base, api_key=key, max_retries=0)
         self._inner = OpenAIEmbedder(OpenAIEmbedderParams(client=self._client, model=spec.model or "embeddinggemma",
-                                                          dimensions=768, max_input_length=spec.max_input_chars))
+                                                          dimensions=spec.request_dimensions or spec.dimensions,
+                                                          max_input_length=spec.max_input_chars))
         self._gate = asyncio.Semaphore(spec.in_flight)
         self._path = MEMORY / embedder / "questions.json"
         self._questions: dict[str, list[float]] = json.loads(self._path.read_text()) if self._path.exists() else {}
@@ -196,7 +202,10 @@ class QueryCachingEmbedder(Embedder):
                 return await call(batch, 10)
 
         parts = await asyncio.gather(*(one(texts[i : i + size]) for i in range(0, len(texts), size)))
-        return [v for part in parts for v in part]
+        vectors = [v for part in parts for v in part]
+        if vectors and len(vectors[0]) > self._spec.dimensions:  # asked for more: keep the Matryoshka prefix
+            vectors = emb.fit_dimensions(self._spec, np.asarray(vectors, dtype=np.float32)).tolist()
+        return vectors
 
     async def _ingest_embed(self, inputs: list, max_attempts: int = 1) -> list[list[float]]:
         return await self._batches(inputs, self._inner._ingest_embed)
@@ -204,7 +213,8 @@ class QueryCachingEmbedder(Embedder):
     async def _search_embed(self, queries: list, max_attempts: int = 1) -> list[list[float]]:
         missing = [q for q in dict.fromkeys(queries) if q not in self._questions]
         if missing:
-            for q, v in zip(missing, await self._batches(missing, self._inner._search_embed), strict=True):
+            prompted = [self._spec.query_prompt + q for q in missing]
+            for q, v in zip(missing, await self._batches(prompted, self._inner._search_embed), strict=True):
                 self._questions[q] = [float(x) for x in v]
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(json.dumps(self._questions))
@@ -219,7 +229,7 @@ class QueryCachingEmbedder(Embedder):
 
     @property
     def dimensions(self) -> int:
-        return 768
+        return self._spec.dimensions
 
     @property
     def similarity_metric(self) -> SimilarityMetric:
@@ -287,7 +297,9 @@ class Memory:
             segment_store = SQLAlchemySegmentStore(SQLAlchemySegmentStoreParams(engine=engines[0]))
             vector_store = SQLiteVectorStore(SQLiteVectorStoreParams(
                 sqlalchemy_engine=engines[1], vector_store_name="rbench",
-                store_schema=VectorStoreSchema(vector_dimensions=768, similarity_metric=SimilarityMetric.COSINE,
+                store_schema=VectorStoreSchema(vector_dimensions=emb.EMBEDDERS[self.embedder].dimensions
+                                               if self.embedder in emb.EMBEDDERS else 768,
+                                               similarity_metric=SimilarityMetric.COSINE,
                                                indexed_properties=EventMemory.expected_vector_store_indexed_properties()),
                 vector_search_engine_factory=ExactSearchEngine, index_directory=str(self.root / "index"),
                 save_threshold=1))  # one upsert per encode_events call (ingest), so its index is saved once per batch
