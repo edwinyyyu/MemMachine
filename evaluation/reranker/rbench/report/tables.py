@@ -105,7 +105,7 @@ def headroom(r: Results, event: str) -> list[str]:
            + " | first segment overlaps gold |", "|---|---|" + "---|" * (len(r.models) + 1)]
     for c in r.chunkings:
         first = (r.rows(c, "first_stage")["rank"] == 1).mean()
-        for limit in r.limits(c):
+        for limit in r.limits(c, kinds=("rerank",)):
             oracle = r.rows(c, f"oracle@{limit}")
             if oracle.empty:
                 continue
@@ -145,6 +145,8 @@ def equal_reader_tokens(r: Results, event: str) -> list[str]:
     for c in r.chunkings:
         for limit in r.limits(c):
             for e in (0, *r.expansions):
+                if not e and limit not in r.limits(c, kinds=("rerank",)):  # a windows' pool: no setting of the seeds
+                    continue
                 tail = f"+x{e}" if e else ""
                 base = r.rows(c, f"first_stage@{limit}{tail}")
                 names = ([f"first_stage@{limit}{tail}"] + [f"rerank:{m}@{limit}{tail}" for m in r.models_at(c)]
@@ -168,7 +170,7 @@ def token_savings(r: Results, event: str) -> list[str]:
            "needs to match the reranked coverage (× the reranked budget); 'never' if it does not.\n",
            "| chunking | model | L | " + " | ".join(f"at {b}" for b in config.EVAL.columns) + " |", "|---|---|---|" + "---|" * len(config.EVAL.columns)]
     for c in r.chunkings:
-        for limit in r.limits(c):
+        for limit in r.limits(c, kinds=("rerank",)):
             base = rd.coverage(rd.costs(r.rows(c, f"first_stage@{limit}"), event), grid)
             for m in r.models_at(c):
                 rows = r.rows(c, f"rerank:{m}@{limit}")
@@ -363,7 +365,7 @@ def help_harm(r: Results, event: str) -> list[str]:
            "| chunking | model | L | helped | hurt | " + " | ".join(f"lost / gained @{b:,}" for b in budgets) + " |",
            "|---|---|---|---|---|" + "---|" * len(budgets)]
     for c in r.chunkings:
-        for limit in r.limits(c):
+        for limit in r.limits(c, kinds=("rerank",)):
             a = rd.costs(r.rows(c, f"first_stage@{limit}"), event)
             for m in r.models_at(c):
                 rows = r.rows(c, f"rerank:{m}@{limit}")
@@ -435,6 +437,29 @@ def _count_rows(r: Results, c: str, L: int) -> list[str]:
     return names
 
 
+def expansion_compare(r: Results, event: str) -> list[str]:
+    """Coverage by expand_context, compared directly (figures.expansion_compare's values)."""
+    from rbench.report.figures import expansion_lines
+
+    if not r.models or not (r.df.expand > 0).any():
+        return []
+    m, budgets = r.models[0], config.EVAL.budgets
+    out = ["## 12. Expand_context compared directly\n",
+           f"{_name(event)} coverage at {', '.join(f'{b:,}' for b in budgets)} reader tokens for each expand_context, at "
+           "the cost comparison's vector search limits (EventMemory's default, the best L overall, the pool), for the first "
+           "stage, rerank then expand, and expand then rerank (where windows were scored; its x0 row is the seeds "
+           f"reranked). {m}. Reader tokens include a window's extra text. Chart: expansion_compare.png.\n",
+           "| chunking | L | approach | expand_context | " + " | ".join(f"@{b:,}" for b in budgets) + " |",
+           "|---|---|---|---|" + "---|" * len(budgets)]
+    for c in r.chunkings:
+        for L, what in frontier.cost_limits(r, m, event):
+            for approach, lines in expansion_lines(r, c, m, L):
+                for e, name in lines:
+                    out.append(f"| {c} | {L} ({what}) | {approach} | {e} | "
+                               + " | ".join(_cov(r.rows(c, name), event, budgets)) + " |")
+    return out + [""]
+
+
 def equal_counts(r: Results, event: str) -> list[str]:
     """Coverage at equal counts: the vector search limit L (seeds retrieved, all of them
     reranked), the seeds kept after reranking k, and the segments read after expansion m."""
@@ -448,7 +473,7 @@ def equal_counts(r: Results, event: str) -> list[str]:
            "| chunking | L | ranker | " + " | ".join(f"k≤{k}" for k in KEPT) + " | " + " | ".join(f"m≤{m}" for m in SEGMENTS)
            + " | all |", "|---|---|---|" + "---|" * (len(KEPT) + len(SEGMENTS) + 1)]
     for c in r.chunkings:
-        for L in (int(x[1:]) for x in r.limits(c)):
+        for L in (int(x[1:]) for x in r.limits(c, kinds=("rerank",))):
             for name in _count_rows(r, c, L):
                 rows = r.rows(c, name)
                 if rows.empty:
@@ -486,9 +511,12 @@ def recommended(r: Results, event: str) -> list[str]:
                         f"{_pick(choices, 'reranker sees', 'best')} |")
     if not rows:
         return []
-    return ["**Recommended settings** (from section 15, chosen once for all questions at each budget): the vector search "
-            "limit and max_num_segments are the cheapest within the best's 95% bound, the segment length, what the reader "
-            "sees (expand_context) and the scoring position the best.\n",
+    return ["**Best value of each factor, one at a time** (from section 15, chosen once for all questions at each "
+            "budget). Each is chosen with every other factor at the core setting, so they were not evaluated together and "
+            "a combination of them may do differently: read each column on its own. The vector search limit and "
+            "max_num_segments are the cheapest within the best's 95% bound where reranking does not lose to the first "
+            "stage over the same seeds (max_num_segments at the deepest pool); the segment length and what the reader sees "
+            "(expand_context) the best; the scoring position compares seeds and windows at expand_context 3 and one L.\n",
             "| model | reader budget | vector_search_limit | max_num_segments | segment length | reader sees | reranker sees |",
             "|---|---|---|---|---|---|---|", *rows, ""]
 
@@ -509,7 +537,7 @@ def settings(r: Results, event: str) -> list[str]:
            + "\n",
            "| chunking | ranker | " + " | ".join(f"@{b}" for b in budgets) + " |",
            "|---|---|" + "---|" * len(budgets)]
-    out = recommended(r, event) + out
+    out = out[:1] + recommended(r, event) + out[1:]  # under the section's heading
     for c in r.chunkings:
         names = ["first_stage", *(f"first_stage+x{e}" for e in r.expansions if e == 3)]
         for m in r.models_at(c):  # EventMemory's default limit and each scoring position's deepest pool
@@ -546,9 +574,10 @@ def latency(r: Results) -> list[str]:
                         f"{np.median(seconds):.2f} | {np.percentile(seconds, 90):.2f} | {np.median(pairs / seconds):.0f} |")
     if not rows:
         return []
-    return ["## 15. Reranker latency (a by-product)\n",
-            "Times of the scoring requests made for this dataset. Not a self-hosted deployment: DeepInfra requests run 16 "
-            "at a time and include queueing and any retries; local ones are this machine. Per question, EventMemory "
+    return ["## 17. Reranker latency (a by-product)\n",
+            "Times of the scoring requests made for this dataset. Not a self-hosted deployment: DeepInfra requests run "
+            "concurrently under an adaptive limit (16 at first, up to 150: limits.py) and include queueing and any retries; "
+            "local ones are this machine. Per question, EventMemory "
             "would rerank its vector_search_limit seeds in one or a few such requests.\n",
             "| model | requests | pairs per request (median) | tokens per request | seconds (median) | seconds (p90) | "
             "pairs per second (median) |", "|---|---|---|---|---|---|---|", *rows, ""]
@@ -763,10 +792,15 @@ def summary(r: Results, event: str) -> list[str]:
                        "Top-k as the seeds kept after reranking the default 20: " + ("; ".join(parts) or "–") + ".\n")
     pool = r.pool_depth(core[0], r.models[0], "rerank")
     bound = r.rows(core[0], f"bound@{pool}") if pool else None
-    ceiling = (f" The reranker's pool ({pool[1:]} seeds) holds all the evidence for "
+    from rbench import depth
+
+    shares = depth.pool_shares(r.embedder, r.dataset, core[0], r.sample, 0, int(pool[1:])) if pool else None
+    fills = (f"; reading it reaches {config.EVAL.token_top:,} reader tokens for {shares[0]:.0%} of questions"
+             if shares else "")
+    ceiling = (f" The reranker's pool ({pool[1:]} seeds, fixed) holds all the evidence for "
                f"{rd.reachable(rd.costs(bound, event)).mean():.0%} of questions (the bound), so no reranker of it can do "
-               "better." if bound is not None and not bound.empty else "")
-    out += ["Recommended EventMemory settings per budget: section 14. Every setting is chosen once for all questions "
+               f"better{fills}." if bound is not None and not bound.empty else "")
+    out += ["The best value of each factor per budget, one at a time: section 14. Every setting is chosen once for all questions "
             "(never per question), on the same questions it is measured on (no dev split): the best-settings line leans "
             "optimistic." + ceiling + "\n"]
     return out
@@ -779,6 +813,7 @@ def write(r: Results, event: str = "first") -> str:
     body = (summary(r, event) + first_stage(r, event) + headroom(r, event) + equal_reader_tokens(r, event) + token_savings(r, event)
             + overfetch(r, event) + equal_reranker_tokens(r, event) + (worth_it(r, event) if event == "every" else [])
             + chunkers(r, event) + query_types(r, event) + help_harm(r, event) + expansion(r, event)
+            + expansion_compare(r, event)
             + equal_counts(r, event) + settings(r, event) + best_settings(r, event)
             + (topk_recall(r) if event == "every" else [])
             + (latency(r) if event == "every" else []))

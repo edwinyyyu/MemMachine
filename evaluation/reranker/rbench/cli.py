@@ -10,7 +10,8 @@
   depth <dataset> <chunking> <sample>  how deep the vector search must go to hold all evidence (depth.py)
   fit-cut [dataset ...] [--target seg500]   the simple chunker's length whose mean segment matches
                                      TextSegmenter's (sizes.py; CPU only, before embedding; config.CUT)
-  run <stage> [--only prepare|rerank|report] [--models m,...]
+  run <stage> [--only prepare|rerank|report|draw] [--models m,...]
+                                     report re-simulates only where the inputs changed; draw only redraws
                                      --models runs the stage with these registered models instead of its own
   adhoc --datasets a,b --chunkings x,y --models m,n [--variant V] [--scope S] [--sample S]
         [--pool-seeds N] [--expand E] [--only ...]
@@ -87,7 +88,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("stages", nargs="+", choices=grid.STAGES)
     p = sub.add_parser("run")
     p.add_argument("stage", choices=grid.STAGES)
-    p.add_argument("--only", choices=("prepare", "rerank", "report"))
+    p.add_argument("--only", choices=("prepare", "rerank", "report", "draw"),
+                   help="report: simulate (only where its inputs changed) and draw; draw: reports and charts from the "
+                        "saved results alone")
     p.add_argument("--models")
     p = sub.add_parser("adhoc")
     for name in ("datasets", "chunkings", "models"):
@@ -232,6 +235,9 @@ def main(argv: list[str] | None = None) -> None:
                     pipeline.rerank(run, m, embedder)
         if args.only in (None, "report"):
             for path in pipeline.simulate_and_report(runs, embedder):
+                print(path)
+        if args.only == "draw":
+            for path in pipeline.written_reports(embedder, sorted({(r.dataset, r.scope, r.variant, r.sample) for r in runs})):
                 print(path)
         from rbench.progress import elapsed
 

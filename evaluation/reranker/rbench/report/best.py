@@ -10,7 +10,8 @@ pool). Per model, reading and reader budget B, for each value of a factor: the r
 coverage at B and the first stage's under the same value. The best value is the one with the
 highest reranked coverage; the cheapest equivalent is the cheapest value (FACTORS' order:
 fewer seeds, fewer segments, fewer reranker tokens) whose coverage reaches the best's 95%
-lower bound. The bound comes from bootstrap resamples of the questions' clusters, each
+lower bound and where reranking does not lose to the first stage under the same value (else the
+best itself). The bound comes from bootstrap resamples of the questions' clusters, each
 re-choosing the best value (choices are made and measured on the same questions, with no dev
 split, so the best leans optimistic; the resampling widens the interval for it).
 
@@ -25,7 +26,8 @@ Factors (values that were not simulated are skipped):
                 (cut<M>, M fitted so the mean segments match: config.cut_for)
   reader sees   the seeds alone, or their windows at each expand_context (rerank, then expand)
   reranker sees the seeds (rerank, then expand) or the windows (expand, then rerank), at
-                expand_context 3, each at its own pool
+                expand_context 3 and one vector search limit (the windows' pool, the shallower:
+                both exist there), so the scoring position is not confounded with L
 """
 
 from __future__ import annotations
@@ -94,7 +96,7 @@ def factors(r: Results, model: str, reading: str, budget: float) -> dict[str, li
         return Value(label, _hits(rows, reading, budget), None if base.empty else _hits(base, reading, budget),
                      float(rows.rr_tokens.mean()), (c, rerank_name))
 
-    out["L"] = [v for d in r.depths_at(core, model, "rerank")
+    out["L"] = [v for d in r.seed_depths(core, model)
                 if (v := value(f"L {d[1:]}", core, f"rerank:{model}@{d}", f"first_stage@{d}"))]
     pool = r.pool_depth(core, model, "rerank")
     if pool:
@@ -119,10 +121,11 @@ def factors(r: Results, model: str, reading: str, budget: float) -> dict[str, li
                                              f"rerank:{model}@{pool}" + (f"+x{e}" if e else ""),
                                              f"first_stage@{pool}" + (f"+x{e}" if e else "")))]
     windows = r.pool_depth(core, model, "xrerank")
-    if pool and windows and 3 in r.expansions:
+    if pool and windows and 3 in r.expansions:  # both at the windows' pool (seeds are scored deeper)
         out["reranker sees"] = [v for v in (
-            value("seeds, then x3", core, f"rerank:{model}@{pool}+x3", f"first_stage@{pool}+x3"),
-            value("windows x3", core, f"xrerank:{model}@{windows}+x3", f"first_stage@{windows}+x3")) if v]
+            value(f"seeds, then x3 (L {windows[1:]})", core, f"rerank:{model}@{windows}+x3", f"first_stage@{windows}+x3"),
+            value(f"windows x3 (L {windows[1:]})", core, f"xrerank:{model}@{windows}+x3", f"first_stage@{windows}+x3"))
+            if v]
     return {f: v for f, v in out.items() if v}
 
 
@@ -139,9 +142,14 @@ def choose(r: Results, factor: str, values: list[Value]) -> Choice:
         index = np.concatenate([members[k] for k in rng.integers(0, len(labels), len(labels))])
         draws[i] = hits[:, index].mean(1).max()  # each resample re-chooses its best value
     lower = float(np.percentile(draws, 2.5))
-    cheapest = next(i for i in range(len(values)) if hits[i].mean() >= lower)  # values come cheapest first
+
+    def eligible(i: int) -> bool:  # within the best's bound, and reranking does not lose to the first stage there
+        v = values[i]
+        return hits[i].mean() >= lower and (v.first is None or v.reranked.mean() >= v.first.mean())
+
+    ok = [i for i in range(len(values)) if eligible(i)] or [best]
+    cheapest = ok[0]  # values come cheapest first
     if factor in ("segment", "chunker", "reader sees", "reranker sees"):  # cheapest: fewest reranker tokens
-        ok = [i for i in range(len(values)) if hits[i].mean() >= lower]
         cheapest = min(ok, key=lambda i: values[i].tokens)
     return Choice(factor, tuple(values), best, cheapest, lower)
 
@@ -181,7 +189,7 @@ def limit_choice(r: Results, model: str, chunking: str, reading: str, budget: fl
     """The vector search limit factor at one chunking and expansion (rerank_cost.png marks it)."""
     tail = f"+x{expand}" if expand else ""
     values = []
-    for d in r.depths_at(chunking, model, "rerank"):
+    for d in r.seed_depths(chunking, model):
         rows, base = r.rows(chunking, f"rerank:{model}@{d}{tail}"), r.rows(chunking, f"first_stage@{d}{tail}")
         if not rows.empty:
             values.append(Value(f"L {d[1:]}", _hits(rows, reading, budget),

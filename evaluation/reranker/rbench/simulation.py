@@ -80,6 +80,35 @@ COLUMNS = ["pairs", "rr_tokens", "rr_prefix_tokens", "oracle_pairs", *metrics.FI
 EVENTS = ("first", "every", "first_touch", "every_touch")
 
 
+# Bump when the simulation's logic or columns change: results written by an earlier version are
+# simulated again (run() otherwise reuses results whose inputs are unchanged).
+VERSION = 1
+
+
+def fingerprint(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
+                expansions: tuple[int, ...], scope: str, variant: str, limit: int, pools: tuple[int, ...]) -> str:
+    """What a simulation's results depend on: VERSION, its arguments, the stored budgets and
+    columns, each partition's encoding (its done stamp: new segments, new uuids) and each
+    model's score cache (its last score and call: new scores can deepen what is replayed)."""
+    import hashlib
+    import json
+
+    from rbench.memory import store_root
+
+    h = hashlib.sha1(json.dumps([VERSION, embedder, dataset, chunking, sample_name, sorted(models), sorted(expansions),
+                                 scope, variant, limit, sorted(pools), stored_budgets(), extra(),
+                                 config.EVAL.token_top]).encode())
+    root = store_root(embedder, dataset, chunking)
+    for k in sorted(pt.groups(dataset, sample(dataset, sample_name), scope)):
+        done = root / "done" / k
+        h.update((done.read_text() if done.exists() else "-").encode())
+    for m in sorted(models):
+        db = ScoreCache(m).db
+        h.update(repr((db.execute("SELECT MAX(rowid) FROM scores").fetchone(),
+                       db.execute("SELECT MAX(rowid) FROM calls").fetchone())).encode())
+    return h.hexdigest()
+
+
 def stored_budgets() -> tuple[int, ...]:
     """Reader budgets the count columns are stored at: every one the report uses."""
     return tuple(sorted(set(config.EVAL.budgets) | set(config.EVAL.columns)))
@@ -159,6 +188,50 @@ async def first_stage(partition, seg: pt.Segments, query: str, expansions: tuple
     return [index[u] for u in seeds], np.asarray([c.score for c in first]), units, texts
 
 
+def keys_for_hashes(query: str, prompt: str, hashes: list[str]) -> list[str]:
+    """keys_for from the rendered units' hashes (rerankers.ScoreCache.key's form)."""
+    from rbench.rerankers import _h
+
+    q = _h(query)[:16]
+    return [f"{prompt}|{RENDER}|{q}|{h}" for h in hashes]
+
+
+async def first_stage_cached(m: Memory, k: str, partition, seg: pt.Segments, query: str, expansions: tuple[int, ...],
+                             rerank_format, limit: int):
+    """first_stage with each rendered context kept as its hash (all the replay needs: the score
+    cache's key), cached beside the stores per query: keyed by the partition's encoding (its done
+    stamp), the query, the expansions, the limit and the format. A metric, reading or ranker
+    change then replays without querying EventMemory again (the queries and rendering are about
+    80% of a simulation's time). Written atomically; an unreadable file is recomputed."""
+    import hashlib
+    import json
+    import os
+
+    from rbench.rerankers import _h
+
+    expansions = tuple(sorted({0, *expansions}))
+    name = hashlib.sha1(json.dumps([m.done(k).read_text(), query, expansions, limit, repr(rerank_format)]).encode())
+    path = m.root / "first_stage" / k / f"{name.hexdigest()[:24]}.npz"
+    if path.exists():
+        try:
+            with np.load(path, allow_pickle=False) as d:
+                units = {e: np.split(d[f"units_{e}"], np.cumsum(d[f"lengths_{e}"])[:-1]) for e in expansions}
+                return (d["head"].tolist(), d["sims"], {e: [u.tolist() for u in v] for e, v in units.items()},
+                        {e: d[f"hashes_{e}"].astype(str).tolist() for e in expansions})
+        except Exception:  # noqa: BLE001 - recomputed below
+            pass
+    head, sims, units, texts = await first_stage(partition, seg, query, expansions[1:], rerank_format, limit)
+    hashes = {e: [_h(t)[:16] for t in texts[e]] for e in expansions}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.stem + ".partial.npz")
+    np.savez_compressed(temporary, head=np.asarray(head, dtype=np.int64), sims=np.asarray(sims, dtype=np.float64),
+                        **{f"units_{e}": np.asarray([s for u in units[e] for s in u], dtype=np.int64) for e in expansions},
+                        **{f"lengths_{e}": np.asarray([len(u) for u in units[e]], dtype=np.int64) for e in expansions},
+                        **{f"hashes_{e}": np.asarray(hashes[e], dtype="S16") for e in expansions})
+    os.replace(temporary, path)
+    return head, sims, units, hashes
+
+
 def run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
         expansions: tuple[int, ...] | None = None, scope: str | None = None, variant: str | None = None,
         limit: int | None = None, pools: tuple[int, ...] = ()) -> pd.DataFrame:
@@ -167,9 +240,19 @@ def run(embedder: str, dataset: str, chunking: str, sample_name: str, models: li
     deepest pool scored; default FIRST_STAGE_LIMIT); pools: the runs' pool depths, replayed as
     limits beside the grid (a measured depth is rarely on it)."""
     expansions = config.EVAL.expansions if expansions is None else expansions
-    return asyncio.run(_run(embedder, dataset, chunking, sample_name, models, expansions,
-                            pt.scope_of(dataset, scope), variant or info(dataset).default_variant,
-                            max(FIRST_STAGE_LIMIT, limit or 0), tuple(pools)))
+    scope, variant = pt.scope_of(dataset, scope), variant or info(dataset).default_variant
+    limit = max(FIRST_STAGE_LIMIT, limit or 0)
+    target = path(embedder, dataset, scope, variant, sample_name, chunking)
+    stamp = target.with_suffix(".fingerprint")
+    key = fingerprint(embedder, dataset, chunking, sample_name, models, tuple(expansions), scope, variant, limit,
+                      tuple(pools))
+    if target.exists() and stamp.exists() and stamp.read_text() == key:
+        print(f"{dataset} {chunking} {sample_name}: simulation current (its inputs are unchanged), reused", flush=True)
+        return pd.read_parquet(target)
+    out = asyncio.run(_run(embedder, dataset, chunking, sample_name, models, expansions, scope, variant, limit,
+                           tuple(pools)))
+    stamp.write_text(key)  # after the results: a run cut short leaves no stamp, so it is simulated again
+    return out
 
 
 async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, models: list[str],
@@ -196,7 +279,8 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
             for qi in members:
                 q = rows[qi]
                 query = q["variants"][variant]
-                head, sims, units, texts = await first_stage(partition, seg, query, expansions, fmt.rerank, limit)
+                head, sims, units, texts = await first_stage_cached(m, k, partition, seg, query, expansions, fmt.rerank,
+                                                                    limit)
                 g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
                 _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, prompts, caches,
                         all_rankers, records, dropped)
@@ -225,7 +309,8 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
     """Every ranker's reading of one query, appended to records (dropping a configuration
     whose scores do not reach its depth for this query)."""
     overheads = {m: pair_overhead(query, RERANKERS[m].template) for m in models}
-    scores = {(m, e): scored_prefix(caches[m], m, keys_for(query, prompts[m], texts[e])) for m in models for e in units}
+    scores = {(m, e): scored_prefix(caches[m], m, keys_for_hashes(query, prompts[m], texts[e])) for m in models
+              for e in units}  # texts: the rendered contexts' hashes (first_stage_cached)
     unit_tokens = {e: float(np.mean([seg.tokens[u].sum() for u in units[e]])) if units[e] else 0.0 for e in units}
     priority = {e: np.asarray([2 if any(i in g.union for i in u) else 0 for u in units[e]]) for e in units}
     for r in all_rankers:

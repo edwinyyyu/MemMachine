@@ -169,7 +169,7 @@ def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
     import asyncio
 
     from rbench.embedding import EMBEDDERS, QWEN3_QUERY
-    from rbench.memory import QueryCachingEmbedder
+    from rbench.memory import EmbeddingCache, QueryCachingEmbedder
     from rbench.text import count
 
     spec = EMBEDDERS[embedder]
@@ -198,8 +198,11 @@ def embed_checks(embedder: str = "qwen3-8b-di") -> dict:
 
     async def through_memmachine() -> np.ndarray:
         embedder_ = QueryCachingEmbedder(embedder)
-        try:
-            return np.asarray(await embedder_._ingest_embed(CARD_DOCUMENTS), dtype=np.float64)
+        try:  # through the API every time: the documents' cached vectors are dropped before and after
+            embedder_._cache.drop(EmbeddingCache.key(t) for t in CARD_DOCUMENTS)
+            vectors = np.asarray(await embedder_._ingest_embed(CARD_DOCUMENTS), dtype=np.float64)
+            embedder_.release()
+            return vectors
         finally:
             await embedder_.aclose()
 

@@ -45,7 +45,7 @@ uv sync
 
 **Adding a model to compare** takes one entry in `RERANKERS` (`rbench/rerankers.py`): its backend and price, its chart label, color and marker, and its template (what it reads around each pair). Then run any stage with `--models`, e.g. `run lme-core --models q4,q8`; the report and charts include every registered model that has scores.
 
-Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no spend cap in the code: the prepaid DeepInfra credits are the cap, so turn off DeepInfra's auto top-up, and `estimate` is the price check before a run. Out of credits, a run stops with "DeepInfra is out of credits: top up and rerun; finished work is kept", and the same command resumes after a top-up (`rbench/credits.py`). Each run ends by printing what it spent, from the call logs. Hosted models run as many requests at once as DeepInfra allows (an adaptive limit up to 150 per model), and a hosted reranker scores each history while the next ones embed; `estimate` also gives the disk the new stores take and the most early scoring could cost past the measured pool (METHODOLOGY section 5, "Throughput"). Interrupted runs lose almost nothing: reranker scores are saved per request, each history is encoded (embedded) once and one interrupted mid-way is encoded again, and a rerun skips finished work. Preflight first (METHODOLOGY.md §8):
+Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no spend cap in the code: the prepaid DeepInfra credits are the cap, so turn off DeepInfra's auto top-up, and `estimate` is the price check before a run. Out of credits, a run stops with "DeepInfra is out of credits: top up and rerun; finished work is kept", and the same command resumes after a top-up (`rbench/credits.py`). Each run ends by printing what it spent, from the call logs. Hosted models run as many requests at once as DeepInfra allows (an adaptive limit up to 150 per model), and a hosted reranker scores each history while the next ones embed; `estimate` also gives the disk the new stores take (METHODOLOGY section 5, "Throughput"). Interrupted runs lose almost nothing: reranker scores are saved per request, each history is encoded (embedded) once and one interrupted mid-way is encoded again, and a rerun skips finished work. Preflight first (METHODOLOGY.md §8):
 
 ```sh
 .venv/bin/python -m rbench smoke
@@ -57,22 +57,22 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no s
 
 ## Cost
 
-Each question's pool is deep enough that reading it fills the reader-token axis (`config.EVAL.token_top`, 16,000): curves keep rising across the axis rather than flattening because the pool is used up. The depth is measured per segment length, chunker and scoring position after embedding (`python -m rbench depth`, `rbench/depth.py`), and every shallower vector search limit replays for free. `estimate` prices each stage at its measured pools, seeds and windows separately; `--token-top` prices another axis end.
+The pools are fixed: the reranker scores the top 200 seeds, or the top 100 windows (`config.EVAL.pool_seeds`, `pool_windows`; the user's decision, 2026-11-10), at every segment length, and every shallower vector search limit replays for free. `estimate` prices each stage at them and reports, beside each pool, for how many questions reading it reaches the reader-token axis end (16,000) and for how many it holds all the evidence (`rbench/depth.py`). At shorter segments the same pool holds less text, so the curves level off earlier.
 
-Priced 2026-11-09 for the 8B at DeepInfra's $0.05/M, before the paid embeddings exist: pools measured on 8 locally embedded LongMemEval-M histories at 500 characters, the other segment lengths calibrated offline; `estimate` re-prices exactly once the histories are embedded.
+Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-sizes lme-cut`), before the paid embeddings exist: pair tokens probed on 8 LongMemEval-M histories per chunking; `estimate` re-prices exactly once the histories are embedded.
 
-| axis end (reader tokens) | pools at 500 characters (seeds / windows) | lme-core | lme-sizes | lme-cut | total |
-|---|---|---|---|---|---|
-| 4,000 | 49 / 22 | $0.41 | $1.19 | $0.37 | $1.97 |
-| 8,000 | 101 / 41 | $0.80 | $2.34 | $0.73 | $3.87 |
-| 12,000 | 150 / 58 | $1.16 | $3.41 | $1.06 | $5.64 |
-| **16,000** (chosen) | 199 / 93 | $1.70 | $5.05 | $1.61 | **$8.35** |
+| stage | reranking (8B) | embedding (Qwen3-Embedding-8B) | total |
+|---|---|---|---|
+| lme-core (seg500: seeds $0.84, windows $0.94) | $1.78 | $6.29 | **$8.07** |
+| lme-sizes (seg250, seg1000, seg2000) | $7.17 | $18.75 | $25.92 |
+| lme-cut (cut355) | $1.80 | $6.48 | $8.28 |
+| all three | $10.75 | $31.52 | $42.27 |
 
-The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Windows cost about as much as seeds: fewer of them fill the axis, but each pair is longer.
+On 8 locally embedded LongMemEval-M histories at seg500, reading 200 seeds reaches 16,000 tokens for all 8 and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
 
-The first stage is Qwen3-Embedding-8B on DeepInfra (METHODOLOGY section 3), and embedding now costs more than reranking: about $6.29 for the core's segment length, $18.75 for the three other lengths and $6.13 for the simple chunker (`estimate`, 2026-11-09; embeddinggemma was about $1.37 per length). With the 8B the full plan comes to about $40 (embeddings about $31, reranking about $8.40); the 4B and 0.6B add about $6. The minimal run (the user's decision, 2026-11-09) is the core alone, about $8: seg500 with the 8B, plus the pilot and the checks. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3); the cut prices above were measured at cut500, before the fit; `estimate lme-cut` re-prices cut355.
+Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decision, 2026-11-09) is the core alone, about $8: seg500 with the 8B, plus the pilot and the checks. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
 
-Disk: keeping every history's vectors takes ~12 GB at 500 characters (float16); the four lengths together are estimated at 40–50 GB.
+Disk (`estimate` gives it per stage, 2026-11-10, LongMemEval-M with Qwen3-Embedding-8B's 1,024 dimensions: float16 index, segment store, segment tables): about 26 GB at 500 characters (lme-core; the size-matched cut355 the same), 48 GB at 250, 16 GB at 1,000 and 11 GB at 2,000 (lme-sizes 76 GB), so about 128 GB for every planned stage.
 
 ## Layout
 

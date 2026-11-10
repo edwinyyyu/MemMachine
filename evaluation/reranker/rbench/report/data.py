@@ -77,10 +77,12 @@ class Results:
             return None
         return max(shared, key=lambda x: int(x[1:]))
 
-    def limits(self, chunking: str, wanted: tuple[int, ...] | None = None) -> list[str]:
+    def limits(self, chunking: str, wanted: tuple[int, ...] | None = None,
+               kinds: tuple[str, ...] = ("rerank", "xrerank")) -> list[str]:
         """Vector search limits to show for a chunking, as depth labels ("n20"): the wanted ones
         some model there was scored to (all of them when no model was), plus each model's
-        deepest pool, of seeds and of windows (a model scored less deep is simply absent there).
+        deepest pool of the given scoring positions (kinds: "rerank" for panels of seeds alone,
+        both where windows are read too; a model scored less deep is simply absent there).
         wanted defaults to config.EVAL.limits (EventMemory's default limit is 20)."""
         from rbench import config
 
@@ -91,13 +93,23 @@ class Results:
         have: set[str] = set()
         out: set[str] = set()
         for m in models:
-            for kind in ("rerank", "xrerank"):
+            for kind in kinds:
                 depths = self.depths_at(chunking, m, kind)
                 have |= set(depths)
                 if depths:
                     out.add(depths[-1])
         out |= {f"n{v}" for v in wanted if f"n{v}" in have}
         return sorted(out, key=lambda d: int(d[1:]))
+
+    def seed_depths(self, chunking: str, model: str) -> list[str]:
+        """The vector search limits a seeds sweep shows: those the model's seeds were scored at,
+        without the windows' pools (the seeds are replayed there too, as other scoring
+        positions' pools, but they are no setting of the seeds): config limits, the simulated
+        grid and the seeds' own pool."""
+        seeds = self.depths_at(chunking, model, "rerank")
+        windows = set(self.depths_at(chunking, model, "xrerank"))
+        pool = seeds[-1] if seeds else None
+        return [d for d in seeds if d not in windows or d == pool]
 
     def pool_depth(self, chunking: str, model: str, kind: str = "rerank") -> str | None:
         """A model's deepest pool at a chunking for one scoring position (rerank: the seeds;

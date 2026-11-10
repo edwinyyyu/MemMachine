@@ -24,3 +24,16 @@ def test_simulation_end_to_end(tmp_path, monkeypatch):
         base = df[df.ranker == f"first_stage@{limit}"].sort_values("qid")["every"].to_numpy()
         assert np.all(ref <= base)
     assert np.isfinite(df[df.ranker == "first_stage+x3"]["recall_t1000"]).all()
+
+
+@pytest.mark.skipif(not READY, reason="needs the lme-test stage's encoded histories")
+def test_an_unchanged_simulation_is_reused(tmp_path, monkeypatch, capsys):
+    """run() reuses saved results whose inputs are unchanged (the fingerprint), and simulates
+    again when an input changes (here: the expansions replayed)."""
+    monkeypatch.setattr(simulation, "SIM", tmp_path)
+    first = simulation.run("gemma300m-raw", "longmemeval_s", "seg500", "tiny", [], (3,))
+    again = simulation.run("gemma300m-raw", "longmemeval_s", "seg500", "tiny", [], (3,))
+    assert "simulation current" in capsys.readouterr().out
+    assert first.shape == again.shape and set(first.ranker) == set(again.ranker)
+    other = simulation.run("gemma300m-raw", "longmemeval_s", "seg500", "tiny", [], (1,))
+    assert set(other.expand) == {0, 1}

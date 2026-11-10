@@ -1,20 +1,18 @@
-"""How deep the vector search must go: the pool depth, measured by budget fill.
+"""How far a pool reaches: the pools are fixed, and this measures what they hold.
 
-The pool rule (the user's, 2026-11-09): the reranker's pool must be deep enough that reading
-it does not run out before the largest reader budget evaluated (the chart axis's end,
-config.EVAL.token_top), so curves keep rising across the axis instead of flattening because
-the pool is used up; cost decides that axis end. The fill depth at budget B is the number of
-contexts (seeds, or their windows) whose rendered reading cost reaches B: the pool's cost does
-not depend on the order it is read in, so it is measured in first-stage order with the real
-Reader. A pool fills B for a query when its fill depth is at most the pool; the pool is the
-fill depth at POOL_COVERAGE of the sample's queries, per segment length, chunker and scoring
-position (seeds, or windows: these fill a budget several times faster).
-
-Also measured and reported, not used as the pool rule: the coverage depth, and each pool's
-evidence coverage (the share of queries whose evidence is all in the pool: the ceiling no
-reading of that pool can pass, whatever the budget). The user accepts that ceiling (2026-11-09):
-"if not achievable in reasonable cost, then assume it doesn't flatline soon so just pick based on
-price or limit to 16k tokens or less rather than trying to achieve it".
+The pools are fixed (config.EVAL.pool_seeds 200, pool_windows 100: the user's decision,
+2026-11-10, "just do L100 and L200", replacing a measured pool that filled the axis for 95% of
+questions, a margin that was not the user's). What is measured and reported beside them: the
+fill depth at budget B, the number of contexts (seeds, or their windows) whose rendered
+reading cost reaches B (the pool's cost does not depend on the order it is read in, so it is
+measured in first-stage order with the real Reader; a pool fills B for a query when its fill
+depth is at most the pool), so a report can say for how many questions reading the pool
+reaches the axis end (config.EVAL.token_top); the fill depth at POOL_COVERAGE of the
+questions; the coverage depth; and each pool's evidence coverage (the share of queries whose
+evidence is all in the pool: the ceiling no reading of that pool can pass, whatever the
+budget). At shorter segments a pool holds less text, so reading it can end before the axis
+end and the curves level off earlier: accepted (the user, 2026-11-09: "limit to 16k tokens or
+less"); a stage can set its own pool (grid.Run.pool_seeds).
 
 For each query, EventMemory.query (no reranker, expand_context 0) ranks every segment of the
 partition it searches. The depth a query needs is the rank of its deepest needed seed:
@@ -221,58 +219,43 @@ def _known(embedder: str, dataset: str, chunking: str, sample_name: str, expand:
     return str(expand) in fill and str(config.EVAL.token_top) in fill[str(expand)]
 
 
-def _fill(embedder: str, dataset: str, chunking: str, sample_name: str, expand: int) -> int:
+def measured_fill(embedder: str, dataset: str, chunking: str, sample_name: str, expand: int) -> int:
+    """The fill depth at POOL_COVERAGE of the questions (how deep a pool would have to go to
+    fill the axis for that share): reported, not the pool."""
     return int(load(embedder, dataset, chunking, sample_name)["fill"][str(expand)][str(config.EVAL.token_top)]["pool"])
 
 
-def pool(run, chunking: str, embedder: str, measure_if_missing: bool = True) -> int | None:
-    """A run's pool (vector search limit) at a chunking: its own pool_seeds, else the fill depth
-    of its scoring position (seeds, or windows at run.expand) at config.EVAL.token_top, at
-    POOL_COVERAGE of the sample's queries (measured now if the partitions are encoded and
-    measure_if_missing; None when it cannot be known yet)."""
+def pool(run, chunking: str | None = None, embedder: str | None = None, measure_if_missing: bool = True) -> int:
+    """A run's pool (vector search limit): its own pool_seeds, else the configured one of its
+    scoring position (config.EVAL.pool_seeds for the seeds, pool_windows for windows at
+    run.expand). Fixed in advance, so known before anything is embedded."""
     if run.pool_seeds:
         return run.pool_seeds
-    if not _known(embedder, run.dataset, chunking, run.sample, run.expand):
-        if not measure_if_missing:
-            return None
-        measure(embedder, run.dataset, chunking, run.sample, run.scope, run.variant, (*FILL_EXPANSIONS, run.expand))
-    return _fill(embedder, run.dataset, chunking, run.sample, run.expand)
+    return config.EVAL.pool_windows if run.expand else config.EVAL.pool_seeds
 
 
-def estimated_pool(run, chunking: str, embedder: str) -> tuple[int, str] | None:
-    """For pricing before a run's sample is embedded: the fill depth measured on the largest
-    smaller sample of the same dataset and chunking that is (any embedder), and which one it
-    is. None when there is none."""
-    from rbench.samples import ORDER
-
-    for sample_name in reversed(ORDER[: ORDER.index(run.sample)]):
-        for e in (embedder, *sorted(p.name for p in DEPTH.glob("*") if p.name != embedder)):
-            if _known(e, run.dataset, chunking, sample_name, run.expand):
-                n = load(e, run.dataset, chunking, sample_name)["queries"]
-                return _fill(e, run.dataset, chunking, sample_name, run.expand), f"{sample_name} ({n} queries, {e})"
-    return None
-
-
-def evidence_in_pool(run, chunking: str, embedder: str) -> float | None:
-    """The measured share of a run's queries whose evidence is all in its pool (the ceiling), from
-    its own sample or the largest smaller one measured; None when unmeasured or the pool is set."""
-    from rbench.samples import ORDER
-
-    if run.pool_seeds:
+def pool_shares(embedder: str, dataset: str, chunking: str, sample_name: str, expand: int,
+                pool_: int) -> tuple[float, float] | None:
+    """For a pool of pool_ contexts: the share of the sample's questions for which reading it
+    reaches the axis end (config.EVAL.token_top), and the share whose evidence it holds in full
+    (the ceiling no reading of it can pass); None before the depths are measured."""
+    if not _known(embedder, dataset, chunking, sample_name, expand):
         return None
+    per = json.loads(path(embedder, dataset, chunking, sample_name).read_text())["per_query"].values()
+    top = str(config.EVAL.token_top)
+    fills = np.mean([v["fill"][str(expand)][top] <= pool_ for v in per])
+    holds = np.mean([v["holds"][str(expand)] <= pool_ for v in per])
+    return float(fills), float(holds)
+
+
+def shares_for(run, chunking: str, embedder: str) -> tuple[float, float] | None:
+    """pool_shares for a run's pool, from its own sample or the largest smaller one measured
+    (any embedder, its own first)."""
+    from rbench.samples import ORDER
+
     for sample_name in reversed(ORDER[: ORDER.index(run.sample) + 1]):
         for e in (embedder, *sorted(p.name for p in DEPTH.glob("*") if p.name != embedder)):
-            if _known(e, run.dataset, chunking, sample_name, run.expand):
-                cell = load(e, run.dataset, chunking, sample_name)["fill"][str(run.expand)][str(config.EVAL.token_top)]
-                if "evidence_in_pool" in cell:
-                    return cell["evidence_in_pool"]
+            got = pool_shares(e, run.dataset, chunking, sample_name, run.expand, pool(run))
+            if got is not None:
+                return got
     return None
-
-
-def measured_pools(embedder: str, dataset: str, chunking: str, sample_name: str) -> set[int]:
-    """Every pool measured for a sample at the axis end (seeds and each expansion's windows),
-    so a re-simulation replays the pools other stages scored to, not only its own runs'."""
-    if not path(embedder, dataset, chunking, sample_name).exists():
-        return set()
-    fill = load(embedder, dataset, chunking, sample_name).get("fill", {})
-    return {int(by[str(config.EVAL.token_top)]["pool"]) for by in fill.values() if str(config.EVAL.token_top) in by}

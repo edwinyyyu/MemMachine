@@ -47,7 +47,7 @@ def grid(r: Results, model: str, reading: str) -> dict:
     """{L values, k values, reranked [L, k], first stage [k], gain [L, k], low and high [L, k]}
     at the core chunking and expand_context 0 (nan where k > L)."""
     chunking, _ = frontier.setting(r)
-    limits = [int(d[1:]) for d in r.depths_at(chunking, model, "rerank")]
+    limits = [int(d[1:]) for d in r.seed_depths(chunking, model)]
     base = r.rows(chunking, "first_stage")
     ks = [k for k in KS if k <= max(limits, default=0)]
     first = np.asarray([recall(base, reading, k).mean() for k in ks])

@@ -65,7 +65,7 @@ def test_reranking_overlaps_ingest_and_completes(tmp_path, monkeypatch):
 
     first_rerank = events.index("rerank")
     assert "embed" in events[first_rerank:]  # scoring started before the last history was embedded
-    assert len(lines) == 2 and all("scored while embedding" in x and "0 past the measured pool" in x for x in lines)
+    assert len(lines) == 2 and all("scored while embedding" in x and "to its pool of 12" in x for x in lines)
     assert depth.path(embedder, "longmemeval_s", "seg500", "tiny").exists()  # the depths, measured in the loop
     for run in runs:  # nothing needed is left: a sequential rerank finds no work
         assert simulation.scoring_work(embedder, "longmemeval_s", "seg500", "tiny", "q06", run.expand, 12) == []

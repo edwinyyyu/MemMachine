@@ -17,7 +17,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from rbench import depth, simulation
+from rbench import config, depth, simulation
 from rbench import partitions as pt
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.embedding import EMBEDDERS
@@ -96,18 +96,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
         keys = pt.groups(dataset, picked, scope)
         ready = all(encoded(dataset, c, k) for k in keys)
         label = f"{dataset} {c} {sample_name}" + (f" windows x{expand}" if expand else " seeds")
-        pools = [depth.pool(r, c, embedder, measure_if_missing=ready) for r in members]
-        if any(p is None for p in pools):  # not embedded yet: the depth measured on a smaller sample, if any
-            guesses = [depth.estimated_pool(r, c, embedder) for r in members]
-            if any(g is None for g in guesses):
-                unknown.append(label)
-                continue
-            pools = [g[0] for g in guesses]
-            label += f" (depth from {guesses[0][1]})"
-            early_risk = RERANKERS[model].backend != "local"  # overlapped: scored early to EARLY x this estimate
-        else:
-            early_risk = False
-        pool_seeds = max(pools)
+        pool_seeds = max(depth.pool(r) for r in members)  # fixed in advance (config.EVAL.pool_seeds / pool_windows)
         if ready:
             work = simulation.scoring_work(embedder, dataset, c, sample_name, model, expand, pool_seeds, scope, variant)
             tokens = float(sum(len(x) for q, items in work for x in pair_ids(q, [d for _, d in items], template)))
@@ -128,16 +117,14 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
             basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")
         per_model[model] = per_model.get(model, 0.0) + tokens
-        share = depth.evidence_in_pool(members[0], c, embedder)
+        shares = depth.shares_for(members[0], c, embedder)
         usd = tokens / 1e6 * (RERANKERS[model].usd_per_mtok or 0.0)
         by_group[f"{model} {label}"] = {"pool": pool_seeds,
-                                        "evidence in pool": None if share is None else round(share, 3),
+                                        "reaches the axis end for (share of questions)":
+                                            None if shares is None else round(shares[0], 3),
+                                        "holds all evidence for": None if shares is None else round(shares[1], 3),
                                         "tokens_M": round(tokens / 1e6, 2), "usd": round(usd, 2)}
-        if early_risk:  # pairs past the measured pool, if it comes out 25% below its estimate (pipeline.EARLY)
-            from rbench.pipeline import EARLY
 
-            by_group[f"{model} {label}"]["early scoring: usd past the pool if it comes out 25% below the estimate"] = (
-                round(usd * max(0.0, EARLY - 0.75), 2))
 
     to_embed: set[tuple[str, str, str, str]] = set()  # (dataset, scope, chunking, partition) not encoded yet
     for run in runs:
@@ -173,6 +160,11 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
             "free GB now": round(shutil.disk_usage(DATA).free / 1e9, 1)}
     if by_group:
         summary["by scoring job (pool in seeds)"] = by_group
+        summary["pools"] = (f"fixed: {config.EVAL.pool_seeds} seeds, {config.EVAL.pool_windows} windows (the user's "
+                            "decision, 2026-11-10); the shares beside each are measured on its sample or the largest "
+                            "smaller one. At shorter segments the same pool holds less text (at 250 characters about half "
+                            "of 500's), so reading it ends before the axis end and curves level off earlier; a stage can "
+                            "set its own pool (grid.Run.pool_seeds)")
     if unknown:
         summary["not priced (pool depth not measured: encode the partitions first)"] = unknown
     return {"summary": summary}

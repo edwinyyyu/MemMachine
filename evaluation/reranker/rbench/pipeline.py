@@ -24,6 +24,7 @@ from rbench.report import figures, readings, tables
 from rbench.report.data import load
 from rbench.rerankers import RERANKERS, pair_ids, score
 from rbench.samples import sample
+from rbench.progress import elapsed
 from rbench.schema import queries
 
 _PREPARED: set[tuple] = set()  # (embedder, dataset, scope, chunking, sample) done in this process
@@ -31,14 +32,18 @@ _PREPARED: set[tuple] = set()  # (embedder, dataset, scope, chunking, sample) do
 
 def prepare(run: Run, embedder: str = EMBEDDER, chunkings: tuple[str, ...] | None = None) -> None:
     """Encode the partitions the run's queries search (each embedded once; the stores are kept),
-    then, for a run without a set pool, measure the depth its pool needs (depth.py, free).
+    then measure how far reading its pool reaches and how much evidence it holds (depth.py,
+    free: reported beside the pool, which is fixed).
     chunkings: only these of the run's (default all)."""
     for c in chunkings or run.chunkings:
         if (embedder, run.dataset, run.scope, c, run.sample) in _PREPARED:
             continue  # the same stage's other scoring position
         _PREPARED.add((embedder, run.dataset, run.scope, c, run.sample))
         pt.ingest(embedder, run.dataset, c, sample(run.dataset, run.sample), run.scope)
-        print(f"{run.dataset} {c} {run.sample}: pool {depth.pool(run, c, embedder)} seeds", flush=True)
+        if not depth._known(embedder, run.dataset, c, run.sample, run.expand):
+            depth.measure(embedder, run.dataset, c, run.sample, run.scope, run.variant,
+                          (*depth.FILL_EXPANSIONS, run.expand))
+        print(f"{run.dataset} {c} {run.sample}: pool {depth.pool(run)} seeds", flush=True)
 
 
 def rerank(run: Run, model: str, embedder: str = EMBEDDER, chunkings: tuple[str, ...] | None = None) -> None:
@@ -56,7 +61,6 @@ def rerank(run: Run, model: str, embedder: str = EMBEDDER, chunkings: tuple[str,
             score(model, work, label)
 
 
-EARLY = 0.9  # an overlapped run scores each query to at most this share of its estimated pool (prepare_and_score)
 
 
 class _Scorer(threading.Thread):
@@ -129,7 +133,7 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
     expansions = tuple(sorted({0, *depth.FILL_EXPANSIONS, *(r.expand for r in members)}))
     per: dict = {}
     early: dict[tuple[str, int], list[tuple[int, int]]] = defaultdict(list)  # (model, expand) -> (rank, tokens)
-    rows, fmt, top = queries(dataset), pt.formats(dataset), str(config.EVAL.token_top)
+    rows, fmt = queries(dataset), pt.formats(dataset)
     wanted = {(m, r.expand) for r in members for m in r.models if m in hosted}
     submitted: dict[str, set[str]] = {m: set() for m in hosted}  # keys queued but maybe not cached yet: sent once
 
@@ -147,8 +151,7 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
                 partition = await (await m.event_memory(reranker)).open_or_create_partition(k)
                 for qi in idx:
                     q = rows[qi]
-                    limit = int(min(measured[q["qid"]]["fill"][str(e)][top], cap))
-                    await partition.query(q["variants"][variant], vector_search_limit=max(1, limit),
+                    await partition.query(q["variants"][variant], vector_search_limit=cap,
                                           expand_context=e, format_options=fmt.rerank)
                 work = []
                 for query, items in reranker.work.items():
@@ -184,13 +187,9 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
         for m in r.models:
             rerank(r, m, embedder, (c,))
     for (model, e), pairs in sorted(early.items()):
-        pool = depth.pool(next(r for r in members if r.expand == e), c, embedder)
         usd = (RERANKERS[model].usd_per_mtok or 0.0) / 1e6
-        sent, past = sum(n for _, n in pairs), [n for rank, n in pairs if rank >= pool]
         out.append(f"{model} {label} {'windows x' + str(e) if e else 'seeds'}: {len(pairs)} pairs "
-                     f"(${sent * usd:.2f}) scored while embedding, each query to at most {caps[e]} seeds; "
-                     f"{len(past)} past the measured pool of {pool} (${sum(past) * usd:.2f} that a sequential run "
-                     "would not have spent)")
+                   f"(${sum(n for _, n in pairs) * usd:.2f}) scored while embedding, each query to its pool of {caps[e]}")
         print(out[-1], flush=True)
     return out
 
@@ -202,13 +201,13 @@ def prepare_and_score(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     each partition's pairs while the next ones embed: in the ingest loop, once a partition is
     in, the same thread measures its queries' depths and runs EventMemory's query in record
     mode (every engine call stays sequential), and hands the pairs (plain data) to one
-    background scorer per model (_Scorer). The pool is a statistic of the whole sample, known
-    only after the last partition, so each query is scored early to min(its own fill depth,
-    EARLY x the estimated pool: the depth measured on the largest smaller sample); after ingest
-    the depths are saved and the usual rerank scores the rest, up to the measured pool. Pairs
-    scored early past the measured pool are the only extra cost: they are counted and priced
-    in the lines returned (also printed). Local rerankers run after ingest as before (they
-    would compete with the local embedder for the GPU)."""
+    background scorer per model (_Scorer). The pools are fixed (config.EVAL.pool_seeds,
+    pool_windows), so each query is scored to its whole pool while the next partitions embed
+    and nothing is scored that a sequential run would not; after ingest the depths are saved
+    (reported beside the pools) and the usual rerank finds only what is left. What was scored
+    while embedding is counted and priced in the lines returned (also printed). Local
+    rerankers run after ingest as before (they would compete with the local embedder for the
+    GPU)."""
     from rbench.memory import store_root
 
     lines: list[str] = []
@@ -220,13 +219,8 @@ def prepare_and_score(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
         hosted = sorted({m for r in members for m in r.models if RERANKERS[m].backend != "local"})
         keyed = pt.groups(dataset, sample(dataset, sample_name), scope)
         ready = all((store_root(embedder, dataset, c) / "done" / k).exists() for k in keyed)
-        caps: dict[int, int] = {}
-        for r in members:
-            if r.pool_seeds:
-                caps[r.expand] = r.pool_seeds  # a set pool: scored exactly, nothing early is wasted
-            elif (est := depth.estimated_pool(r, c, embedder)) is not None:
-                caps[r.expand] = int(EARLY * est[0])
-        if not hosted or ready or not caps:
+        caps = {r.expand: depth.pool(r) for r in members}  # the pools are fixed: each query scored to its own
+        if not hosted or ready:
             for r in members:
                 prepare(r, embedder, (c,))
             for r in members:
@@ -248,16 +242,29 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
             key = (run.dataset, run.scope, run.variant, run.sample, c)
             jobs[key] |= {run.expand} - {0}
             pools[key].add(depth.pool(run, c, embedder))
-            pools[key] |= depth.measured_pools(embedder, run.dataset, c, run.sample)  # other stages' pools too
+            pools[key] |= {config.EVAL.pool_seeds, config.EVAL.pool_windows}  # both, whichever stage scored them
     for key, expansions in sorted(jobs.items()):
         dataset, scope, variant, sample_name, c = key
+        started = time.monotonic()
         simulation.run(embedder, dataset, c, sample_name, list(RERANKERS), tuple(sorted(expansions)), scope, variant,
                        max(pools[key]), tuple(sorted(pools[key])))
+        print(f"  simulation {dataset} {c} {sample_name}: {elapsed(started)}", flush=True)
+    return written_reports(embedder, sorted({k[:4] for k in jobs}))
+
+
+def written_reports(embedder: str, keys) -> list[str]:
+    """Reports and charts for each (dataset, scope, variant, sample) from its saved results,
+    with each step's time (`--only draw` runs this alone)."""
     written = []
-    for dataset, scope, variant, sample_name in sorted({k[:4] for k in jobs}):
+    for dataset, scope, variant, sample_name in keys:
         results = load(embedder, dataset, scope, variant, sample_name)
         tables.clear(results)
-        written += [tables.write(results, e) for e in readings.available(results.df)] + [figures.write(results)]
+        started = time.monotonic()
+        written += [tables.write(results, e) for e in readings.available(results.df)]
+        print(f"  tables {dataset} {sample_name}: {elapsed(started)}", flush=True)
+        started = time.monotonic()
+        written.append(figures.write(results))
+        print(f"  charts {dataset} {sample_name}: {elapsed(started)}", flush=True)
     if written:
         written.append(tables.index())
     return written

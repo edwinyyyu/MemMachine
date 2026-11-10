@@ -11,9 +11,10 @@ Varied:
   reranking        none; the seeds (rerank, then read seeds or expand them); or each seed's
                    expand_context-3 window (expand, then rerank: what EventMemory's query does
                    whenever expand_context > 0; its default is 0)
-  pool depth       the whole vector search: each question's pool is the depth that holds all its
-                   evidence for 95% of the sample's questions (depth.py, measured after embedding,
-                   per segment length and chunker); every shallower vector search limit replays.
+  pool depth       fixed: 200 seeds, 100 windows (config.EVAL.pool_seeds / pool_windows; the user's
+                   decision, 2026-11-10); depth.py measures how far reading each reaches and how
+                   much evidence it holds, reported beside it. Every shallower vector search limit
+                   replays.
                    Seed counts, not tokens: the vector search limit is a count, and equal
                    reranker input is compared through each configuration's measured tokens
 Free (replayed from cached scores): every shallower overfetch, top-k, reader budget, and the
@@ -50,8 +51,8 @@ class Run:
     sample: str = "large"
     expand: int = 0  # > 0: score each seed's EventMemory window (expand_context = expand), not the seed
     embedder: str | None = None  # the first stage (embedding.EMBEDDERS); None: embedding.DEFAULT, the local server
-    pool_seeds: int | None = None  # seeds scored per query (its deepest vector search limit); None: the depth
-    # that holds all evidence for depth.POOL_COVERAGE of the sample's queries, measured after embedding (depth.py)
+    pool_seeds: int | None = None  # contexts scored per query (its deepest vector search limit); None: the
+    # configured pool of its scoring position (config.EVAL.pool_seeds 200, pool_windows 100)
     note: str = ""
 
 

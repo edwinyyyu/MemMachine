@@ -99,7 +99,7 @@ def cost_limits(results: Results, model: str, event: str = EVENT) -> list[tuple[
     from rbench.report import best
 
     c, e = setting(results)
-    depths = [int(d[1:]) for d in results.depths_at(c, model, "rerank")]
+    depths = [int(d[1:]) for d in results.seed_depths(c, model)]
     if not depths:
         return []
     picks = [(20, "EventMemory's default"), (best.overall_limit(results, model, c, event, e), "the best overall"),

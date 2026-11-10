@@ -24,6 +24,10 @@ reads them from EVAL rather than hard-coding them.
                segment length) and expand_context, so only the vector search limit varies, as
                a service would run (the user's decision, 2026-11-09). Other values draw other
                charts; re-picking among every configuration per target made the chart jagged
+  pool_seeds, pool_windows  the pools: how deep the reranker scores, seeds and windows (expand,
+               then rerank), at every chunking and sample (the user's decision, 2026-11-10: "just do
+               L100 and L200"). depth.py measures how far reading each pool reaches and how much
+               evidence it holds, reported beside it; a stage can set its own (grid.Run.pool_seeds)
   hide         rerankers left out of reports and charts though they have scores. The raw-pairs
                format test (q06-local-raw) is settled (the model card's prompt won: METHODOLOGY
                section 3), so it is hidden; `--hide ""` shows it (e.g. to redraw format-test)
@@ -49,6 +53,8 @@ class Evaluation:
     cost_chunking: str | None = None
     cost_expand: int = 0
     hide: tuple[str, ...] = ("q06-local-raw",)
+    pool_seeds: int = 200
+    pool_windows: int = 100
 
 
 EVAL = Evaluation()
