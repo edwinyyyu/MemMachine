@@ -80,7 +80,11 @@ def lme(chunkings: tuple[str, ...], models: tuple[str, ...], expand: int, **sett
 STAGES: dict[str, list[Run]] = {
     # Free and fast: the local 0.6B on 8 LongMemEval-S histories, to test the pipeline itself.
     "lme-test": [Run("longmemeval_s", "history", "question", ("seg500", "cut500"), ("q06-local",), sample="tiny",
-                     pool_seeds=30, expand=e) for e in (0, 3)],
+                     expand=e) for e in (0, 3)],
+    # Free, about an hour on this machine: the local 0.6B on 100 LongMemEval-S questions at the
+    # pools the paid run uses (fill depth), to see full-depth curves before paying.
+    "lme-s-proto": [Run("longmemeval_s", "history", "question", ("seg500",), ("q06-local",), sample="proto",
+                        expand=e) for e in (0, 3)],
     # Free: the reranker's input format on the local 0.6B (the user's rule: whichever of the model
     # card's prompt and raw pairs does better on a small sample becomes the format). LongMemEval-S,
     # whose histories embed locally in minutes; the questions are LongMemEval-M's.

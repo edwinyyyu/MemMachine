@@ -17,7 +17,7 @@ from rbench import config, depth, simulation
 from rbench import partitions as pt
 from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.grid import Run
-from rbench.report import figures, tables
+from rbench.report import figures, readings, tables
 from rbench.report.data import load
 from rbench.rerankers import RERANKERS, pair_ids, score
 from rbench.samples import sample
@@ -69,5 +69,5 @@ def simulate_and_report(runs: list[Run], embedder: str = EMBEDDER) -> list[str]:
     for dataset, scope, variant, sample_name in sorted({k[:4] for k in jobs}):
         results = load(embedder, dataset, scope, variant, sample_name)
         tables.clear(results)
-        written += [tables.write(results, e) for e in tables.EVENTS] + [figures.write(results)]
+        written += [tables.write(results, e) for e in readings.available(results.df)] + [figures.write(results)]
     return written

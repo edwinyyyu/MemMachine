@@ -10,7 +10,11 @@ Reader. A pool fills B for a query when its fill depth is at most the pool; the 
 fill depth at POOL_COVERAGE of the sample's queries, per segment length, chunker and scoring
 position (seeds, or windows: these fill a budget several times faster).
 
-Also measured and reported, not used as the pool rule: the coverage depth.
+Also measured and reported, not used as the pool rule: the coverage depth, and each pool's
+evidence coverage (the share of queries whose evidence is all in the pool: the ceiling no
+reading of that pool can pass, whatever the budget). The user accepts that ceiling (2026-11-09):
+"if not achievable in reasonable cost, then assume it doesn't flatline soon so just pick based on
+price or limit to 16k tokens or less rather than trying to achieve it".
 
 For each query, EventMemory.query (no reranker, expand_context 0) ranks every segment of the
 partition it searches. The depth a query needs is the rank of its deepest needed seed:
@@ -72,6 +76,18 @@ def fill_costs(contexts: list[list[int]], seg: pt.Segments, top: float) -> list[
     return out
 
 
+def windows_hold(contexts: list[list[int]], g) -> float:
+    """The number of contexts (windows) whose union first holds every segment of some answer
+    (inf if these contexts never do)."""
+    answers = [{c for span in alt for c, _ in span} for alt in g.alternatives]
+    union: set[int] = set()
+    for k, context in enumerate(contexts):
+        union.update(context)
+        if any(a and a <= union for a in answers):
+            return float(k + 1)
+    return float("inf")
+
+
 def fill_depth(costs: list[int], budget: float) -> int:
     """Contexts read before the cost reaches `budget` (all of them when it never does)."""
     return next((k + 1 for k, c in enumerate(costs) if c >= budget), len(costs))
@@ -110,17 +126,20 @@ async def _measure(embedder: str, dataset: str, chunking: str, sample_name: str,
                 result = await partition.query(query, vector_search_limit=len(seg), expand_context=0,
                                                format_options=fmt.rerank)
                 order = [index[str(c.seed_segment_uuid)] for c in result.scored_segment_contexts]
-                every, first = needed(order, pt.gold(pt.gold_spans(dataset, q, p), p, seg))
+                g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
+                every, first = needed(order, g)
                 top = max(budgets())
                 seeds = fill_costs([[s] for s in order], seg, top)
                 fill = {"0": {str(b): fill_depth(seeds, b) for b in budgets()}}
+                holds = {"0": every}  # the pool depth at which all of some answer's evidence is in it
                 for e in [e for e in expansions if e]:  # windows fill a budget with no more contexts than seeds
                     windowed = await partition.query(query, vector_search_limit=len(seeds), expand_context=e,
                                                      format_options=fmt.rerank)
                     contexts = [[index[str(x.uuid)] for x in c.segments] for c in windowed.scored_segment_contexts]
                     costs = fill_costs(contexts, seg, top)
                     fill[str(e)] = {str(b): fill_depth(costs, b) for b in budgets()}
-                out[q["qid"]] = {"every": every, "first": first, "segments": len(seg), "fill": fill}
+                    holds[str(e)] = windows_hold(contexts, g)
+                out[q["qid"]] = {"every": every, "first": first, "segments": len(seg), "fill": fill, "holds": holds}
     return out
 
 
@@ -144,8 +163,12 @@ def measure(embedder: str, dataset: str, chunking: str, sample_name: str, scope:
         summary["fill"][str(e)] = {}
         for b in budgets():
             d = np.sort([v["fill"][str(e)][str(b)] for v in per.values()])
-            summary["fill"][str(e)][str(b)] = {"pool": _quantile(d, POOL_COVERAGE), "median": float(np.median(d)),
-                                               "max": float(d.max())}
+            pool = _quantile(d, POOL_COVERAGE)
+            # the ceiling: the share of queries whose evidence is all in the pool (no reading of
+            # this pool can complete the rest, whatever the budget)
+            holds = np.asarray([v["holds"][str(e)] for v in per.values()])
+            summary["fill"][str(e)][str(b)] = {"pool": pool, "median": float(np.median(d)), "max": float(d.max()),
+                                               "evidence_in_pool": float((holds <= pool).mean())}
     target = path(embedder, dataset, chunking, sample_name)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps({"summary": summary, "per_query": per}, indent=1) + "\n")
@@ -203,4 +226,20 @@ def estimated_pool(run, chunking: str, embedder: str) -> tuple[int, str] | None:
             if _known(e, run.dataset, chunking, sample_name, run.expand):
                 n = load(e, run.dataset, chunking, sample_name)["queries"]
                 return _fill(e, run.dataset, chunking, sample_name, run.expand), f"{sample_name} ({n} queries, {e})"
+    return None
+
+
+def evidence_in_pool(run, chunking: str, embedder: str) -> float | None:
+    """The measured share of a run's queries whose evidence is all in its pool (the ceiling), from
+    its own sample or the largest smaller one measured; None when unmeasured or the pool is set."""
+    from rbench.samples import ORDER
+
+    if run.pool_seeds:
+        return None
+    for sample_name in reversed(ORDER[: ORDER.index(run.sample) + 1]):
+        for e in (embedder, *sorted(p.name for p in DEPTH.glob("*") if p.name != embedder)):
+            if _known(e, run.dataset, chunking, sample_name, run.expand):
+                cell = load(e, run.dataset, chunking, sample_name)["fill"][str(run.expand)][str(config.EVAL.token_top)]
+                if "evidence_in_pool" in cell:
+                    return cell["evidence_in_pool"]
     return None

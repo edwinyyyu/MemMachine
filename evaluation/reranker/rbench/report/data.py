@@ -145,7 +145,9 @@ def default_segment() -> str:
     """The chunking name of EventMemory's default segment length (TextSegmenter's default)."""
     import inspect
 
-    from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter
+    import rbench.memory  # noqa: F401  (imports MemMachine with its optional-agent logger silenced)
+
+    from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: I001
 
     return f"seg{inspect.signature(TextSegmenter).parameters['max_chunk_length'].default}"
 

@@ -246,14 +246,16 @@ def worth_it(r: Results, event: str) -> list[str]:
             "its own choice; the minimum over many reranked configurations leans optimistic for the reranker")
     out = ["## 7. Worth the money: break-even price ratio\n",
            f"{_name(event)} coverage targets. Reranking is cheaper overall when (LLM input price) / (reranker price) "
-           "exceeds r* (chart: the break-even lines in cost_saving.png). Candidates: every no-reranker configuration (segment length, "
-           "expansion) against every reranked one (seeds or windows, expansion, depth). Configurations are chosen on "
+           "exceeds r* (chart: the break-even lines in cost_saving.png). Both sides at one setting "
+           f"({frontier.setting(r)[0]}, expand_context {frontier.setting(r)[1]}; config.EVAL.cost_chunking / cost_expand): "
+           "the first stage in vector order against the reranker, each at its best vector search limit. Limits are chosen on "
            f"{pick}. '–': the chosen reranked configuration is not cheaper; 'only': only reranking reaches the target "
            "(cheaper at any price); 'n/a': nothing reaches it.\n",
            "| target | " + " | ".join(f"{m}: r* API [95%] · prefix-cached · chosen" for m in r.models) + " |",
            "|---|" + "---|" * len(r.models)]
-    results = {m: (frontier.break_even(r, m, "rr_tokens", event=event),
-                   frontier.break_even(r, m, "rr_prefix_tokens", False, event=event)) for m in r.models}
+    fixed = frontier.setting(r)
+    results = {m: (frontier.break_even(r, m, "rr_tokens", event=event, fixed=fixed),
+                   frontier.break_even(r, m, "rr_prefix_tokens", False, event=event, fixed=fixed)) for m in r.models}
 
     def fmt(x: float) -> str:
         return "n/a" if np.isnan(x) else "–" if np.isinf(x) or x >= 1e12 else "only" if x == 0 else f"{x:,.1f}"
@@ -294,13 +296,14 @@ def query_types(r: Results, event: str) -> list[str]:
     budgets = config.EVAL.budgets
     out = ["## 9. Query types: reranker gain\n",
            "Labels are the dataset's own question types and rule-based features (features.py). Gain: coverage reranked "
-           "minus the first stage over the same seeds (vector search limit 20, EventMemory's default, where scored; else "
-           f"the deepest), at {', '.join(f'{b:,}' for b in budgets)} reader tokens. Cells: first-stage coverage, Δ [95%].\n"]
+           "minus the first stage over the same seeds, at the deepest vector search limit scored (the whole pool: a "
+           "shallow limit runs out of seeds before the larger budgets, so both sides would have read everything), at "
+           f"{', '.join(f'{b:,}' for b in budgets)} reader tokens. Cells: first-stage coverage, Δ [95%].\n"]
     for c in r.chunkings:
         limits = r.limits(c)
         if not limits:
             continue
-        limit = "n20" if "n20" in limits else limits[-1]
+        limit = limits[-1]  # the deepest: the pool fills the budgets
         for e, kind, what in ((0, "rerank", "seeds reranked"), (3, "xrerank", "windows reranked, expand_context 3")):
             tail = f"+x{e}" if e else ""
             base_name = f"first_stage@{limit}{tail}"

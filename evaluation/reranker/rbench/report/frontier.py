@@ -61,10 +61,24 @@ class Config:
     tokens: np.ndarray  # reranker tokens per query
 
 
-def configurations(results: Results, model: str | None, token_field: str = "rr_tokens", event: str = EVENT) -> list[Config]:
-    """Every configuration of one model (reranking seeds or windows, read alone or expanded,
-    model None means every no-reranker configuration."""
+def setting(results: Results) -> tuple[str, int]:
+    """The (chunking, expand_context) the cost comparison holds fixed (config.EVAL.cost_*):
+    EventMemory's default segment length unless set (or the first simulated chunking)."""
+    from rbench import config
+    from rbench.report.data import default_segment
+
+    c = config.EVAL.cost_chunking or default_segment()
+    return (c if c in results.chunkings else results.chunkings[0]), config.EVAL.cost_expand
+
+
+def configurations(results: Results, model: str | None, token_field: str = "rr_tokens", event: str = EVENT,
+                   fixed: tuple[str, int] | None = None) -> list[Config]:
+    """Every configuration of one model (model None: every no-reranker configuration), at one
+    (chunking, expand_context) when `fixed`, so only the vector search limit varies; else
+    across every chunking and expansion."""
     d = results.select(expand=None)
+    if fixed is not None:
+        d = d[(d.chunking == fixed[0]) & (d.expand == fixed[1])]
     d = d[d.kind == "first_stage"] if model is None else d[d.kind.isin(RERANKED) & (d.model == model)]
     out = []
     for name, g in d.groupby(["chunking", "ranker"]):
@@ -122,12 +136,13 @@ def _r_star(base: list[Config], rr: list[Config], chosen, index: np.ndarray | No
 
 
 def break_even(results: Results, model: str, token_field: str = "rr_tokens", with_interval: bool = True,
-               event: str = EVENT):
+               event: str = EVENT, fixed: tuple[str, int] | None = None):
     """(r* per target, lower, upper, chosen no-reranker names, chosen reranked names).
 
     r* is inf where the chosen reranked configuration is not cheaper, 0 where only the
     reranker reaches the target (cheaper at any price), and nan where nothing does."""
-    base, rr = configurations(results, None, event=event), configurations(results, model, token_field, event)
+    base, rr = (configurations(results, None, event=event, fixed=fixed),
+                configurations(results, model, token_field, event, fixed))
     chosen = _choose(base, rr, None)
     point = _r_star(base, rr, chosen, None)
     lo = hi = np.full(len(TARGETS), np.nan)
@@ -148,13 +163,14 @@ def break_even(results: Results, model: str, token_field: str = "rr_tokens", wit
 
 
 def cost_curves(results: Results, model: str, llm_prices: list[float], rr_price: float, token_field: str = "rr_tokens",
-                event: str = EVENT) -> dict[float, tuple[np.ndarray, np.ndarray]]:
+                event: str = EVENT, fixed: tuple[str, int] | None = None) -> dict[float, tuple[np.ndarray, np.ndarray]]:
     """Total cost in $ per 1,000 questions to reach each coverage target, without and with the
     reranker: {llm price -> (no reranker [target], reranker [target])}, prices in $ per million
     tokens. Each side is its cheapest configuration at that price (segment length, expansion and,
     for the reranker, depth), chosen and measured on the same questions; nan where no
     configuration of that side reaches the target."""
-    base, rr = configurations(results, None, event=event), configurations(results, model, token_field, event)
+    base, rr = (configurations(results, None, event=event, fixed=fixed),
+                configurations(results, model, token_field, event, fixed))
     b0 = np.asarray([min_budgets(c.costs) for c in base])
     b1 = np.asarray([min_budgets(c.costs) for c in rr]) if rr else np.zeros((0, len(TARGETS)))
     tok = np.asarray([c.tokens.mean() for c in rr])

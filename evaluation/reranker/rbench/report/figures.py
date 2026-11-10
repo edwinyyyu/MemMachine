@@ -272,11 +272,57 @@ def _save(fig, path, title: str, handles=None, labels=None, ncol: int | None = N
                 text.set_color(INK)
     elif handles:
         fig.legend(handles, labels, loc="outside lower left", ncol=ncol or min(len(handles), 3))
+    _fit(fig)
     if _SHOWING:
         fig.canvas.manager.set_window_title(path.stem)
         return
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
+
+
+def _wrap(t, length: float, renderer, max_lines: int = 4, vertical: bool = False) -> None:
+    """Wrap a text at word boundaries until it is no longer than `length` pixels (its height
+    when vertical: a rotated y label)."""
+    def size() -> float:
+        box = t.get_window_extent(renderer)
+        return box.height if vertical else box.width
+
+    original = t.get_text()
+    if not original or size() <= length:
+        return
+    for chars in range(len(original), 8, -2):
+        t.set_text(textwrap.fill(original, chars))
+        if size() <= length or t.get_text().count("\n") + 1 >= max_lines:
+            return
+
+
+def _fit(fig) -> None:
+    """Fit every text to its space: panel titles and x labels wrap to their panel's width, and
+    legend labels to their share of the figure's width, so no text runs into another or past
+    the figure's edge (tests/test_layout.py checks every chart)."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        box = ax.get_window_extent(renderer)
+        for t in (ax._left_title, ax.title, ax.xaxis.label):
+            _wrap(t, box.width, renderer)
+        _wrap(ax.yaxis.label, box.height, renderer, vertical=True)
+    for legend in fig.legends:
+        columns = max(1, legend._ncols)
+        texts = legend.get_texts()
+        originals = [t.get_text() for t in texts]
+        room = fig.bbox.width / columns - 70  # px per label: the column less its line sample and spacing
+        for _ in range(8):  # narrower until the legend fits the figure's width
+            for t, text in zip(texts, originals, strict=True):
+                t.set_text(text)
+                _wrap(t, room, renderer)
+            fig.canvas.draw()
+            if legend.get_window_extent(renderer).width <= fig.bbox.width:
+                break
+            room *= 0.9
+    fig.canvas.draw()
 
 
 def _coverage(reading: str) -> str:
@@ -366,7 +412,8 @@ SAME_LIMIT = ("Each panel is one vector search limit L and one expand_context E:
 BOUND = (" Gray: the bound, the cheapest reading of the same pool any ranking could achieve (no reranker's line can pass "
          "above it). With seeds alone (expand_context 0) it is exact: the evidence seeds read first, each reading's "
          "cheapest way. With windows it is a floor: the evidence's own text and one header, nothing else rendered, so "
-         "it is loose.")
+         "it is loose. Where the bound levels off below 1, the rest of the evidence is not among the L seeds: a ceiling "
+         "set by the vector search, not by the reader budget (report section 2 gives that share per L).")
 
 
 def _bound_label(r: Results) -> str:
@@ -390,7 +437,7 @@ def _limit_grid(r: Results) -> list[str]:
 def coverage_by_tokens(r: Results, out, head: str) -> None:
     limits, expansions = _limit_grid(r), _expansions(r)
     for c in r.chunkings:
-        for reading in config.READINGS:
+        for reading in rd.available(r.df, config.READINGS):
             fig, axes = _figure(len(expansions), len(limits), panel=(4.0, 3.0), sharex=True, sharey=True)
             keys = set()
             for i, e in enumerate(expansions):
@@ -618,16 +665,18 @@ def gain_sizes(r: Results, out, head: str, reading: str) -> None:
 
 def cost_saving(r: Results, out, head: str, reading: str) -> None:
     """Over a continuous range of LLM prices and coverage targets: the cost of reaching the target
-    with the reranker (its cheapest configuration) relative to without it. Blue saves, red costs
-    more; gray where only the reranker reaches the target. Over it, the break-even LLM price per
+    with the reranker relative to without it, both at one setting (frontier.setting: a chunking
+    and expand_context), each at its cheapest vector search limit. Blue saves, red costs more;
+    gray where only the reranker reaches the target. Over it, the break-even LLM price per
     target (the 0% boundary, frontier.break_even) with its 95% interval, and with a prefix cache."""
     if not r.models:
         return
+    fixed = frontier.setting(r)
     llm = np.logspace(-2, 2, 81)  # $ per million reader tokens
     fig, axes = _figure(1, len(r.models), panel=(4.6, 3.8), sharey=True)
     finite = lambda v: np.where(np.isfinite(v) & (v > 0) & (v < 1e12), v, np.nan)  # noqa: E731
     for k, m in enumerate(r.models):
-        curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading)
+        curves = frontier.cost_curves(r, m, list(llm), price(m), event=reading, fixed=fixed)
         no = np.stack([curves[p][0] for p in llm], 1)  # [target, price]
         yes = np.stack([curves[p][1] for p in llm], 1)
         ax = axes[0][k]
@@ -637,8 +686,8 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
         only = np.where(np.isnan(no) & np.isfinite(yes), 1.0, np.nan)
         ax.pcolormesh(llm, frontier.TARGETS, only, cmap=LinearSegmentedColormap.from_list("only", [ORACLE, ORACLE]),
                       shading="nearest", alpha=0.6)
-        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading)
-        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading)[0]
+        api, lo, hi, _, _ = frontier.break_even(r, m, "rr_tokens", event=reading, fixed=fixed)
+        cached = frontier.break_even(r, m, "rr_prefix_tokens", with_interval=False, event=reading, fixed=fixed)[0]
         y = frontier.TARGETS
         shown = np.isfinite(finite(api))  # the interval only where there is a line: elsewhere the estimate is "never"
         lo, hi = np.where(shown, lo, np.nan), np.where(shown, hi, np.nan)
@@ -657,14 +706,17 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
         if k == 0:
             ax.set_ylabel(f"coverage target ({EVENT_TEXT[reading]})")
     fig.colorbar(im, ax=axes[0].tolist(), label="% of total cost saved by reranking (red: reranking costs more)")
-    _save(fig, out / _file("cost_saving", reading), f"Cost saved by reranking, at every LLM price and coverage target — {head}",
+    name = "cost_saving" + ("" if fixed == (default_segment(), 0) else f"_{fixed[0]}_x{fixed[1]}")
+    _save(fig, out / _file(name, reading),
+          f"Cost saved by reranking, at every LLM price and coverage target ({fixed[0]}, expand_context {fixed[1]}) — {head}",
           [_key(INK, marker="x"), _key(INK, ":"), _key(INK, marker="+"), Patch(color=ORACLE, alpha=0.6)],
           ["break-even LLM price (reranker tokens as an API bills them)", "its 95% interval",
            "break-even with a prefix cache (prompt and question computed once)", "only the reranker reaches this target"],
           ncol=2,
-          note="Held equal: the coverage target (y) and the LLM input price (x). Color: total cost (reader + reranker tokens) "
-               "of reaching the target with the reranker, relative to without it, each at its cheapest configuration (any "
-               "segment length, expansion and vector search limit), chosen on the same questions. Right of the break-even "
+          note=f"Held equal: the coverage target (y), the LLM input price (x), the chunking ({fixed[0]}) and "
+               f"expand_context ({fixed[1]}); config.EVAL.cost_chunking / cost_expand draw other settings. Color: total "
+               "cost (reader + reranker tokens) of reaching the target with the reranker, relative to the first stage in "
+               "vector order, each at its cheapest vector search limit, chosen on the same questions. Right of the break-even "
                "line reranking is cheaper; no line at a target: never cheaper there (or beyond the price range). Interval "
                "lines missing on the right: the interval includes never. Blank: neither reaches the target. Exact values: "
                "report §7.")
@@ -672,14 +724,15 @@ def cost_saving(r: Results, out, head: str, reading: str) -> None:
 
 def query_types(r: Results, out, head: str, reading: str) -> None:
     """Reranker gain by question type at each configured budget: reranked minus the first stage
-    over the same seeds (EventMemory's default limit, 20, where scored)."""
+    over the same seeds, at the deepest vector search limit scored (the whole pool: a shallow
+    limit runs out of seeds before the larger budgets, and both sides would read everything)."""
     if not r.models or r.df.qid.nunique() < 20:
         return
     c = default_segment() if default_segment() in r.chunkings else r.chunkings[0]
     limits = r.limits(c, config.EVAL.limits)
     if not limits:
         return
-    limit = "n20" if "n20" in limits else limits[-1]
+    limit = limits[-1]  # the deepest scored: a shallow limit runs out of seeds before the larger budgets
     base, labels = query_labels(r, c, f"first_stage@{limit}")
     groups = [(f, v) for f in ("question_type", "form", "length", "context", "parts") if f in labels
               for v in sorted(set(labels[f])) if (labels[f] == v).sum() >= 10]
@@ -858,7 +911,7 @@ def _draw(r: Results, out, keys) -> None:
         if key in ALL_READINGS:
             chart(r, out, _head(r))
         else:
-            for reading in config.EVAL.readings:
+            for reading in rd.available(r.df, config.EVAL.readings):
                 chart(r, out, _head(r), reading)
 
 

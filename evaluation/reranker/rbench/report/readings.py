@@ -28,6 +28,12 @@ SHARES = {"share": "share_full", "share_touch": "share_touch"}  # reading -> its
 ALL = (*EVENTS, *SHARES)
 
 
+def available(df: pd.DataFrame, readings=ALL) -> list[str]:
+    """The readings a simulation has columns for (results simulated before the share readings
+    have only the events)."""
+    return [x for x in readings if (SHARES[x] if x in SHARES else x) in df]
+
+
 def is_share(reading: str) -> bool:
     return reading in SHARES
 

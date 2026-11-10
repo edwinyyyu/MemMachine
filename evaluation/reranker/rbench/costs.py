@@ -94,7 +94,10 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
             basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")
         per_model[model] = per_model.get(model, 0.0) + tokens
-        by_group[f"{model} {label}"] = {"pool": pool_seeds, "tokens_M": round(tokens / 1e6, 2),
+        share = depth.evidence_in_pool(members[0], c, embedder)
+        by_group[f"{model} {label}"] = {"pool": pool_seeds,
+                                        "evidence in pool": None if share is None else round(share, 3),
+                                        "tokens_M": round(tokens / 1e6, 2),
                                         "usd": round(tokens / 1e6 * (RERANKERS[model].usd_per_mtok or 0.0), 2)}
 
     to_embed: set[tuple[str, str, str, str]] = set()  # (dataset, scope, chunking, partition) not encoded yet

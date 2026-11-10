@@ -19,6 +19,11 @@ reads them from EVAL rather than hard-coding them.
                as the price allows, not below 4,000 without asking. 16,000 priced the 8B at
                about $8.35 for core, sizes and cut together (2026-11-09: 4,000 $1.97, 8,000
                $3.87, 12,000 $5.64; pools from 8 LongMemEval-M histories)
+  cost_chunking, cost_expand  the setting the cost comparison holds fixed (cost_saving.png and
+               report section 7): both sides at this chunking (None: EventMemory's default
+               segment length) and expand_context, so only the vector search limit varies, as
+               a service would run (the user's decision, 2026-11-09). Other values draw other
+               charts; re-picking among every configuration per target made the chart jagged
   size_tolerance  how far apart (relative) two measured unit sizes may be and still be reported
                as matched, where a comparison pairs units by size (the expansion comparison);
                beyond it the report flags the pair as not size-matched
@@ -38,6 +43,8 @@ class Evaluation:
     expansions: tuple[int, ...] = (1, 2, 3, 6)
     token_top: int = 16000
     size_tolerance: float = 0.25
+    cost_chunking: str | None = None
+    cost_expand: int = 0
 
 
 EVAL = Evaluation()
