@@ -35,7 +35,7 @@ from functools import cache
 
 import numpy as np
 
-from rbench import credits
+from rbench import credits, limits
 from rbench.paths import SCORES, SECRETS
 from rbench.text import QWEN, tokenizer
 
@@ -215,8 +215,7 @@ Work = list[tuple[str, list[tuple[str, str]]]]  # (query, [(cache key, document)
 DEEPINFRA_URL = "https://api.deepinfra.com/v1/inference/"
 REQUEST_DOCS = 32
 REQUEST_TOKENS = 24000
-IN_FLIGHT = 16
-GROUP_QUERIES = 16
+GROUP_QUERIES = 16  # local scoring's groups (memory, progress)
 
 
 def _local(model: str, work: Work, t: Template, cache_: ScoreCache, note: str) -> None:
@@ -232,8 +231,14 @@ def _local(model: str, work: Work, t: Template, cache_: ScoreCache, note: str) -
     cache_.put(out, (time.time(), len(out), sum(n for *_, n in out), 0, 0.0, time.monotonic() - t0, note))
 
 
-async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, note: str) -> None:
-    """Score with DeepInfra, caching and logging each request as soon as it returns."""
+RETRY = (429, 500, 502, 503, 504)
+
+
+async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, note: str, progress=None) -> None:
+    """Score with DeepInfra through the model's adaptive concurrency limit (limits.py), caching
+    and logging each request as soon as it returns. Retryable failures back off for up to an
+    hour per request. A request that cannot succeed (out of credits, a non-retryable answer, or
+    an hour of failures) stops the rest from being sent; those in flight finish and are cached."""
     import httpx
 
     key = (SECRETS / "deepinfra_api_key").read_text().strip()
@@ -249,27 +254,37 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
             size += n
         if batch:
             requests.append((query, batch))
-    semaphore = asyncio.Semaphore(IN_FLIGHT)
+    gate = limits.Gate(limits.limit_for(f"deepinfra:{model}"))
+    stop: list[BaseException] = []
     async with httpx.AsyncClient(timeout=300, headers={"Authorization": f"bearer {key}"}) as client:
 
-        async def run(query: str, batch: list[tuple[str, str, int]]) -> None:
+        async def run(query: str, batch: list[tuple[str, str, int]]) -> bool:
             body = {"queries": [query] * len(batch), "documents": [d for _, d, _ in batch], "instruction": t.instruction}
-            t0 = time.monotonic()
-            for attempt in range(8):
-                async with semaphore:
+            t0, failing, attempt = time.monotonic(), None, 0
+            while True:
+                async with gate:
+                    if stop:
+                        return False  # another request cannot succeed: send nothing more
                     try:
                         response = await client.post(DEEPINFRA_URL + model, json=body)
-                    except httpx.TransportError:
-                        response = None
+                        last = f"HTTP {response.status_code}"
+                    except httpx.TransportError as err:
+                        response, last = None, type(err).__name__
                 if response is not None and response.status_code == 200:
+                    gate.state.success()
+                    await gate.wake()
                     break
                 if response is not None and credits.refused(response.status_code, response.text):
                     raise credits.OutOfCredits(f"reranking: HTTP {response.status_code}")
-                if response is not None and response.status_code not in (429, 500, 502, 503, 504):
+                if response is not None and response.status_code not in RETRY:
                     raise RuntimeError(f"DeepInfra {response.status_code}: {response.text[:300]}")
-                await asyncio.sleep(min(60, 2**attempt))
-            else:
-                raise RuntimeError("DeepInfra: retries exhausted")
+                if response is not None and response.status_code == 429:
+                    gate.state.throttled()
+                failing = failing or time.monotonic()
+                if time.monotonic() - failing > limits.PATIENCE:
+                    raise limits.GaveUp("reranking requests", last)
+                attempt += 1
+                await asyncio.sleep(limits.backoff(attempt))
             data = response.json()
             if len(data["scores"]) != len(batch):
                 raise RuntimeError(f"DeepInfra returned {len(data['scores'])} scores for {len(batch)} documents")
@@ -278,31 +293,42 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
             rows = [(k, float(s), n) for (k, _, n), s in zip(batch, data["scores"], strict=True)]
             cache_.put(rows, (time.time(), len(rows), sum(n for *_, n in rows), billed, float(status.get("cost") or 0.0),
                               time.monotonic() - t0, note))
+            if progress is not None:
+                progress.step(len(rows), note=f"at most {int(gate.state.limit)} in flight")
+            return True
 
-        results = await asyncio.gather(*(run(q, b) for q, b in requests), return_exceptions=True)
+        async def guarded(query: str, batch: list[tuple[str, str, int]]) -> bool:
+            try:
+                return await run(query, batch)
+            except Exception as err:
+                stop.append(err)
+                raise
+
+        results = await asyncio.gather(*(guarded(q, b) for q, b in requests), return_exceptions=True)
     failures = [r for r in results if isinstance(r, BaseException)]
-    broke = [r for r in failures if isinstance(r, credits.OutOfCredits)]
-    if broke:  # the requests in flight have finished and are cached: stop here
-        raise SystemExit(f"{broke[0]}; {len(requests) - len(failures)} of {len(requests)} requests in this group "
-                         "are cached")
+    cached = sum(r is True for r in results)
+    for kind in (credits.OutOfCredits, limits.GaveUp):
+        hit = [r for r in failures if isinstance(r, kind)]
+        if hit:  # every request in flight has finished and is cached: stop cleanly
+            raise SystemExit(f"{hit[0]}; {cached} of {len(requests)} requests of this job are cached")
     if failures:
-        raise RuntimeError(f"{len(failures)} of {len(requests)} requests failed (the rest are cached): {failures[0]}")
+        raise RuntimeError(f"{len(failures)} of {len(requests)} requests failed ({cached} are cached): {failures[0]}")
 
 
 def score(reranker: str, work: Work, note: str) -> None:
-    """Score work in groups of GROUP_QUERIES queries, each request cached as it returns. A paid
-    model stops cleanly when DeepInfra's credits run out (credits.py)."""
+    """Score work, each request cached as it returns: a local model in groups of GROUP_QUERIES
+    queries, a hosted one all at once through its adaptive limit (limits.py). A hosted model
+    stops cleanly when DeepInfra's credits run out (credits.py) or it fails for an hour."""
+    from rbench.progress import Progress
+
     spec, cache_ = RERANKERS[reranker], ScoreCache(reranker)
-    todo = sum(len(items) for _, items in work)
-    done, started = 0, time.monotonic()
-    for g in range(0, len(work), GROUP_QUERIES):
-        group = work[g : g + GROUP_QUERIES]
-        if spec.backend == "local":
+    progress = Progress(f"  {reranker} {note}", sum(len(items) for _, items in work), "pairs")
+    if spec.backend == "local":
+        for g in range(0, len(work), GROUP_QUERIES):
+            group = work[g : g + GROUP_QUERIES]
             _local(spec.hf_model, group, spec.template, cache_, note)
-        else:
-            if spec.template != QWEN3_CARD:
-                raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself; other templates run locally")
-            asyncio.run(_deepinfra(spec.hf_model, group, spec.template, cache_, note))
-        done += sum(len(items) for _, items in group)
-        rate = done / (time.monotonic() - started)
-        print(f"  {done}/{todo} pairs, {rate:.0f} pairs/s, eta {(todo - done) / rate / 60:.1f} min", flush=True)
+            progress.step(sum(len(items) for _, items in group))
+        return
+    if spec.template != QWEN3_CARD:
+        raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself; other templates run locally")
+    asyncio.run(_deepinfra(spec.hf_model, work, spec.template, cache_, note, progress))

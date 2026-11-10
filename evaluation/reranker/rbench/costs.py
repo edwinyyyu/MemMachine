@@ -32,13 +32,14 @@ from memmachine_server.episodic_memory.event_memory.event_memory import EventMem
 MAC_EMBED_TOK_PER_S = 10500
 
 
-IN_FLIGHT = 16  # DeepInfra requests at a time (rerankers.score)
+IN_FLIGHT = 16  # the adaptive limit's start (limits.START): it grows while DeepInfra allows, so hours are an upper bound
 
 
 def _hours(model: str, tokens: float) -> float | str:
     """Wall time to score `tokens` on DeepInfra, projected from the model's measured requests
-    (its call log: median tokens per second per request, times the requests in flight); a note
-    when nothing has been timed yet (preflight smoke times the first)."""
+    (its call log: median tokens per second per request, times the starting limit of requests in
+    flight; the adaptive limit grows past it while DeepInfra allows, so this is an upper bound); a
+    note when nothing has been timed yet (preflight smoke times the first)."""
     if RERANKERS[model].backend != "deepinfra":
         return "local"
     calls = ScoreCache(model).db.execute("SELECT tokens, seconds FROM calls WHERE seconds > 0").fetchall()

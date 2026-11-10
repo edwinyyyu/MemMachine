@@ -12,7 +12,9 @@ interfaces:
                      the results. Its saved index is the partition's vectors (float16), kept.
   QueryCachingEmbedder  MemMachine's OpenAIEmbedder, against the local llama-server or DeepInfra
                      (embeddinggemma, or Qwen3-Embedding-8B with its query instruction), with
-                     concurrency bounded and question embeddings cached, so replaying
+                     concurrency limited (adaptive for DeepInfra: limits.py), long retries,
+                     document vectors cached by text until their partition is stored
+                     (EmbeddingCache), and question embeddings cached, so replaying
                      configurations does not re-embed them.
   FixedCutSegmenter  a Segmenter that cuts every N characters: the simple chunker, an option
                      beside MemMachine's TextSegmenter (chunking names: segmenter()).
@@ -33,6 +35,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import Container, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -71,9 +74,9 @@ from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import S
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
-from rbench import credits  # noqa: E402
+from rbench import credits, limits  # noqa: E402
 from rbench import embedding as emb  # noqa: E402
-from rbench.paths import DATA, SECRETS  # noqa: E402
+from rbench.paths import DATA, EMBEDDINGS, SECRETS  # noqa: E402
 from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
 
 MEMORY = DATA / "memory"
@@ -213,13 +216,75 @@ def _read_questions(path: Path) -> dict[str, list[float]]:
 EMBEDDED_TOKENS: dict[str, int] = {}  # document tokens sent per embedder in this process (the run summary prices them)
 
 
+class EmbeddingCache:
+    """Document vectors by content, like the score cache: sha1 of the exact text EventMemory
+    sends (the deriver's output) -> its vector, in data/embeddings/<embedder>__<setup>.sqlite,
+    where the setup hashes everything that changes a vector (the model, server, dimensions asked
+    and kept, prompts, MemMachine's max input length).
+
+    Each request's vectors are written as it returns, so a failure mid-partition keeps what was
+    paid for: the rerun deletes the half-written partition, encodes it again, and pays only for
+    the texts that were never embedded. Vectors are kept as the float64 the API returned, so a
+    re-encoding stores exactly what the first would have. A partition's rows are dropped once
+    its done marker is written (Memory.ingest), so the cache holds only the partitions in
+    flight, never a second copy of the index: duplicate texts are paid once among those, and a
+    duplicate in a later partition, or re-encoding a finished partition whose stores were
+    deleted, pays again. (Embedding ahead of ingest, e.g. through DeepInfra's batch API, would
+    keep the cache for a whole stage instead: about 64 GB at float64 for LongMemEval-M at
+    seg500 with 1,024 dimensions, 32 GB at float32.)"""
+
+    def __init__(self, spec: emb.Embedder) -> None:
+        import sqlite3
+
+        setup = json.dumps([spec.model, spec.url, spec.route, spec.request_dimensions, spec.dimensions, spec.query_prompt,
+                            spec.doc_prompt, spec.max_input_chars])
+        path = EMBEDDINGS / f"{spec.name}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(path)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, v BLOB)")
+
+    @staticmethod
+    def key(text: str) -> str:
+        return hashlib.sha1(text.encode()).hexdigest()
+
+    def get(self, keys: Iterable[str]) -> dict[str, list[float]]:
+        keys, out = list(keys), {}
+        for start in range(0, len(keys), 900):  # SQLite's bound-parameter limit
+            part = keys[start : start + 900]
+            rows = self.db.execute(f"SELECT key, v FROM vectors WHERE key IN ({','.join('?' * len(part))})", part)
+            out.update({k: np.frombuffer(v, dtype=np.float64).tolist() for k, v in rows})
+        return out
+
+    def put(self, rows: dict[str, Sequence[float]]) -> None:
+        with self.db:
+            self.db.executemany("INSERT OR REPLACE INTO vectors VALUES (?, ?)",
+                                [(k, np.asarray(v, dtype=np.float64).tobytes()) for k, v in rows.items()])
+
+    def drop(self, keys: Iterable[str]) -> None:
+        keys = list(keys)
+        with self.db:
+            for start in range(0, len(keys), 900):
+                part = keys[start : start + 900]
+                self.db.execute(f"DELETE FROM vectors WHERE key IN ({','.join('?' * len(part))})", part)
+
+    def close(self) -> None:
+        self.db.close()
+
+
+RETRYABLE = (openai.RateLimitError, openai.InternalServerError, openai.APITimeoutError, openai.APIConnectionError)
+
+
 class QueryCachingEmbedder(Embedder):
-    """MemMachine's OpenAIEmbedder with bounded concurrency, and question embeddings cached on
-    disk by text (replays query the same questions many times). Documents are sent as they
-    are (MemMachine's OpenAIEmbedder adds no prompt); a query prompt (Qwen3-Embedding's
-    instruction) is put before each question, as a deployment would format its queries.
-    Vectors come back at the embedder's size: asked for directly, or truncated and
-    re-normalized when the API is asked for more (request_dimensions)."""
+    """MemMachine's OpenAIEmbedder with document vectors cached by text (EmbeddingCache) and
+    question vectors cached on disk by text (replays query the same questions many times).
+    Requests go through the embedder's concurrency limit (limits.py: adaptive for a hosted
+    model, fixed for the shared local server) and are retried here, one attempt per MemMachine
+    call, for up to an hour (limits.PATIENCE). Documents are sent as they are (MemMachine's
+    OpenAIEmbedder adds no prompt); a query prompt (Qwen3-Embedding's instruction) is put
+    before each question, as a deployment would format its queries. Vectors come back at the
+    embedder's size: asked for directly, or truncated and re-normalized when the API is asked
+    for more (request_dimensions)."""
 
     def __init__(self, embedder: str) -> None:
         super().__init__()
@@ -233,37 +298,93 @@ class QueryCachingEmbedder(Embedder):
         self._inner = OpenAIEmbedder(OpenAIEmbedderParams(client=self._client, model=spec.model or "embeddinggemma",
                                                           dimensions=spec.request_dimensions or spec.dimensions,
                                                           max_input_length=spec.max_input_chars))
-        self._gate = asyncio.Semaphore(spec.in_flight)
+        hosted = spec.key_file is not None
+        self._gate = limits.Gate(limits.limit_for(f"embed:{spec.name}", spec.in_flight, adaptive=hosted))
+        self._cache = EmbeddingCache(spec)
+        self._used: set[str] = set()  # document keys since the last release()
         self._path = questions_path(embedder)
         self._questions: dict[str, list[float]] = _read_questions(self._path)
 
-    async def _batches(self, texts: list, call) -> list[list[float]]:
-        size = self._spec.request_inputs
-
-        async def one(batch: list) -> list[list[float]]:
+    async def _attempt(self, batch: list, call, stop: list) -> list[list[float]] | None:
+        """One batch through the limit, retried while the failure is retryable (an hour at most);
+        None, unsent, once another batch of the call has failed (`stop`)."""
+        failing, attempt = None, 0
+        while True:
             async with self._gate:
+                if stop:
+                    return None
                 try:
-                    return await call(batch, 10)
+                    vectors = await call(batch, 1)
+                    self._gate.state.success()
+                    await self._gate.wake()
+                    break
                 except Exception as err:  # MemMachine's ExternalServiceAPIError, from the API's answer
                     broke = credits.from_embedder(err)
                     if broke is not None:
                         raise broke from err
-                    raise
-
-        parts = await asyncio.gather(*(one(texts[i : i + size]) for i in range(0, len(texts), size)))
-        vectors = [v for part in parts for v in part]
+                    cause = err.__cause__ if err.__cause__ is not None else err
+                    if not isinstance(cause, RETRYABLE):
+                        raise
+                    if isinstance(cause, openai.RateLimitError):
+                        self._gate.state.throttled()
+                    last = type(cause).__name__
+            failing = failing or time.monotonic()
+            if time.monotonic() - failing > limits.PATIENCE:
+                raise limits.GaveUp("embedding requests", last)
+            attempt += 1
+            await asyncio.sleep(limits.backoff(attempt))
         if vectors and len(vectors[0]) > self._spec.dimensions:  # asked for more: keep the Matryoshka prefix
             vectors = emb.fit_dimensions(self._spec, np.asarray(vectors, dtype=np.float32)).tolist()
         return vectors
+
+    async def _batches(self, texts: list, call, keys: list[str] | None = None) -> list[list[float]]:
+        """Embed texts in requests of request_inputs; with keys, each request's vectors are
+        cached as it returns. If a request fails, no more are sent, those in flight finish (and
+        are cached: they are paid for), then the failure is raised."""
+        size = self._spec.request_inputs
+        stop: list[BaseException] = []
+
+        async def one(start: int) -> list[list[float]] | None:
+            try:
+                vectors = await self._attempt(texts[start : start + size], call, stop)
+            except Exception as err:
+                stop.append(err)
+                raise
+            if vectors is not None and keys is not None:
+                self._cache.put(dict(zip(keys[start : start + size], vectors, strict=True)))
+            return vectors
+
+        parts = await asyncio.gather(*(one(i) for i in range(0, len(texts), size)), return_exceptions=True)
+        failed = [x for x in parts if isinstance(x, BaseException)]
+        if failed:
+            raise failed[0]
+        return [v for part in parts for v in part]
 
     async def _ingest_embed(self, inputs: list, max_attempts: int = 1) -> list[list[float]]:
         from rbench.text import count
 
         texts = [str(x) for x in inputs]
-        EMBEDDED_TOKENS[self._spec.name] = (EMBEDDED_TOKENS.get(self._spec.name, 0)
-                                            + int(count(texts, self._spec.tokenizer).sum())
-                                            + self._spec.special_tokens * len(texts))
-        return await self._batches(inputs, self._inner._ingest_embed)
+        keys = [EmbeddingCache.key(t) for t in texts]
+        self._used.update(keys)
+        have = self._cache.get(set(keys))
+        first = {}  # each text not cached yet, once: its position
+        for i, k in enumerate(keys):
+            if k not in have and k not in first:
+                first[k] = i
+        todo = [texts[i] for i in first.values()]
+        if todo:
+            EMBEDDED_TOKENS[self._spec.name] = (EMBEDDED_TOKENS.get(self._spec.name, 0)
+                                                + int(count(todo, self._spec.tokenizer).sum())
+                                                + self._spec.special_tokens * len(todo))
+            have.update(zip(first, await self._batches([inputs[i] for i in first.values()], self._inner._ingest_embed,
+                                                       list(first)), strict=True))
+        return [have[k] for k in keys]
+
+    def release(self) -> None:
+        """Drop the cached vectors of the partitions encoded since the last release (their done
+        markers are written: the stores hold them)."""
+        self._cache.drop(self._used)
+        self._used.clear()
 
     async def _search_embed(self, queries: list, max_attempts: int = 1) -> list[list[float]]:
         missing = [q for q in dict.fromkeys(queries) if q not in self._questions]
@@ -279,6 +400,7 @@ class QueryCachingEmbedder(Embedder):
 
     async def aclose(self) -> None:
         await self._client.close()
+        self._cache.close()
 
     @property
     def model_id(self) -> str:
@@ -389,6 +511,8 @@ class Memory:
             await partition.encode_events(batch, format_options=format_options)
         self.done(key).parent.mkdir(parents=True, exist_ok=True)
         self.done(key).write_text(str(uuid.uuid4()))  # an encoding's stamp: its segment uuids are new each time
+        if isinstance(self._embedder, QueryCachingEmbedder):
+            self._embedder.release()  # the stores hold its vectors now
         return True
 
     async def _batches(self, events: list[Event], format_options: FormatOptions | None) -> list[list[Event]]:

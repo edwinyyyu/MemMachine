@@ -1,5 +1,7 @@
-"""Running out of DeepInfra credits mid-run: a clean stop with MESSAGE, nothing finished lost,
-and a rerun completes. The API is replaced by an in-process transport (no network, no key)."""
+"""Hosted calls under failure: out of credits mid-run stops cleanly with nothing finished lost
+and a rerun completes (paying only for what was never embedded); 429s shrink the adaptive
+limit and successes grow it; an hour of failures stops with GaveUp. The API is replaced by an
+in-process transport (no network, no key)."""
 
 import asyncio
 import datetime
@@ -12,12 +14,13 @@ import numpy as np
 import openai
 import pytest
 
-from rbench import credits, memory, rerankers
+from rbench import credits, limits, memory, rerankers
 from rbench.memory import Memory
 
 from memmachine_server.episodic_memory.event_memory.data_types import Event, ProducerContext, TextBlock  # noqa: I001
 
 BROKE = httpx.Response(402, json={"error": {"message": "Insufficient balance"}})
+REAL_CLIENT = httpx.AsyncClient  # before any test patches it
 
 
 def test_refusals_are_recognized():
@@ -80,13 +83,16 @@ def test_ingest_stops_cleanly_and_the_partition_is_encoded_again(tmp_path, monke
     monkeypatch.setattr(memory, "SECRETS", tmp_path)
     monkeypatch.setattr(memory, "questions_path", lambda e: tmp_path / "questions.jsonl")
     monkeypatch.setattr(memory, "ENCODE_SEGMENTS", 25)  # several encode_events calls per partition
+    monkeypatch.setattr(memory, "EMBEDDINGS", tmp_path / "embeddings")
     (tmp_path / "deepinfra_api_key").write_text("test")
-    state = {"broke": True}
+    state = {"broke": True, "sent": []}
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if state["broke"] and any("SENTINEL" in t for t in body["input"]):
             return BROKE
+        prompt = memory.emb.EMBEDDERS[embedder].query_prompt
+        state["sent"] += [t for t in body["input"] if not t.startswith(prompt)]  # documents (not the search's question)
         n = body.get("dimensions") or 1024
         data = [{"object": "embedding", "index": i, "embedding": np.random.default_rng(len(t)).normal(size=n).tolist()}
                 for i, t in enumerate(body["input"])]
@@ -111,6 +117,13 @@ def test_ingest_stops_cleanly_and_the_partition_is_encoded_again(tmp_path, monke
             assert not m.done("h").exists()
             return await segments(m, "h")
 
+    def cached() -> int:
+        cache = memory.EmbeddingCache(memory.emb.EMBEDDERS[embedder])
+        try:
+            return cache.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+        finally:
+            cache.close()
+
     async def rerun(root) -> tuple[int, list]:
         async with Memory(embedder, "synthetic", "seg80", root=root) as m:
             assert await m.ingest("h", events)
@@ -121,7 +134,56 @@ def test_ingest_stops_cleanly_and_the_partition_is_encoded_again(tmp_path, monke
 
     partial = asyncio.run(broke())
     assert partial > 0  # the first batch was written before the failure: a half-written partition
-    state["broke"] = False
+    paid = len(state["sent"])
+    assert cached() == len(set(state["sent"])) > 0  # what was embedded before the failure is kept
+    state.update(broke=False, sent=[])
     whole, hits = asyncio.run(rerun(tmp_path / "stores"))
+    again = len(state["sent"])
+    assert cached() == 0  # released once the partition is stored
+    state["sent"] = []
     clean, _ = asyncio.run(rerun(tmp_path / "clean"))
     assert whole == clean > partial and len(hits) == 5  # nothing doubled, nothing missing; it searches
+    assert paid + again == len(state["sent"])  # the rerun paid only for what was never embedded
+
+
+def _rerank_with(handler, tmp_path, monkeypatch, docs: int = 40, queries: int = 25):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(rerankers, "SCORES", tmp_path / "scores")
+    monkeypatch.setattr(rerankers, "SECRETS", tmp_path)
+    monkeypatch.setattr(limits, "_LIMITS", {})
+    monkeypatch.setattr(limits, "backoff", lambda attempt: 0.0)
+    (tmp_path / "deepinfra_api_key").write_text("test")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: REAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    prompt = rerankers.prompt_key(rerankers.RERANKERS["q06"].template)
+    work = [(f"question {q}?", [(rerankers.ScoreCache.key(prompt, "em", f"question {q}?", f"doc {q} {i}"),
+                                 f"doc {q} {i}") for i in range(docs)]) for q in range(queries)]
+    rerankers.score("q06", work, "test")
+    return work
+
+
+def ok(request: httpx.Request) -> httpx.Response:
+    docs = json.loads(request.content)["documents"]
+    return httpx.Response(200, json={"scores": [0.5] * len(docs), "input_tokens": 10 * len(docs)})
+
+
+def test_the_limit_grows_on_success_and_shrinks_on_429(tmp_path, monkeypatch):
+    seen = {"n": 0}
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        seen["n"] += 1
+        return httpx.Response(429, text="Rate limited") if seen["n"] % 7 == 3 else ok(request)
+
+    work = _rerank_with(ok, tmp_path / "a", monkeypatch)
+    grown = limits._LIMITS["deepinfra:Qwen/Qwen3-Reranker-0.6B"]
+    assert grown.peak > limits.START and not grown.throttled_once  # 50 requests, no 429: it ramped up
+    _rerank_with(flaky, tmp_path / "b", monkeypatch)
+    hit = limits._LIMITS["deepinfra:Qwen/Qwen3-Reranker-0.6B"]
+    assert hit.throttled_once and hit.cuts > 0  # cut on 429s, and every request still succeeded
+    keys = [k for _, items in work for k, _ in items]
+    assert len(rerankers.ScoreCache("q06").get(keys)) == len(keys)
+
+
+def test_an_hour_of_failures_stops_cleanly(tmp_path, monkeypatch):
+    monkeypatch.setattr(limits, "PATIENCE", 0.05)
+    with pytest.raises(SystemExit, match="has not answered reranking requests"):
+        _rerank_with(lambda request: httpx.Response(503, text="overloaded"), tmp_path, monkeypatch, queries=2)
