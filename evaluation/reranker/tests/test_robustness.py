@@ -219,3 +219,117 @@ def test_vectors_survive_losing_the_stores(tmp_path, monkeypatch):
     again = asyncio.run(ingest_and_query())
     assert sent == [1] or sent == []  # at most the search's question (it is cached too after the first run)
     assert again == first
+
+
+CHILD = r"""
+import asyncio, dataclasses, hashlib, json, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import httpx, numpy as np, openai
+from rbench import embedding, limits, memory
+from tests.test_memory import _events
+
+tmp, log = Path(sys.argv[2]), Path(sys.argv[3])
+memory.SECRETS, memory.EMBEDDINGS = tmp, tmp / "e"
+memory.questions_path = lambda e: tmp / "q.jsonl"
+embedding.EMBEDDERS["qwen3-8b-di"] = dataclasses.replace(embedding.EMBEDDERS["qwen3-8b-di"], request_inputs=8, in_flight=1)
+REAL = httpx.AsyncClient
+
+def handler(request):
+    body = json.loads(request.content)
+    time.sleep(0.05)
+    with log.open("a") as f:
+        f.write(json.dumps(body["input"]) + "\n")
+    n = body.get("dimensions") or 1024
+    data = [{"object": "embedding", "index": i, "embedding": np.random.default_rng(
+        int(hashlib.sha1(t.encode()).hexdigest()[:8], 16)).normal(size=n).tolist()} for i, t in enumerate(body["input"])]
+    return httpx.Response(200, json={"object": "list", "data": data, "model": body["model"],
+                                     "usage": {"prompt_tokens": 1, "total_tokens": 1}})
+
+real = openai.AsyncOpenAI
+memory.openai.AsyncOpenAI = lambda **kw: real(http_client=REAL(transport=httpx.MockTransport(handler)), **kw)
+memory.ENCODE_SEGMENTS = 40
+
+async def go():
+    async with memory.Memory("qwen3-8b-di", "synthetic", "seg80", root=tmp / "stores") as m:
+        await m.ingest("h", _events(200))
+
+asyncio.run(go())
+"""
+
+
+def test_kill_9_mid_ingest_keeps_the_cache_whole(tmp_path):
+    """kill -9 while a hosted embedder's answers are being cached: the cache passes SQLite's
+    integrity check, the resumed run sends none of the texts that were cached, and the finished
+    store ranks exactly as an uninterrupted run."""
+    import dataclasses
+    import hashlib
+    import os
+    import signal
+    import sqlite3
+    import time
+
+    import openai
+
+    from rbench import embedding
+    from tests.test_memory import _events  # noqa: PLC0415
+
+    root = memory.__file__.rsplit("/rbench/", 1)[0]
+    log = tmp_path / "sent.jsonl"
+    (tmp_path / "deepinfra_api_key").write_text("test")
+    child = subprocess.Popen([sys.executable, "-c", CHILD, root, str(tmp_path), str(log)], cwd=root)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and (not log.exists() or len(log.read_text().splitlines()) < 6):
+        time.sleep(0.02)
+    os.kill(child.pid, signal.SIGKILL)
+    child.wait()
+    assert child.returncode == -signal.SIGKILL
+
+    caches = list((tmp_path / "e").glob("*.sqlite"))
+    assert len(caches) == 1
+    db = sqlite3.connect(caches[0])
+    assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    cached = {k for (k,) in db.execute("SELECT key FROM vectors")}
+    db.close()
+    assert cached  # some answers were cached before the kill
+
+    sent: list[str] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.extend(body["input"])
+        n = body.get("dimensions") or 1024
+        data = [{"object": "embedding", "index": i, "embedding": np.random.default_rng(
+            int(hashlib.sha1(t.encode()).hexdigest()[:8], 16)).normal(size=n).tolist()} for i, t in enumerate(body["input"])]
+        return httpx.Response(200, json={"object": "list", "data": data, "model": body["model"],
+                                         "usage": {"prompt_tokens": 1, "total_tokens": 1}})
+
+    real = openai.AsyncOpenAI
+    saved = (memory.SECRETS, memory.EMBEDDINGS, memory.questions_path, memory.openai.AsyncOpenAI, memory.ENCODE_SEGMENTS,
+             embedding.EMBEDDERS["qwen3-8b-di"], dict(limits._LIMITS))
+    try:
+        memory.SECRETS, memory.EMBEDDINGS = tmp_path, tmp_path / "e"
+        memory.questions_path = lambda e: tmp_path / "q.jsonl"
+        memory.openai.AsyncOpenAI = lambda **kw: real(http_client=REAL_CLIENT(transport=httpx.MockTransport(handler)), **kw)
+        memory.ENCODE_SEGMENTS = 40
+        embedding.EMBEDDERS["qwen3-8b-di"] = dataclasses.replace(saved[5], request_inputs=8, in_flight=1)
+
+        async def run(stores) -> list[str]:
+            async with Memory("qwen3-8b-di", "synthetic", "seg80", root=stores) as m:
+                assert await m.ingest("h", _events(200))
+                partition = await (await m.event_memory()).open_or_create_partition("h")
+                result = await partition.query("the price", vector_search_limit=15)
+                return [s.block.text for c in result.scored_segment_contexts for s in c.segments]
+
+        resumed = asyncio.run(run(tmp_path / "stores"))
+        repeated = {memory.EmbeddingCache.key(t) for t in sent} & cached
+        assert not repeated  # nothing that had been cached was paid for again
+        memory.EMBEDDINGS = tmp_path / "clean-cache"
+        sent.clear()
+        clean = asyncio.run(run(tmp_path / "clean"))  # an uninterrupted run, from nothing
+        assert sent and resumed == clean
+    finally:
+        (memory.SECRETS, memory.EMBEDDINGS, memory.questions_path, memory.openai.AsyncOpenAI, memory.ENCODE_SEGMENTS,
+         embedding.EMBEDDERS["qwen3-8b-di"]) = saved[:6]
+        limits._LIMITS.clear()
+        limits._LIMITS.update(saved[6])

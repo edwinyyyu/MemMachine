@@ -294,11 +294,17 @@ class EmbeddingCache:
     reorder near ties). About 4 KB per segment at 1,024 dimensions: 31 GB for LongMemEval-M at
     seg500 (costs.estimate counts it)."""
 
-    def __init__(self, spec: emb.Embedder) -> None:
+    @staticmethod
+    def path_for(spec: emb.Embedder) -> Path:
+        """The cache file of an embedder setup (what to back up to keep the paid vectors)."""
         setup = json.dumps([spec.model, spec.url, spec.route, spec.request_dimensions, spec.dimensions, spec.query_prompt,
                             spec.doc_prompt, spec.max_input_chars, "float32"])
-        path = EMBEDDINGS / f"{spec.name}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
+        return EMBEDDINGS / f"{spec.name}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
+
+    def __init__(self, spec: emb.Embedder) -> None:
+        path = self.path_for(spec)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
         self.db = connect(path)
         self.db.execute("CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, v BLOB)")
 

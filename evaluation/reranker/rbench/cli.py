@@ -276,6 +276,12 @@ def main(argv: list[str] | None = None) -> None:
               "(counted as sent)", flush=True)
         for line in early:
             print(f"early scoring: {line}", flush=True)
+        from rbench.memory import EmbeddingCache
+
+        cache = EmbeddingCache.path_for(EMBEDDERS[embedder])
+        if cache.exists():  # the paid vectors: back this file up (with its -wal beside it while a run is open)
+            size = sum(p.stat().st_size for p in cache.parent.glob(cache.name + "*"))
+            print(f"embedding cache: {cache} ({size / 1e9:.2f} GB): back it up to keep the vectors paid for", flush=True)
     elif args.command == "show":
         from rbench.report import figures
         from rbench.report.data import load
