@@ -92,9 +92,11 @@ class Gate:
         async with self._cond:
             await self._cond.wait_for(lambda: self.active < max(1, int(self.state.limit)))
             self.active += 1
+        _count(1)
         return self
 
     async def __aexit__(self, *exc) -> None:
+        _count(-1)
         async with self._cond:
             self.active -= 1
             self._cond.notify_all()
@@ -108,3 +110,36 @@ class Gate:
 def backoff(attempt: int) -> float:
     """Seconds before retry number `attempt` (1, 2, ...): doubling with jitter, at most BACKOFF_MAX."""
     return min(BACKOFF_MAX, 2.0 ** min(attempt, 12)) * (0.75 + 0.5 * random.random())
+
+
+# ------------------------------------------------------------------- Ctrl-C
+
+import threading  # noqa: E402
+
+CANCEL = threading.Event()  # set by the first Ctrl-C (cli.py): nothing more is sent; requests in flight finish
+_ACTIVE = [0]
+_ACTIVE_LOCK = threading.Lock()
+
+
+class Interrupted(RuntimeError):
+    """Stopped by Ctrl-C after the requests in flight finished (and were cached)."""
+
+    def __init__(self) -> None:
+        super().__init__("stopped by Ctrl-C: the requests in flight finished and are cached; rerun to resume")
+
+
+def in_flight() -> int:
+    """Hosted requests being answered now, over every gate in the process."""
+    return _ACTIVE[0]
+
+
+def _count(n: int) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE[0] += n
+
+
+async def sleep(seconds: float) -> None:
+    """asyncio.sleep that wakes early once CANCEL is set (a backoff never holds up a stop)."""
+    end = time.monotonic() + seconds
+    while not CANCEL.is_set() and (left := end - time.monotonic()) > 0:
+        await asyncio.sleep(min(0.5, left))

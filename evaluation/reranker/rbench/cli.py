@@ -57,6 +57,21 @@ def _embedder(args, runs: list) -> str:
     return getattr(args, "embedder", None) or (own.pop() if own else EMBEDDER)
 
 
+def _check_disk(runs: list, embedder: str) -> None:
+    """Refuse to start a stage whose new stores would not fit the free disk (with the numbers)."""
+    import shutil
+
+    from rbench.paths import DATA
+
+    need = costs.disk_need(runs, embedder)
+    free = shutil.disk_usage(DATA).free / 1e9
+    if need > 0.9 * free:
+        raise SystemExit(f"not enough disk: the new stores need about {need:.1f} GB and {free:.1f} GB are free at "
+                         f"{DATA}; free space first (a margin of 10% is kept)")
+    if need:
+        print(f"disk: the new stores need about {need:.1f} GB; {free:.1f} GB free", flush=True)
+
+
 def _estimate(runs: list, embedder: str) -> dict:
     return costs.estimate(runs, embedder)
 
@@ -217,7 +232,21 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps(_estimate(runs, _embedder(args, runs))["summary"], indent=1))
         embedder = _embedder(args, runs)
         print(f"first stage: {embedder}", flush=True)
+        import signal
         import time
+
+        from rbench import limits
+
+        def interrupt(signum, frame) -> None:  # the first Ctrl-C stops sending; the second abandons what is in flight
+            if limits.CANCEL.is_set():
+                signal.default_int_handler(signum, frame)
+            limits.CANCEL.set()
+            print(f"\nCtrl-C: finishing {limits.in_flight()} requests in flight (they end within the request timeout); Ctrl-C again to "
+                  "abandon them", flush=True)
+
+        signal.signal(signal.SIGINT, interrupt)
+        if args.only in (None, "prepare"):
+            _check_disk(runs, embedder)
 
         from rbench import rerankers
         from rbench.memory import EMBEDDED_TOKENS

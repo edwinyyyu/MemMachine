@@ -42,6 +42,7 @@ import numpy as np
 from rbench import config
 from rbench import partitions as pt
 from rbench.datasets import info
+from rbench.dbs import replace_atomically
 from rbench.memory import QUERY_SEEDS, Memory
 from rbench.paths import RESULTS
 from rbench.reading import Reader
@@ -193,7 +194,8 @@ def save(embedder: str, dataset: str, chunking: str, sample_name: str, per: dict
                                                "evidence_in_pool": float((holds <= pool).mean())}
     target = path(embedder, dataset, chunking, sample_name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"summary": summary, "per_query": per}, indent=1) + "\n")
+    text = json.dumps({"summary": summary, "per_query": per}, indent=1) + "\n"
+    replace_atomically(target, lambda temporary: temporary.write_text(text))
     return summary
 
 
@@ -204,18 +206,28 @@ def _quantile(sorted_depths: np.ndarray, target: float) -> float:
     return float(sorted_depths[min(n - 1, int(np.ceil(target * n)) - 1)])
 
 
-def load(embedder: str, dataset: str, chunking: str, sample_name: str) -> dict:
+def _read(embedder: str, dataset: str, chunking: str, sample_name: str) -> dict | None:
+    """The saved depths, None when missing or unreadable (measured again)."""
     p = path(embedder, dataset, chunking, sample_name)
-    if not p.exists():
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def load(embedder: str, dataset: str, chunking: str, sample_name: str) -> dict:
+    saved = _read(embedder, dataset, chunking, sample_name)
+    if saved is None:
         raise SystemExit(f"no measured depth for {dataset} {chunking} {sample_name} ({embedder}): run "
                          f"`python -m rbench depth {dataset} {chunking} {sample_name}` first")
-    return json.loads(p.read_text())["summary"]
+    return saved["summary"]
 
 
 def _known(embedder: str, dataset: str, chunking: str, sample_name: str, expand: int) -> bool:
-    if not path(embedder, dataset, chunking, sample_name).exists():
+    saved = _read(embedder, dataset, chunking, sample_name)
+    if saved is None:
         return False
-    fill = load(embedder, dataset, chunking, sample_name).get("fill", {})
+    fill = saved["summary"].get("fill", {})
     return str(expand) in fill and str(config.EVAL.token_top) in fill[str(expand)]
 
 
@@ -241,7 +253,7 @@ def pool_shares(embedder: str, dataset: str, chunking: str, sample_name: str, ex
     (the ceiling no reading of it can pass); None before the depths are measured."""
     if not _known(embedder, dataset, chunking, sample_name, expand):
         return None
-    per = json.loads(path(embedder, dataset, chunking, sample_name).read_text())["per_query"].values()
+    per = _read(embedder, dataset, chunking, sample_name)["per_query"].values()
     top = str(config.EVAL.token_top)
     fills = np.mean([v["fill"][str(expand)][top] <= pool_ for v in per])
     holds = np.mean([v["holds"][str(expand)] <= pool_ for v in per])

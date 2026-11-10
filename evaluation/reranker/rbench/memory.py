@@ -72,9 +72,11 @@ from memmachine_server.episodic_memory.event_memory.segment_store.sqlalchemy_seg
 )
 from memmachine_server.episodic_memory.event_memory.segmenter.segmenter import Segmenter  # noqa: E402
 from memmachine_server.episodic_memory.event_memory.segmenter.text_segmenter import TextSegmenter  # noqa: E402
+from sqlalchemy import event  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from rbench import credits, limits  # noqa: E402
+from rbench.dbs import connect, sqlite_pragmas  # noqa: E402
 from rbench import embedding as emb  # noqa: E402
 from rbench.paths import DATA, EMBEDDINGS, SECRETS  # noqa: E402
 from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
@@ -145,6 +147,7 @@ class ExactSearchEngine(VectorSearchEngine):
         self._keys = np.zeros(0, np.int64)
         self._vectors = np.zeros((0, num_dimensions), np.float16)
         self._float: np.ndarray | None = None  # the vectors as float32, made once per change (searches reuse it)
+        self._dirty = False  # changed since the last load or save (the store re-saves every engine it holds)
 
     async def add(self, vectors: Mapping[int, Sequence[float]]) -> None:
         if not vectors:
@@ -155,6 +158,7 @@ class ExactSearchEngine(VectorSearchEngine):
         self._keys = np.concatenate([self._keys, np.fromiter(vectors.keys(), np.int64, len(vectors))])
         self._vectors = np.concatenate([self._vectors, matrix.astype(np.float16)])
         self._float = None
+        self._dirty = True
 
     async def search(self, vectors: Iterable[Sequence[float]], *, limit: int,
                      allowed_keys: Container[int] | None = None) -> list[SearchResult]:
@@ -179,18 +183,65 @@ class ExactSearchEngine(VectorSearchEngine):
 
     async def remove(self, keys: Iterable[int]) -> None:
         drop = np.isin(self._keys, np.fromiter(keys, np.int64))
-        self._keys, self._vectors = self._keys[~drop], self._vectors[~drop]
-        self._float = None
+        if drop.any():
+            self._keys, self._vectors = self._keys[~drop], self._vectors[~drop]
+            self._float = None
+            self._dirty = True
 
     async def save(self, path: str) -> None:
-        with open(path, "wb") as file:
+        """Written only when changed (MemMachine's store saves every engine it holds at shutdown,
+        read-only sessions too), and atomically: a temporary file, flushed and fsynced, then
+        moved into place, so an interrupted save never leaves a truncated index."""
+        import os
+
+        if not self._dirty and os.path.exists(path):
+            return
+        temporary = f"{path}.tmp"
+        with open(temporary, "wb") as file:
             np.savez(file, keys=self._keys, vectors=self._vectors)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        self._dirty = False
 
     async def load(self, path: str) -> None:
         with open(path, "rb") as file:
             data = np.load(file)
             self._keys, self._vectors = data["keys"], data["vectors"]
         self._float = None
+        self._dirty = False
+
+
+_LOCKS: dict[str, list] = {}  # store root -> [open lock file, holders in this process]
+
+
+def lock_store(root: Path) -> None:
+    """One process per store (MemMachine's SQLite vector store assumes it: its startup replays
+    every partition's pending operations and its shutdown saves every engine it holds, so a
+    second process can overwrite a partition another is writing). An exclusive lock on
+    <root>/.lock, held until the last Memory on it in this process closes; another process
+    fails fast."""
+    import fcntl
+
+    key = str(root.resolve())
+    if key in _LOCKS:
+        _LOCKS[key][1] += 1
+        return
+    file = open(root / ".lock", "a")  # noqa: SIM115 - held open until unlock_store
+    try:
+        fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        file.close()
+        raise SystemExit(f"another rbench process is using {root}; wait for it to finish or stop it") from None
+    _LOCKS[key] = [file, 1]
+
+
+def unlock_store(root: Path) -> None:
+    key = str(root.resolve())
+    if key in _LOCKS:
+        _LOCKS[key][1] -= 1
+        if _LOCKS[key][1] == 0:
+            _LOCKS.pop(key)[0].close()  # closing releases the lock
 
 
 def store_root(embedder: str, dataset: str, chunking: str) -> Path:
@@ -223,6 +274,7 @@ def _read_questions(path: Path) -> dict[str, list[float]]:
     return out
 
 
+_QUESTIONS: dict[str, dict[str, list[float]]] = {}  # question cache path -> its vectors, shared in a process
 EMBEDDED_TOKENS: dict[str, int] = {}  # document tokens sent per embedder in this process (the run summary prices them)
 
 
@@ -242,14 +294,11 @@ class EmbeddingCache:
     deleted, pays again."""
 
     def __init__(self, spec: emb.Embedder) -> None:
-        import sqlite3
-
         setup = json.dumps([spec.model, spec.url, spec.route, spec.request_dimensions, spec.dimensions, spec.query_prompt,
                             spec.doc_prompt, spec.max_input_chars])
         path = EMBEDDINGS / f"{spec.name}__{hashlib.sha1(setup.encode()).hexdigest()[:12]}.sqlite"
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
-        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db = connect(path)
         self.db.execute("CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, v BLOB)")
 
     @staticmethod
@@ -280,6 +329,7 @@ class EmbeddingCache:
         self.db.close()
 
 
+MAX_REQUEST_CHARS = OpenAIEmbedder.max_total_input_length_per_request  # 75,000: MemMachine splits a longer call
 RETRYABLE = (openai.RateLimitError, openai.InternalServerError, openai.APITimeoutError, openai.APIConnectionError)
 
 
@@ -311,7 +361,9 @@ class QueryCachingEmbedder(Embedder):
         self._cache = EmbeddingCache(spec)
         self._used: set[str] = set()  # document keys since the last release()
         self._path = questions_path(embedder)
-        self._questions: dict[str, list[float]] = _read_questions(self._path)
+        if str(self._path) not in _QUESTIONS:  # parsed once per process (about 10 MB of JSON lines)
+            _QUESTIONS[str(self._path)] = _read_questions(self._path)
+        self._questions: dict[str, list[float]] = _QUESTIONS[str(self._path)]
 
     async def _attempt(self, batch: list, call, stop: list) -> list[list[float]] | None:
         """One batch through the limit, retried while the failure is retryable (an hour at most);
@@ -319,8 +371,8 @@ class QueryCachingEmbedder(Embedder):
         failing, attempt = None, 0
         while True:
             async with self._gate:
-                if stop:
-                    return None
+                if stop or limits.CANCEL.is_set():
+                    return None  # another batch failed, or Ctrl-C: send nothing more
                 try:
                     vectors = await call(batch, 1)
                     self._gate.state.success()
@@ -340,32 +392,58 @@ class QueryCachingEmbedder(Embedder):
             if time.monotonic() - failing > limits.PATIENCE:
                 raise limits.GaveUp("embedding requests", last)
             attempt += 1
-            await asyncio.sleep(limits.backoff(attempt))
+            await limits.sleep(limits.backoff(attempt))
         if vectors and len(vectors[0]) > self._spec.dimensions:  # asked for more: keep the Matryoshka prefix
             vectors = emb.fit_dimensions(self._spec, np.asarray(vectors, dtype=np.float32)).tolist()
         return vectors
 
-    async def _batches(self, texts: list, call, keys: list[str] | None = None) -> list[list[float]]:
-        """Embed texts in requests of request_inputs; with keys, each request's vectors are
-        cached as it returns. If a request fails, no more are sent, those in flight finish (and
-        are cached: they are paid for), then the failure is raised."""
-        size = self._spec.request_inputs
-        stop: list[BaseException] = []
+    def _requests(self, texts: list) -> list[tuple[int, int]]:
+        """Index ranges of one request each: at most request_inputs inputs and MAX_REQUEST_CHARS
+        characters, so MemMachine's OpenAIEmbedder never splits a call into several requests
+        (each would hold one slot of the limit while counting as more)."""
+        out, start, chars = [], 0, 0
+        for i, text in enumerate(texts):
+            n = len(str(text))
+            if i > start and (i - start == self._spec.request_inputs or chars + n > MAX_REQUEST_CHARS):
+                out.append((start, i))
+                start, chars = i, 0
+            chars += n
+        if start < len(texts):
+            out.append((start, len(texts)))
+        return out
 
-        async def one(start: int) -> list[list[float]] | None:
+    async def _batches(self, texts: list, call, keys: list[str] | None = None) -> list[list[float]]:
+        """Embed texts in requests (_requests); with keys, each request's vectors are cached as
+        it returns. If a request fails, or its vectors cannot be cached (disk full), no more are
+        sent; those in flight finish and are cached (they are paid for: vectors that could not be
+        written are kept and written once more before the failure is raised)."""
+        stop: list[BaseException] = []
+        unsaved: dict[str, Sequence[float]] = {}
+
+        async def one(start: int, end: int) -> list[list[float]] | None:
             try:
-                vectors = await self._attempt(texts[start : start + size], call, stop)
+                vectors = await self._attempt(texts[start:end], call, stop)
             except Exception as err:
                 stop.append(err)
                 raise
             if vectors is not None and keys is not None:
-                self._cache.put(dict(zip(keys[start : start + size], vectors, strict=True)))
+                got = dict(zip(keys[start:end], vectors, strict=True))
+                try:
+                    self._cache.put(got)
+                except Exception as err:  # disk full, a lock: stop sending, keep what was paid for
+                    unsaved.update(got)
+                    stop.append(err)
+                    raise
             return vectors
 
-        parts = await asyncio.gather(*(one(i) for i in range(0, len(texts), size)), return_exceptions=True)
+        parts = await asyncio.gather(*(one(a, b) for a, b in self._requests(texts)), return_exceptions=True)
+        if unsaved:
+            self._cache.put(unsaved)  # once more; raises (with the disk-full message: __main__) if it cannot
         failed = [x for x in parts if isinstance(x, BaseException)]
         if failed:
             raise failed[0]
+        if any(part is None for part in parts):  # Ctrl-C: what returned is cached
+            raise limits.Interrupted()
         return [v for part in parts for v in part]
 
     async def _ingest_embed(self, inputs: list, max_attempts: int = 1) -> list[list[float]]:
@@ -482,8 +560,10 @@ class Memory:
     async def stores(self):
         if self._stores is None:
             engines = []
+            lock_store(self.root)  # one process per store, readers too (they replay and save)
             for name in ("segments", "vectors"):
                 engine = create_async_engine(f"sqlite+aiosqlite:///{self.root / name}.sqlite")
+                event.listen(engine.sync_engine, "connect", lambda connection, _record: sqlite_pragmas(connection))
                 enable_sqlite_foreign_keys(engine)
                 enable_sqlite_explicit_begin(engine)
                 engines.append(engine)
@@ -520,6 +600,9 @@ class Memory:
             return False
         memory = await self.event_memory()
         await memory.delete_partition(key)
+        segment_store, _, _ = await self.stores()
+        while await segment_store.purge_deleted_partitions():  # reclaim what the deletion deferred (bounded per call)
+            pass
         partition = await memory.open_or_create_partition(key)
         for batch in await self._batches(events, format_options):
             await partition.encode_events(batch, format_options=format_options)
@@ -560,3 +643,4 @@ class Memory:
             if isinstance(self._embedder, QueryCachingEmbedder):
                 await self._embedder.aclose()
             self._stores = None
+            unlock_store(self.root)

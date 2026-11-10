@@ -785,10 +785,10 @@ def summary(r: Results, event: str) -> list[str]:
                 if not np.isnan(clear):
                     text += ", clearly " + ("never in range" if np.isinf(clear) else f"from ${clear:.2f}/M")
                 parts.append(f"money worth {T:,} reader tokens: {text}")
-            at.append(f"at L {L} ({what}): " + "; ".join(parts))
-        out.append(f"Break-even for the same money per question (reranking gains coverage above this LLM input price; "
-                   f"{core[0]}, expand_context {core[1]}, {m} at ${price(m):g}/M, the same L on both sides): "
-                   + " | ".join(at) + ". Section 7 and cost_equal.png give every spend.\n")
+            at.append(f"At L {L} ({what}): " + "; ".join(parts) + ".")
+        out.append(f"**For the same money per question** ({m} at ${price(m):g}/M, the same vector search limit on both "
+                   "sides). The LLM input price from which reranking gets more evidence:\n")
+        out.append(_intro(*at, "Details: section 7 and cost_equal.png."))
     from rbench.report import topk
 
     if topk.available(r):
@@ -802,27 +802,28 @@ def summary(r: Results, event: str) -> list[str]:
                     i, j = g["limits"].index(20), g["ks"].index(k)
                     parts.append(f"k {k}: {g['first'][j]:.2f} → {g['reranked'][i, j]:.2f} ({g['gain'][i, j]:+.2f} "
                                  f"{_ci(g['low'][i, j], g['high'][i, j], 2)})")
-            out.append(f"Recall at top-k ({m}; evidence turns found in full; section 16). Top-k as the vector search "
-                       "limit, everything kept: reranking cannot change recall (only order), a gain of 0 by construction. "
-                       "Top-k as the seeds kept after reranking the default 20: " + ("; ".join(parts) or "–") + ".\n")
+            out.append(f"**Recall at top-k** ({m}, evidence turns read in full):\n")
+            out.append(_intro("Top-k as the seeds kept after reranking the default 20: " + ("; ".join(parts) or "–") + ".",
+                              "Top-k as the vector search limit: everything retrieved is kept, so reranking cannot "
+                              "change recall.",
+                              "Details: section 16."))
     pool = r.pool_depth(core[0], r.models[0], "rerank")
     bound = r.rows(core[0], f"bound@{pool}") if pool else None
     from rbench import depth
 
     shares = depth.pool_shares(r.embedder, r.dataset, core[0], r.sample, 0, int(pool[1:])) if pool else None
-    fills = (f"; reading it reaches {config.EVAL.token_top:,} reader tokens for {shares[0]:.0%} of questions"
+    fills = (f". Reading it reaches {config.EVAL.token_top:,} reader tokens for {shares[0]:.0%} of questions"
              if shares else "")
-    ceiling = (f" The reranker's pool ({pool[1:]} seeds, fixed) holds all the evidence for "
-               f"{rd.reachable(rd.costs(bound, event)).mean():.0%} of questions (the bound), so no reranker of it can do "
-               f"better{fills}." if bound is not None and not bound.empty else "")
+    ceiling = (f"The pool: {pool[1:]} seeds. It holds all the evidence for "
+               f"{rd.reachable(rd.costs(bound, event)).mean():.0%} of questions, so no reranker can do better{fills}."
+               if bound is not None and not bound.empty else "")
     from rbench.report.figures import not_run
 
     missing = not_run(r)
-    if missing:
-        out.append("Not shown in this report: " + "; ".join(missing) + ".\n")
-    out += ["The best value of each factor per budget, one at a time: section 14. Every setting is chosen once for all questions "
-            "(never per question), on the same questions it is measured on (no dev split): the best-settings line leans "
-            "optimistic." + ceiling + "\n"]
+    out += ["**Notes**\n", _intro(ceiling.strip(),
+                                    "Settings are chosen once for all questions, on the same questions they are measured "
+                                    "on, so the best settings lean optimistic. The best value of each setting: section 14.",
+                                    ("Not run in this stage: " + "; ".join(missing) + "." if missing else ""))]
     return out
 
 

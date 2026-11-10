@@ -153,7 +153,13 @@ def _raw(spec, texts: list[str], dimensions: int) -> tuple[np.ndarray, dict]:
 
     key = (SECRETS / spec.key_file).read_text().strip()
     body = {"model": spec.model, "input": texts, "encoding_format": "float", "dimensions": dimensions}
-    data = httpx.post(spec.url + spec.route, json=body, headers={"Authorization": f"bearer {key}"}, timeout=120).json()
+    response = httpx.post(spec.url + spec.route, json=body, headers={"Authorization": f"bearer {key}"}, timeout=120)
+    from rbench import credits
+
+    if credits.refused(response.status_code, response.text):
+        raise credits.OutOfCredits(f"embed-checks: HTTP {response.status_code}")
+    response.raise_for_status()  # an error answer stops here, not as a missing "data" field
+    data = response.json()
     vectors = np.asarray([d["embedding"] for d in sorted(data["data"], key=lambda d: d["index"])], dtype=np.float64)
     return vectors, data.get("usage", {})
 

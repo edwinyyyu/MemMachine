@@ -636,15 +636,15 @@ def not_run(r: Results) -> list[str]:
     core = frontier.setting(r)[0]
     out = []
     if sum(c.startswith("seg") for c in r.chunkings) < 2:
-        out.append("segment length: not run in this stage (lme-sizes)")
+        out.append("segment length (stage lme-sizes)")
     if config.cut_for(r.dataset, core) not in r.chunkings:
-        out.append("chunker: not run in this stage (lme-cut)")
+        out.append("chunker (stage lme-cut)")
     if r.models and not any(r.depths_at(core, m, "xrerank") for m in r.models):
-        out.append("what the reranker scores: windows not scored in this stage")
+        out.append("what the reranker scores: the windows were not scored")
     elif r.models and any(e != 3 for e in r.expansions):
-        out.append("expand, then rerank: windows scored at expand_context 3 only")
+        out.append("expand, then rerank at other expand_context values than 3")
     if len(r.models) < 2:
-        out.append("model choice: one reranker scored (run another with --models, or lme-small)")
+        out.append("model choice: one reranker scored; add one with --models or stage lme-small")
     return out
 
 

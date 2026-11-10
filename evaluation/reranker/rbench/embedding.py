@@ -32,6 +32,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
+from rbench.dbs import replace_atomically
 from rbench.paths import SECRETS, VECTORS
 from rbench.schema import queries
 from rbench.text import GEMMA, QWEN_EMBED, token_starts
@@ -109,7 +110,7 @@ PAID = "qwen3-8b-di"  # the paid stages' first stage; the instruction setting is
 # MemMachine's OpenAI-compatible embedder sends.
 DEFAULT = "gemma300m-raw"
 SHARD = 8192  # vectors per resumable shard
-ATTEMPTS = 10
+
 
 
 def path(embedder: str, dataset: str, name: str) -> Path:
@@ -160,28 +161,46 @@ def _run(spec: Embedder, texts: list[str], prompt: str, target: Path) -> None:
     started = time.monotonic()
     for i, offset in enumerate(shards):
         shard = parts / f"{i:05d}.npy"
+        if shard.exists():
+            try:
+                np.load(shard)
+            except (OSError, ValueError):  # unreadable: embedded again
+                shard.unlink()
         if not shard.exists():
-            np.save(shard, embed(spec, texts[offset : offset + SHARD], prompt).astype(np.float16))
+            vectors = embed(spec, texts[offset : offset + SHARD], prompt).astype(np.float16)
+            replace_atomically(shard, lambda temporary: np.save(temporary, vectors))  # noqa: B023 - called at once
             print(f"{target}: shard {i + 1}/{len(shards)}", flush=True)
     joined = np.concatenate([np.load(parts / f"{i:05d}.npy") for i in range(len(shards))])
     assert len(joined) == len(texts)
-    np.save(target, joined)
+    replace_atomically(target, lambda temporary: np.save(temporary, joined))
     shutil.rmtree(parts)
     print(f"{target}: {len(texts)} vectors in {time.monotonic() - started:.0f}s", flush=True)
 
 
 async def _post(client: httpx.AsyncClient, route: str, body: dict) -> httpx.Response:
-    for attempt in range(ATTEMPTS):
+    """One request, retried as the reranker's are (limits.py): 429, 5xx and transport errors
+    back off for up to an hour; out of credits and other answers stop at once."""
+    from rbench import credits, limits
+
+    failing, attempt, last = None, 0, ""
+    while True:
+        if limits.CANCEL.is_set():
+            raise limits.Interrupted()
         try:
             response = await client.post(route, json=body)
+            last = f"HTTP {response.status_code}"
+            if credits.refused(response.status_code, response.text):
+                raise credits.OutOfCredits(f"embedding: HTTP {response.status_code}")
             if response.status_code not in (429, 500, 502, 503, 504):  # 503: the local server is loading
                 response.raise_for_status()
                 return response
-        except httpx.TransportError:
-            if attempt == ATTEMPTS - 1:
-                raise
-        await asyncio.sleep(min(60, 2**attempt))
-    raise RuntimeError(f"{route}: no answer after {ATTEMPTS} attempts")
+        except httpx.TransportError as err:
+            last = type(err).__name__
+        failing = failing or time.monotonic()
+        if time.monotonic() - failing > limits.PATIENCE:
+            raise limits.GaveUp("embedding requests", last)
+        attempt += 1
+        await limits.sleep(limits.backoff(attempt))
 
 
 def fit_dimensions(spec: Embedder, vectors: np.ndarray) -> np.ndarray:
@@ -204,9 +223,19 @@ def _fit(spec: Embedder, text: str) -> str:
     return text if len(starts) <= budget else text[: int(starts[budget])]
 
 
+MAX_REQUEST_CHARS = 75_000  # MemMachine's OpenAIEmbedder per-request cap: the ingest path sends no more either
+
+
 async def _embed_all(spec: Embedder, texts: list[str]) -> np.ndarray:
     semaphore = asyncio.Semaphore(spec.in_flight)
-    batches = [texts[i : i + spec.request_inputs] for i in range(0, len(texts), spec.request_inputs)]
+    batches, size = [[]], 0  # at most request_inputs inputs and MAX_REQUEST_CHARS characters per request
+    for t in texts:
+        if batches[-1] and (len(batches[-1]) == spec.request_inputs or size + len(t) > MAX_REQUEST_CHARS):
+            batches.append([])
+            size = 0
+        batches[-1].append(t)
+        size += len(t)
+    batches = [b for b in batches if b]
     out: list[np.ndarray | None] = [None] * len(batches)
     headers = {"Authorization": f"bearer {(SECRETS / spec.key_file).read_text().strip()}"} if spec.key_file else {}
     extra = {"model": spec.model, "encoding_format": "float"} if spec.model else {}

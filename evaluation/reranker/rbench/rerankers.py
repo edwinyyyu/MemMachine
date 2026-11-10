@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import sqlite3
 import time
 from dataclasses import dataclass
 from functools import cache
@@ -36,6 +35,7 @@ from functools import cache
 import numpy as np
 
 from rbench import credits, limits
+from rbench.dbs import connect
 from rbench.paths import SCORES, SECRETS
 from rbench.text import QWEN, tokenizer
 
@@ -174,8 +174,7 @@ class ScoreCache:
     def __init__(self, reranker: str):
         SCORES.mkdir(parents=True, exist_ok=True)
         self.reranker = reranker
-        self.db = sqlite3.connect(SCORES / f"{reranker}.sqlite")
-        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db = connect(SCORES / f"{reranker}.sqlite")
         self.db.execute("CREATE TABLE IF NOT EXISTS scores (key TEXT PRIMARY KEY, score REAL, tokens INTEGER)")
         self.db.execute("CREATE TABLE IF NOT EXISTS calls (at REAL, pairs INTEGER, tokens INTEGER, billed INTEGER, "
                         "cost REAL, seconds REAL, note TEXT)")
@@ -257,14 +256,15 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
             requests.append((query, batch))
     gate = limits.Gate(limits.limit_for(f"deepinfra:{model}"))
     stop: list[BaseException] = []
-    async with httpx.AsyncClient(timeout=300, headers={"Authorization": f"bearer {key}"}) as client:
+    pool = httpx.Limits(max_connections=limits.CAP, max_keepalive_connections=limits.CAP)  # httpx's default is 100
+    async with httpx.AsyncClient(timeout=300, headers={"Authorization": f"bearer {key}"}, limits=pool) as client:
 
         async def run(query: str, batch: list[tuple[str, str, int]]) -> bool:
             body = {"queries": [query] * len(batch), "documents": [d for _, d, _ in batch], "instruction": t.instruction}
             t0, failing, attempt = time.monotonic(), None, 0
             while True:
                 async with gate:
-                    if stop or (cancel is not None and cancel.is_set()):
+                    if stop or limits.CANCEL.is_set() or (cancel is not None and cancel.is_set()):
                         return False  # another request cannot succeed, or the run is stopping: send nothing more
                     try:
                         response = await client.post(DEEPINFRA_URL + model, json=body)
@@ -285,10 +285,13 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
                 if time.monotonic() - failing > limits.PATIENCE:
                     raise limits.GaveUp("reranking requests", last)
                 attempt += 1
-                await asyncio.sleep(limits.backoff(attempt))
+                await limits.sleep(limits.backoff(attempt))
             data = response.json()
             if len(data["scores"]) != len(batch):
                 raise RuntimeError(f"DeepInfra returned {len(data['scores'])} scores for {len(batch)} documents")
+            values = np.asarray(data["scores"], dtype=np.float64)
+            if not np.all(np.isfinite(values) & (values >= 0) & (values <= 1)):  # P(yes): a probability
+                raise RuntimeError(f"DeepInfra returned scores outside [0, 1]: {data['scores'][:5]}")
             status = data.get("inference_status") or {}
             billed = int(data.get("input_tokens") or status.get("tokens_input") or 0)
             rows = [(k, float(s), n) for (k, _, n), s in zip(batch, data["scores"], strict=True)]
@@ -308,6 +311,8 @@ async def _deepinfra(model: str, work: Work, t: Template, cache_: ScoreCache, no
         results = await asyncio.gather(*(guarded(q, b) for q, b in requests), return_exceptions=True)
     failures = [r for r in results if isinstance(r, BaseException)]
     cached = sum(r is True for r in results)
+    if not failures and limits.CANCEL.is_set() and cached < len(requests):
+        raise limits.Interrupted()  # Ctrl-C: the requests in flight finished and are cached
     for kind in (credits.OutOfCredits, limits.GaveUp):
         hit = [r for r in failures if isinstance(r, kind)]
         if hit:  # every request in flight has finished and is cached: stop cleanly
@@ -327,6 +332,8 @@ def score(reranker: str, work: Work, note: str, progress: bool = True, cancel=No
     shown = Progress(f"  {reranker} {note}", sum(len(items) for _, items in work), "pairs") if progress else None
     if spec.backend == "local":
         for g in range(0, len(work), GROUP_QUERIES):
+            if limits.CANCEL.is_set() or (cancel is not None and cancel.is_set()):
+                raise limits.Interrupted()  # between groups: each finished group is cached
             group = work[g : g + GROUP_QUERIES]
             _local(spec.hf_model, group, spec.template, cache_, note)
             if shown is not None:

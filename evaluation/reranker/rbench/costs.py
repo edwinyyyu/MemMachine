@@ -63,6 +63,27 @@ def _hours(model: str, tokens: float) -> float | str:
     return round(tokens / (rate * IN_FLIGHT) / 3600, 2)
 
 
+def disk_need(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> float:
+    """GB the stores not yet encoded will take (estimate's disk rows, alone)."""
+    def encoded(dataset: str, c: str, k: str) -> bool:
+        return (store_root(embedder, dataset, c) / "done" / k).exists()
+
+    todo: set[tuple[str, str, str, str]] = set()
+    for run in runs:
+        for c in run.chunkings:
+            todo |= {(run.dataset, run.scope, c, k) for k in pt.groups(run.dataset, sample_of(run.dataset, run.sample),
+                                                                         run.scope) if not encoded(run.dataset, c, k)}
+    total = 0.0
+    for dataset, scope, c in sorted({x[:3] for x in todo}):
+        ks = sorted(k for d, s, n, k in todo if (d, s, n) == (dataset, scope, c))
+        probe = ks[:: max(1, len(ks) // probes)][:probes]
+        stored = [pt.offline(dataset, k, c, scope)[1] for k in probe]
+        segments = float(np.mean([len(s) for s in stored])) * len(ks)
+        chars = float(np.mean([len(x.block.text) for s in stored for x in s])) if any(stored) else 0.0
+        total += disk_bytes(segments, chars, EMBEDDERS[embedder].dimensions) / 1e9
+    return total
+
+
 def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     """Reranker and embedding tokens (and dollars) a list of grid.Run needs.
 

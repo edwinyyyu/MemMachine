@@ -26,6 +26,7 @@ import random
 
 import numpy as np
 
+from rbench.dbs import replace_atomically
 from rbench import embedding as emb
 from rbench import partitions as pt
 from rbench.datasets.longmemeval import history
@@ -63,12 +64,15 @@ def _vectors(embedder: str, dataset: str, qid: str, texts: list[str], size: int)
     spec = emb.EMBEDDERS[embedder]
     path = VECTORS / "compare_prompts" / spec.documents / dataset / f"seg{size}" / f"{qid}.npy"
     if path.exists():
-        vectors = np.load(path)
-        if len(vectors) == len(texts):
+        try:
+            vectors = np.load(path)
+        except (OSError, ValueError):  # unreadable (an interrupted write before writes were atomic): embedded again
+            vectors = None
+        if vectors is not None and len(vectors) == len(texts):
             return vectors
     vectors = emb.embed(spec, texts, spec.doc_prompt).astype(np.float16)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, vectors)
+    replace_atomically(path, lambda temporary: np.save(temporary, vectors))
     return vectors
 
 

@@ -66,6 +66,7 @@ import pandas as pd
 from rbench import bounds, config, metrics, rankers
 from rbench import partitions as pt
 from rbench.datasets import info
+from rbench.dbs import replace_atomically
 from rbench.memory import RENDER, CachedReranker, Memory
 from rbench.paths import SIM
 from rbench.reading import admission, reading
@@ -300,7 +301,7 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
     out[curves] = out[curves].astype("float32")  # ~230 curve columns per row; float32 halves the files
     target = path(embedder, dataset, scope, variant, sample_name, chunking)
     target.parent.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(target, index=False)
+    replace_atomically(target, lambda temporary: out.to_parquet(temporary, index=False))
     return out
 
 
