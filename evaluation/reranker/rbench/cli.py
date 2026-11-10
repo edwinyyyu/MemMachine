@@ -104,16 +104,18 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("dataset", "chunking", "sample"):
         p.add_argument(name)
     ints = lambda text: tuple(int(x) for x in text.split(","))  # noqa: E731
-    for name in ("run", "adhoc", "show"):  # the values reports are drawn at (rbench/config.py)
+    for name in ("run", "adhoc", "show", "estimate"):  # the values reports are drawn at (rbench/config.py)
         sub.choices[name].add_argument("--budgets", type=ints, help="reader budgets, e.g. 500,1000,2000,4000")
         sub.choices[name].add_argument("--limits", type=ints, help="vector search limits shown, e.g. 10,20,50")
         sub.choices[name].add_argument("--readings", type=lambda text: tuple(text.split(",")),
                                        help="single-reading charts for these readings, e.g. every,first")
+        sub.choices[name].add_argument("--token-top", type=int,
+                                       help="where reader-token axes end, and the budget pools are deep enough to fill")
     args = parser.parse_args(argv)
-    if args.command in ("run", "adhoc", "show"):
+    if args.command in ("run", "adhoc", "show", "estimate"):
         from rbench import config
 
-        config.configure(budgets=args.budgets, limits=args.limits, readings=args.readings)
+        config.configure(budgets=args.budgets, limits=args.limits, readings=args.readings, token_top=args.token_top)
 
     if args.command == "prepare":
         for name in DATASETS if args.datasets == ["all"] else args.datasets:

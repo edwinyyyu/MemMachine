@@ -191,14 +191,17 @@ def _log_x(ax, base: int = 10, ticks=None) -> None:
 
 
 def _token_x(ax, top: int | None = None) -> None:
-    """Reader tokens on a linear axis: labelled every 500 (every 1,000 in narrow panels), minor gridlines every 250 (where
-    recall and precision are measured: metrics.CURVE_BUDGETS). Data beyond `top` is drawn and
-    can be panned to in `show`."""
-    ax.set_xlim(0, top or config.EVAL.token_top)
-    wide = ax.get_position().width * ax.figure.get_figwidth() >= 5.5  # inches: room for a label every 500
-    ax.xaxis.set_major_locator(MultipleLocator(500 if wide else 1000))
+    """Reader tokens on a linear axis to `top` (config.EVAL.token_top): labelled every 500,
+    1,000 or 2,000, whichever keeps the labels apart in the panel's width, with minor gridlines
+    at half the label step (recall and precision are measured every 250: metrics.CURVE_BUDGETS).
+    Data beyond `top` is drawn and can be panned to in `show`."""
+    top = top or config.EVAL.token_top
+    ax.set_xlim(0, top)
+    inches = ax.get_position().width * ax.figure.get_figwidth()
+    step = next((s for s in (500, 1000, 2000, 4000) if top / s <= 2.2 * inches), 4000)  # about 2 labels per inch
+    ax.xaxis.set_major_locator(MultipleLocator(step))
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: _human(v) if v else "0"))
-    ax.xaxis.set_minor_locator(MultipleLocator(250))
+    ax.xaxis.set_minor_locator(MultipleLocator(step / 2))
     ax.grid(which="minor", color=GRID, linewidth=0.5, alpha=0.7)
 
 

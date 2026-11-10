@@ -55,7 +55,18 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. `--max-usd` c
 
 ## Cost
 
-Each question's pool is the whole vector search: the depth D that holds all evidence for 95% of the sample's questions, measured per segment length and chunker after embedding (`python -m rbench depth`, `rbench/depth.py`). Every shallower vector search limit replays for free, so where returns diminish is read off the results. Reranking cost therefore depends on the measured D and is priced only once the histories are embedded: `estimate` reports each stage's pool and its reranker tokens and dollars (seeds and windows), and a stage it cannot price yet is listed as such. Embedding LongMemEval-M costs about $1.37 per segment length on DeepInfra (all 470 histories, 2026-11-06 list price). The earlier table (top 50 seeds) no longer applies.
+Each question's pool is deep enough that reading it fills the reader-token axis (`config.EVAL.token_top`, 16,000): curves keep rising across the axis rather than flattening because the pool is used up. The depth is measured per segment length, chunker and scoring position after embedding (`python -m rbench depth`, `rbench/depth.py`), and every shallower vector search limit replays for free. `estimate` prices each stage at its measured pools, seeds and windows separately; `--token-top` prices another axis end.
+
+Priced 2026-11-09 for the 8B at DeepInfra's $0.05/M, before the paid embeddings exist: pools measured on 8 locally embedded LongMemEval-M histories at 500 characters, the other segment lengths calibrated offline; `estimate` re-prices exactly once the histories are embedded.
+
+| axis end (reader tokens) | pools at 500 characters (seeds / windows) | lme-core | lme-sizes | lme-cut | total |
+|---|---|---|---|---|---|
+| 4,000 | 49 / 22 | $0.41 | $1.19 | $0.37 | $1.97 |
+| 8,000 | 101 / 41 | $0.80 | $2.34 | $0.73 | $3.87 |
+| 12,000 | 150 / 58 | $1.16 | $3.41 | $1.06 | $5.64 |
+| **16,000** (chosen) | 199 / 93 | $1.70 | $5.05 | $1.61 | **$8.35** |
+
+The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Embedding LongMemEval-M costs about $1.37 per segment length on DeepInfra (all 470 histories). Windows cost about as much as seeds: fewer of them fill the axis, but each pair is longer.
 
 Disk: keeping every history's vectors takes ~12 GB at 500 characters (float16); the four lengths together are estimated at 40–50 GB.
 

@@ -13,7 +13,11 @@ reads them from EVAL rather than hard-coding them.
   expansions   expand_context values replayed by the history simulation (EventMemory's default
                is 0). Rerank-then-expand is free at all of them; expand-then-rerank exists only
                where a run scored the windows (grid.py)
-  token_top    where the reader-token axes end (the data runs to metrics.CURVE_BUDGETS' last)
+  token_top    where the reader-token axes end, and the budget every pool is deep enough to fill
+               (depth.py: reading a pool does not run out before it). The user's rule: as high
+               as the price allows, not below 4,000 without asking. 16,000 priced the 8B at
+               about $8.35 for core, sizes and cut together (2026-11-09: 4,000 $1.97, 8,000
+               $3.87, 12,000 $5.64; pools from 8 LongMemEval-M histories)
   size_tolerance  how far apart (relative) two measured unit sizes may be and still be reported
                as matched, where a comparison pairs units by size (the expansion comparison);
                beyond it the report flags the pair as not size-matched
@@ -31,7 +35,7 @@ class Evaluation:
     limits: tuple[int, ...] = (10, 20, 50)
     readings: tuple[str, ...] = ("every",)
     expansions: tuple[int, ...] = (1, 2, 3, 6)
-    token_top: int = 8000
+    token_top: int = 16000
     size_tolerance: float = 0.25
 
 
