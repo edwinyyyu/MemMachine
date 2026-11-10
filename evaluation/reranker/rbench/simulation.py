@@ -191,7 +191,7 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
         async with Memory(embedder, dataset, chunking) as m:
             seg = await pt.table(m, dataset, p)
             partition = await (await m.event_memory()).open_or_create_partition(k)
-            chars = np.asarray([len(t) for t in seg.texts])
+            chars = seg.chars
             sizes = [float(chars.mean()), float(seg.tokens.mean())]
             for qi in members:
                 q = rows[qi]

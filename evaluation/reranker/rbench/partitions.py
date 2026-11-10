@@ -169,10 +169,19 @@ class Segments:
     tokens: np.ndarray  # embeddinggemma tokens of the segment text
     inner: np.ndarray  # reader-cost pieces (reading.Reader)
     run: np.ndarray
-    texts: tuple[str, ...]
 
     def __len__(self) -> int:
-        return len(self.texts)
+        return len(self.uuid)
+
+    @property
+    def chars(self) -> np.ndarray:
+        """Each segment's length in characters."""
+        return self.end - self.start
+
+    def text(self, p: Part, i: int) -> str:
+        """Segment i's text: its span of its event's text (segments are substrings of it, found
+        by offsets), so the table keeps no copy."""
+        return p.texts[self.event[i]][self.start[i] : self.end[i]]
 
 
 COLUMNS = ("event", "offset", "start", "end", "tokens", "inner", "run")
@@ -218,18 +227,31 @@ def _table(dataset: str, p: Part, segments: list[Segment]) -> Segments:
     tokens, inner, run = _costs(segments, formats(dataset).read)
     ints = lambda v: np.asarray(v, dtype=np.int64)  # noqa: E731
     return Segments(tuple(str(s.uuid) for s in segments), ints(event), ints([s.offset for s in segments]),
-                    ints([b[0] for b in bounds]), ints([b[1] for b in bounds]), tokens, inner, run,
-                    tuple(s.block.text for s in segments))
+                    ints([b[0] for b in bounds]), ints([b[1] for b in bounds]), tokens, inner, run)
+
+
+def _save_table(path, stamp: str, seg: Segments) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, stamp=np.str_(stamp), uuid=np.asarray(seg.uuid, dtype="S"),
+                        **{c: getattr(seg, c) for c in COLUMNS})
 
 
 async def table(m: Memory, dataset: str, p: Part) -> Segments:
-    """A stored partition's segments, read once per encoding and cached beside the stores."""
+    """A stored partition's segments, read once per encoding and cached beside the stores,
+    compressed. No texts (Segments.text reads them from the Part; segments.sqlite holds them
+    too), and uuids as ASCII bytes: numpy's str arrays are fixed-width UTF-32. A table written
+    before (with a UTF-32 copy of the texts, about 2 KB per segment) is rewritten in this form
+    when read."""
     path = m.root / "tables" / f"{p.key}.npz"
     stamp = m.done(p.key).read_text()
     if path.exists():
         data = np.load(path, allow_pickle=False)
-        if str(data["stamp"]) == stamp and all(c in data for c in COLUMNS):
-            return Segments(tuple(data["uuid"].tolist()), *(data[c] for c in COLUMNS), tuple(data["texts"].tolist()))
+        if str(data["stamp"]) == stamp and all(c in data for c in ("uuid", *COLUMNS)):
+            seg = Segments(tuple(data["uuid"].astype(str).tolist()), *(data[c] for c in COLUMNS))
+            if "texts" in data:  # the earlier form: drop the copy of the texts
+                data.close()
+                _save_table(path, stamp, seg)
+            return seg
     segment_store, _, _ = await m.stores()
     partition = await segment_store.open_partition(p.key)
     by_event = await partition.get_segment_uuids_by_event_uuids([e.uuid for e in p.events])
@@ -238,9 +260,7 @@ async def table(m: Memory, dataset: str, p: Part) -> Segments:
     for start in range(0, len(ids), 1000):
         found.update({k: v[0] for k, v in (await partition.get_segment_contexts(ids[start : start + 1000])).items()})
     seg = _table(dataset, p, _ordered(found.values()))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, stamp=np.str_(stamp), uuid=np.asarray(seg.uuid), texts=np.asarray(seg.texts),
-             **{c: getattr(seg, c) for c in COLUMNS})
+    _save_table(path, stamp, seg)
     return seg
 
 

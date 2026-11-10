@@ -69,7 +69,7 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
     w = [f"# Dry run: {dataset} · {qid} · {chunking_name} · {RERANKERS[model].hf_model}\n",
          "## 1. The query" + (f" ({kind})" if kind else "") + "\n", "> " + query.replace("\n", "\n> "), "",
          f"Its partition ({pt.scope_of(dataset)}): {len(p.events):,} events, {len(seg):,} EventMemory segments "
-         f"({chunking_name}; mean {np.mean([len(t) for t in seg.texts]):,.0f} characters), in EventMemory's order.\n"]
+         f"({chunking_name}; mean {seg.chars.mean():,.0f} characters), in EventMemory's order.\n"]
 
     w.append(f"## 2. The gold: {len(spans)} acceptable answer(s); every span of one is needed\n")
     for a, (alternative, mapped) in enumerate(zip(spans, g.alternatives, strict=True)):
@@ -83,7 +83,7 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
           "| rank | segment | from | tokens | cosine | gold | text |", "|---|---|---|---|---|---|---|"]
     for i, (c, sim) in enumerate(zip(head[:SHOW], sims[:SHOW], strict=True)):
         w.append(f"| {i + 1} | {c} | {_source(p, seg, int(c))} | {seg.tokens[c]} | {sim:.3f} | "
-                 f"{'yes' if int(c) in union else ''} | {_preview(seg.texts[c])} |")
+                 f"{'yes' if int(c) in union else ''} | {_preview(seg.text(p, c))} |")
     w.append("")
 
     tmpl = RERANKERS[model].template
@@ -115,7 +115,7 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
         c = int(head[i])
         in_window = any(x in union for x in units[expand][i])
         w.append(f"| {r_ + 1} | {i + 1} | {c} | {scored[0][0][i]:+.2f} | {scored[expand][0][i]:+.2f} | "
-                 f"{'yes' if c in union else 'no'} / {'yes' if in_window else 'no'} | {_preview(seg.texts[c])} |")
+                 f"{'yes' if c in union else 'no'} / {'yes' if in_window else 'no'} | {_preview(seg.text(p, c))} |")
     w.append("")
 
     d = Depth(n)
@@ -124,7 +124,7 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
                f"rerank seeds, then expand {expand}": Ranker("rerank", model, d, expand=expand),
                f"expand {expand}, then rerank windows": Ranker("xrerank", model, d, expand=expand),
                f"perfect reranker (depth {n}, evidence first)": Ranker("oracle", depth=d)}
-    chars = np.asarray([len(t) for t in seg.texts])
+    chars = seg.chars
     w += ["## 5. Reading each order as EventMemory renders it, and every measurement\n",
           "Segments are admitted as EventMemory's segment limit grows; the reader cost is the token count of the "
           "rendered context (headers, JSON text, windows merged). A reranked order reads only its pool. *first* / "

@@ -30,7 +30,8 @@ def test_segments_are_in_eventmemory_order_and_gold_maps_to_segments():
         session = [int(p.labels[e].split(",")[0].removeprefix("session ")) for e in seg.event]
         keys = [(s.timestamp, s.event_uuid, s.index, s.offset) for s in segments]
         assert keys == sorted(keys)  # ids are EventMemory's (timestamp, event, index, offset) order
-        assert np.all(np.diff(seg.event) >= 0) and all(t.strip() for t in seg.texts)
+        assert np.all(np.diff(seg.event) >= 0) and all(seg.text(p, i).strip() for i in range(len(seg)))
+        assert [seg.text(p, i) for i in range(len(seg))] == [s.block.text for s in segments]  # spans are the segments
         firsts = np.flatnonzero(np.r_[True, np.diff(seg.event) > 0])
         assert len({segments[i].timestamp for i in firsts}) == len(firsts)  # every turn has its own timestamp
         turns = pt.gold(pt.gold_spans("longmemeval_s", q, p), p, seg).alternatives[0]

@@ -32,8 +32,8 @@ def test_document_gold_maps_to_segments(chunking):
         rows = queries(dataset)
         for k, members in pt.groups(dataset, sample(dataset, "tiny")).items():
             p = pt.part(dataset, rows[members[0]])
-            seg = pt.offline(dataset, k, chunking)[0]
-            assert all(p.texts[e][s:t] == x for e, s, t, x in zip(seg.event, seg.start, seg.end, seg.texts, strict=True))
+            seg, segments, _ = pt.offline(dataset, k, chunking)
+            assert [seg.text(p, i) for i in range(len(seg))] == [s.block.text for s in segments]
             for qi in members:
                 g = pt.gold(pt.gold_spans(dataset, rows[qi], p), p, seg)
                 assert all(span and sum(n for _, n in span) > 0 for alt in g.alternatives for span in alt), (dataset, k)
@@ -49,7 +49,7 @@ def test_documents_render_and_embed_without_dates_or_producers():
     seg, segments, texts = pt.offline(dataset, p.key, "seg500")
     f = pt.formats(dataset)
     for i in np.linspace(0, len(seg) - 1, 5).astype(int):
-        plain = json.dumps(seg.texts[i], ensure_ascii=False)
+        plain = json.dumps(seg.text(p, i), ensure_ascii=False)
         assert texts[i] == plain  # the embedding text is the segment's JSON text alone
         assert EventMemory.string_from_segment_context([segments[i]], format_options=f.rerank) == plain
         assert EventMemory.string_from_segment_contexts([[segments[i]]], format_options=f.read) == plain

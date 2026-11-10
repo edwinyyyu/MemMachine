@@ -192,7 +192,35 @@ def test_a_new_encoding_refreshes_the_segment_table(tmp_path, monkeypatch):
             m.done("h").unlink()  # as if the encoding had been interrupted: encoded again
             assert await m.ingest("h", events)
             again = await pt.table(m, "synthetic", p)
-            assert again.texts == first.texts and again.uuid != first.uuid  # new uuids, table refreshed
+            assert all(np.array_equal(getattr(again, c), getattr(first, c)) for c in pt.COLUMNS)
+            assert again.uuid != first.uuid  # new uuids, table refreshed
+
+    _run(go())
+
+
+def test_a_table_in_the_earlier_form_is_rewritten_without_texts(tmp_path, monkeypatch):
+    """A table written with a UTF-32 copy of the texts reads the same and is rewritten in the
+    compressed, text-free form."""
+    events = _events(12)
+    monkeypatch.setattr(pt, "formats", lambda dataset: pt.CHAT)
+    p = pt.Part("h", tuple(events), tuple(f"turn {i}" for i in range(len(events))),
+                tuple(e.blocks[0].text for e in events))
+
+    async def go():
+        async with Memory("fake", "synthetic", "seg80", root=tmp_path, backend=FakeEmbedder()) as m:
+            await m.ingest("h", events)
+            seg = await pt.table(m, "synthetic", p)
+            path = m.root / "tables" / "h.npz"
+            stamp = m.done("h").read_text()
+            np.savez(path, stamp=np.str_(stamp), uuid=np.asarray(seg.uuid),
+                     texts=np.asarray([seg.text(p, i) for i in range(len(seg))]),
+                     **{c: getattr(seg, c) for c in pt.COLUMNS})  # the earlier form
+            old = path.stat().st_size
+            again = await pt.table(m, "synthetic", p)
+            assert again.uuid == seg.uuid and all(np.array_equal(getattr(again, c), getattr(seg, c)) for c in pt.COLUMNS)
+            with np.load(path) as data:
+                assert "texts" not in data and data["uuid"].dtype.kind == "S"
+            assert path.stat().st_size < old / 3
 
     _run(go())
 
