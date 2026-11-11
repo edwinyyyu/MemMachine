@@ -39,7 +39,7 @@ uv sync
 .venv/bin/python -m pytest -q tests
 .venv/bin/python -m rbench prepare longmemeval_m longmemeval_s   # download and split into histories
 .venv/bin/python -m rbench run lme-test                          # free: local, 8 LongMemEval-S histories
-.venv/bin/python -m rbench estimate lme-pilot lme-core               # the minimal paid run; uses Qwen3-Embedding-8B
+.venv/bin/python -m rbench estimate lme-pilot lme-core               # the minimal paid run; first stage embedding.PAID (embeddinggemma-300m)
 .venv/bin/python -m rbench show longmemeval_s --sample tiny --chart coverage,rpf   # zoomable chart windows from saved results
 ```
 
@@ -59,7 +59,7 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no s
 
 ### On EC2 (Amazon Linux 2023)
 
-The paid stages run on an EC2 instance with the data on a separate EBS volume mounted at `/data` (`RBENCH_DATA` moves everything under `data/`; results stay in the clone). Nothing needs a Hugging Face login: every tokenizer the paid path loads is Qwen3's, which is public (METHODOLOGY section 2, "Tokenizer").
+The paid stages run on an EC2 instance with the data on a separate EBS volume mounted at `/data` (`RBENCH_DATA` moves everything under `data/`; results stay in the clone). Reader tokens are counted with Qwen3's tokenizer, which is public (METHODOLOGY section 2, "Tokenizer"); the paid first stage, embeddinggemma-300m, is billed in its own tokens, and `estimate` and `run` count them with its tokenizer, which is gated on Hugging Face: log in once (`.venv/bin/hf auth login`, an account that has accepted the model's license) before either.
 
 ```sh
 sudo dnf install -y git tmux
@@ -73,6 +73,7 @@ source ~/.bashrc
 cd <clone>/evaluation/reranker && git pull --ff-only
 uv sync --python 3.14
 (umask 077; mkdir -p .secrets; read -rsp 'DeepInfra key: ' K; printf %s "$K" > .secrets/deepinfra_api_key; unset K; echo)
+.venv/bin/hf auth login                                    # embeddinggemma's tokenizer (gated), for its billed tokens
 .venv/bin/python -m rbench prepare longmemeval_m
 .venv/bin/python -m pytest -q tests                        # passes and skips, no failures
 .venv/bin/python -m rbench estimate lme-pilot lme-core     # exact counts: a few minutes of CPU the first time
@@ -84,6 +85,8 @@ Then the preflight above (inside `tmux`), and `run lme-pilot`. The permanent emb
 
 The pools are fixed: the reranker scores the top 200 seeds, or the top 100 windows (`config.EVAL.pool_seeds`, `pool_windows`; the user's decision, 2026-11-10), at every segment length, and every shallower vector search limit replays for free. `estimate` prices each stage at them and reports, beside each pool, for how many questions reading it reaches the reader-token axis end (16,000) and for how many it holds all the evidence (`rbench/depth.py`). At shorter segments the same pool holds less text, so the curves level off earlier.
 
+**The minimal run with embeddinggemma-300m**, the first stage since 2026-11-11 (`estimate lme-pilot lme-core`, embedding counted exactly): the pilot **$0.54** (embedding $0.27, 132.6M tokens; reranking 4B $0.09, 8B $0.18) and 8.9 GB; the pilot and the core **$2.42** (embedding $1.16, 578.8M tokens; reranking $1.26) and 39.5 GB. The table below was priced with Qwen3-Embedding-8B as the first stage; embeddinggemma's embedding costs about a fifth of that column ($0.002 against $0.010 per million tokens), and `estimate` gives current figures.
+
 Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-sizes lme-cut`), before the paid embeddings exist: pair tokens probed on 8 LongMemEval-M histories per chunking; `estimate` re-prices exactly once the histories are embedded.
 
 | stage | reranking | embedding (Qwen3-Embedding-8B) | total | disk |
@@ -94,11 +97,11 @@ Priced 2026-11-10 for the 8B at DeepInfra's $0.05/M (`estimate lme-core lme-size
 | lme-cut (cut355; 8B seeds and windows) | $1.80 | $6.48 | $8.28 | 58 GB |
 | all four | $11.17 | $31.52 | $42.69 | 282 GB |
 
-The minimal run's embedding and disk are exact (2026-11-10: every distinct derived text counted with the embedder's tokenizer, `costs.exact_counts`; texts already in the permanent copy are not counted again); its reranking is still probed on 8 histories, since the pairs depend on what the vector search retrieves (`estimate` re-prices it exactly once the histories are embedded). The pilot alone is $1.57. Its disk is for the benchmark's own vector store (`rbench/vectorstore.py`), measured: per segment, the segment store and the vector store's record (about 1.2 KB at seg500); per distinct text, one row of the permanent float32 copy (the vector plus 625 B), which is the store's only copy of the vectors. The other rows were priced earlier, by probing 8 histories, with the older layout's disk (a float16 index besides the copy); `estimate` gives current figures. `run` refuses to start when the new stores would not fit.
+The minimal run's embedding and disk are exact (2026-11-10: every distinct derived text counted with the embedder's tokenizer, `costs.exact_counts`; texts already in the permanent copy are not counted again); its reranking is still probed on 8 histories, since the pairs depend on what the vector search retrieves (`estimate` re-prices it exactly once the histories are embedded). The pilot alone was $1.57 with the 8B ($0.54 with embeddinggemma). Its disk is for the benchmark's own vector store (`rbench/vectorstore.py`), measured: per segment, the segment store and the vector store's record (about 1.2 KB at seg500); per distinct text, one row of the permanent float32 copy (the vector plus 625 B), which is the store's only copy of the vectors. The other rows were priced earlier, by probing 8 histories, with the older layout's disk (a float16 index besides the copy); `estimate` gives current figures. `run` refuses to start when the new stores would not fit.
 
 On 8 locally embedded LongMemEval-M histories at seg500 (reader tokens counted with Qwen3's tokenizer, 2026-11-10), reading 200 seeds reaches 16,000 tokens for 6 of 8 (the fill depth at 16,000 is 197 seeds at the median, 209 at most) and holds all the evidence for 7 of 8; 100 windows reach it for all 8 and hold all the evidence for all 8. The pilot (100 questions) is part of the core. The 4B costs half the 8B's price, the 0.6B a fifth. Longer segments cost more to rerank at the same pool (each pair is longer): seg2000's seeds are $1.34, against $0.84 at seg500.
 
-Embedding costs more than reranking (Qwen3-Embedding-8B at $0.010/M; embeddinggemma was about $1.37 per length). The minimal run (the user's decisions, 2026-11-09 and 2026-11-10) is the pilot and the core, $6.94: seg500, the seeds scored by both the 4B and the 8B, no windows scored, plus the checks; disk 42.9 GB at 1,024 dimensions, or 126.5 GB keeping 4,096 (searched at 1,024 by truncation if `embed-checks` check 6 passes). `lme-windows` is optional. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
+With Qwen3-Embedding-8B as the first stage, embedding cost more than reranking ($0.010/M; embeddinggemma's embedding is $1.16 for the minimal run). The minimal run (the user's decisions, 2026-11-09 and 2026-11-10) is the pilot and the core, $6.94 with the 8B ($2.42 with embeddinggemma): seg500, the seeds scored by both the 4B and the 8B, no windows scored, plus the checks; disk 42.9 GB at 1,024 dimensions, or 126.5 GB keeping 4,096 (searched at 1,024 by truncation if `embed-checks` check 6 passes). `lme-windows` is optional. `lme-sizes` and `lme-cut` stay in the plan, unscheduled. The simple chunker is size-matched to seg500 (cut355 on LongMemEval-M: its length fitted so the mean segments match, METHODOLOGY section 3).
 
 Disk for the other stages: `estimate <stage>` (exact counts, a few minutes of CPU per chunking the first time, cached in `data/counts/`).
 

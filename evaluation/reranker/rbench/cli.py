@@ -34,8 +34,8 @@
 run, adhoc and show take --budgets, --limits and --readings: the values reports are drawn at
 (defaults in rbench/config.py).
 run, adhoc, estimate, explain and depth take --embedder: the first stage. Default: the stage's own
-(qwen3-8b-di, Qwen3-Embedding-8B on DeepInfra, for the paid LongMemEval-M stages), else gemma300m-raw (the
-local server, free). show takes --embedder for whose results to draw (default gemma300m-raw).
+(embedding.PAID: gemma300m-di-raw, embeddinggemma-300m on DeepInfra, for the paid LongMemEval-M stages),
+else gemma300m-raw (the local server, free). show takes --embedder for whose results to draw (default gemma300m-raw).
 """
 
 from __future__ import annotations

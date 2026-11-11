@@ -18,3 +18,6 @@ results/*
 !results/summary/
 results/summary/*
 !results/summary/embedders__longmemeval_m__seg500__200q__gemma300m.md
+!results/summary/embedders__longmemeval_m__seg500__100q__qwen3-8b-di_qwen3-8b-di-raw_gemma300m-di-raw.md
+!results/summary/embedders__longmemeval_m__seg500__200q__20setups_5305a54e.md
+!results/summary/widths__longmemeval_m__seg500__100q__qwen3-8b-di.md

@@ -151,7 +151,12 @@ FULL = 4096
 EMBEDDERS |= {f"{name}-{FULL}": replace(EMBEDDERS[name], name=f"{name}-{FULL}", dimensions=FULL, doc_store=f"qwen3-8b-di-{FULL}")
               for name in [n for n in EMBEDDERS if n.startswith("qwen3-8b-di")]}
 # max_input_chars 40,000: pieces of dense code (about 1.7 characters per token) stay under 32k tokens.
-PAID = "qwen3-8b-di"  # the paid stages' first stage; the instruction setting is pending compare-embedders
+# The paid stages' first stage (the user's decision, 2026-11-11, replacing Qwen3-Embedding-8B):
+# embeddinggemma-300m on DeepInfra with no prompts, what MemMachine's OpenAI-compatible embedder
+# sends. On the 200-question grid it tied for best (MRR 0.664; Qwen3-0.6B 0.677, interval
+# including 0) and was the most robust across setups and question types, while Qwen3-4B and -8B
+# trailed by about 0.2 in every setup; the user: no 8B unless it can be made to perform well.
+PAID = "gemma300m-di-raw"
 
 # No prompts (compare_embedders.py, 200 LongMemEval-M questions, 2026-11-06): the query prompt
 # makes the first stage slightly worse (every@5 -0.05, MRR -0.06, intervals excluding 0); the
