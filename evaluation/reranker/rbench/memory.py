@@ -371,6 +371,8 @@ class QueryCachingEmbedder(Embedder):
         spec = emb.EMBEDDERS[embedder]
         if spec.doc_prompt:
             raise ValueError(f"{embedder} has a document prompt; EventMemory's OpenAIEmbedder sends documents as they are")
+        if spec.doc_format != "date-speaker":  # EventMemory derives its own documents
+            raise NotImplementedError(f"{embedder} reformats documents: compared in compare-embedders, not run in EventMemory")
         if spec.query_date:  # EventMemory passes the bare question; a dated first stage is compare-embedders' only
             raise NotImplementedError(f"{embedder} dates its queries: compared in compare-embedders, not run in EventMemory")
         key = (SECRETS / spec.key_file).read_text().strip() if spec.key_file else "none"

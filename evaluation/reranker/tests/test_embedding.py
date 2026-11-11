@@ -154,3 +154,42 @@ def test_a_dated_query_embeds_as_the_deriver_heads_a_segment():
         spec.render_query("Where?")
     with pytest.raises(NotImplementedError):
         memory.QueryCachingEmbedder("gemma300m-di-raw-date-user")
+
+
+def test_document_formats_drop_exactly_eventmemorys_header_parts():
+    t = '[Saturday, May 20, 2023] Assistant: "a: [b] \\"c\\"\\nd"'
+    fmt = {f: embedding.document_text(embedding.EMBEDDERS[f"gemma300m-di-raw-docs-{f}"], t) for f in ("speaker", "date", "text")}
+    assert fmt == {"speaker": 'Assistant: "a: [b] \\"c\\"\\nd"', "date": '[Saturday, May 20, 2023] "a: [b] \\"c\\"\\nd"',
+                   "text": '"a: [b] \\"c\\"\\nd"'}
+    assert embedding.document_text(embedding.EMBEDDERS["gemma300m-di-raw"], t) == t
+    with pytest.raises(ValueError, match="EventMemory"):
+        embedding.document_text(embedding.EMBEDDERS["gemma300m-di-raw-docs-text"], "plain text")
+    docs = {embedding.EMBEDDERS[f"gemma300m-di-raw-docs-{f}"].documents for f in ("speaker", "date", "text")}
+    assert len(docs) == 3 and embedding.EMBEDDERS["gemma300m-di-raw"].documents not in docs  # each its own vectors
+
+
+def test_the_no_date_format_is_eventmemorys_own_without_the_date():
+    """"speaker" is what WholeTextDeriver gives with FormatOptions(date_style=None, time_style=None)."""
+    from rbench.paths import PREPARED
+
+    if not (PREPARED / "longmemeval_m" / "queries.jsonl").exists():
+        pytest.skip("needs LongMemEval-M prepared")
+    from rbench import partitions as pt
+    from rbench.samples import sample
+    from rbench.schema import queries
+    from memmachine_server.episodic_memory.event_memory.data_types import FormatOptions
+    from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import _format_for_embedding
+
+    q = queries("longmemeval_m")[sorted(sample("longmemeval_m", "proto"))[0]]
+    _, segments, texts = pt.offline("longmemeval_m", pt.key("longmemeval_m", q, "history"), "seg500")
+    spec = embedding.EMBEDDERS["gemma300m-di-raw-docs-speaker"]
+    none = FormatOptions(date_style=None, time_style=None)
+    for s, t in list(zip(segments, texts, strict=True))[:200]:
+        assert embedding.document_text(spec, t) == _format_for_embedding(s, s.block.text, none)
+
+
+def test_a_document_format_is_refused_inside_eventmemory():
+    from rbench import memory
+
+    with pytest.raises(NotImplementedError, match="reformats documents"):
+        memory.QueryCachingEmbedder("gemma300m-di-raw-docs-speaker")

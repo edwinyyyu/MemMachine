@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import time
 from dataclasses import dataclass, replace
@@ -66,6 +67,8 @@ class Embedder:
     special_tokens: int = 2  # added per input (BOS and EOS for embeddinggemma; EOS for Qwen3)
     query_producer: str | None = None  # set: a query is rendered as EventMemory renders a message by this producer
     query_date: bool = False  # the query is headed by its date as EventMemory heads an embedded segment: "[<date>] "
+    query_quote: bool = False  # with no query producer: the query JSON-quoted, as a document's text is
+    doc_format: str = "date-speaker"  # compare-embedders only: which of EventMemory's header parts documents keep (DOC_FORMATS)
 
     @property
     def documents(self) -> str:
@@ -78,7 +81,10 @@ class Embedder:
         who is asking; a dated embedder heads it with the date as the deriver does,
         `[<date>] User: "<query>"` (date: partitions.query_date(..., for_embedding=True)).
         Otherwise the query as it is."""
-        text = query if self.query_producer is None else as_message(self.query_producer, query)
+        if self.query_producer is not None:
+            text = as_message(self.query_producer, query)
+        else:
+            text = json.dumps(query, ensure_ascii=False) if self.query_quote else query
         if self.query_date:
             if not date:
                 raise ValueError(f"{self.name} embeds the query's date, and none was given")
@@ -123,6 +129,33 @@ EMBEDDERS |= {f"{server}-raw-user": replace(EMBEDDERS[f"{server}-raw"], name=f"{
 # "-raw-user" (no date) and "-raw" (the bare query), in compare-embedders.
 EMBEDDERS |= {f"{server}-raw-date-user": replace(EMBEDDERS[f"{server}-raw-user"], name=f"{server}-raw-date-user",
                                                  query_date=True) for server in SERVERS}
+# Document formats (the user's request, 2026-11-11, for the core's first stage): EventMemory embeds
+# `[<date>] <producer>: "<text>"`; compare-embedders can drop the date ("speaker"; EventMemory's own
+# FormatOptions(date_style=None, time_style=None) gives this), the producer ("date"; needs a deriver
+# change in production) or both ("text"), each with its own document vectors, against the bare query
+# and the matching one. Fixed before it runs: a format beats EventMemory's only if its better pairing
+# minus gemma300m-di-raw excludes 0 on every@k averaged over k or on MRR.
+DOC_FORMATS = ("date-speaker", "speaker", "date", "text")
+_EMBEDDED = re.compile(r'\[(?P<date>[^\]]+)\] (?P<producer>[^:"]+): (?P<body>".*")', re.DOTALL)
+_MATCHING = {"speaker": dict(query_producer="User"), "date": dict(query_quote=True, query_date=True),
+             "text": dict(query_quote=True)}
+for _fmt, _query in _MATCHING.items():
+    _base = replace(EMBEDDERS["gemma300m-di-raw"], doc_format=_fmt, doc_store=f"gemma300m-di-nodoc-{_fmt}")
+    EMBEDDERS[f"gemma300m-di-raw-docs-{_fmt}"] = replace(_base, name=f"gemma300m-di-raw-docs-{_fmt}")
+    EMBEDDERS[f"gemma300m-di-raw-docs-{_fmt}-match"] = replace(_base, name=f"gemma300m-di-raw-docs-{_fmt}-match", **_query)
+
+
+def document_text(spec: Embedder, text: str) -> str:
+    """A segment's embedding text in the embedder's document format: EventMemory's own
+    (`[<date>] <producer>: "<text>"`) or it less the date, the producer, or both. A text not in
+    EventMemory's form is refused, so a format never silently passes text through unchanged."""
+    if spec.doc_format == "date-speaker":
+        return text
+    m = _EMBEDDED.fullmatch(text)
+    if m is None:
+        raise ValueError(f"not EventMemory's embedding form: {text[:80]!r}")
+    date, producer, body = m["date"], m["producer"], m["body"]
+    return {"speaker": f"{producer}: {body}", "date": f"[{date}] {body}", "text": body}[spec.doc_format]
 # Qwen3-Embedding-8B on DeepInfra (the user's decision, 2026-11-09: the default first stage, at
 # 1,024 dimensions; production may use it). Model card (checked 2026-11-09): queries are
 # "Instruct: {task}\nQuery:{query}" (the card's Python has no space after "Query:"), documents get

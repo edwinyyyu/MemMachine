@@ -87,7 +87,7 @@ def _vectors(embedder: str, dataset: str, qid: str, texts: list[str], size: int)
             vectors = None
         if vectors is not None and len(vectors) == len(texts):
             return vectors
-    vectors = emb.embed(spec, texts, spec.doc_prompt).astype(np.float16)
+    vectors = emb.embed(spec, [emb.document_text(spec, t) for t in texts], spec.doc_prompt).astype(np.float16)
     path.parent.mkdir(parents=True, exist_ok=True)
     replace_atomically(path, lambda temporary: np.save(temporary, vectors))
     return vectors
