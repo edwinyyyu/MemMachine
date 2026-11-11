@@ -520,8 +520,20 @@ class CachedReranker(Reranker):
     error. mode "record": misses are collected in `work` (scored 0) for a paid run to score.
     Either way, every pair asked for is kept in `asked`, in order."""
 
-    def __init__(self, model: str, mode: str = "replay") -> None:
+    def __init__(self, model: str, mode: str = "replay", dataset: str | None = None) -> None:
         self.model, self.mode = model, mode
+        self.dates: dict[str, str] = {}  # query text -> its rendered date, for a dated reranker (query_for)
+        if RERANKERS[model].query_date:
+            from rbench import partitions as pt
+            from rbench.schema import queries
+
+            if dataset is None:
+                raise ValueError(f"{model} reads each query's date: give the dataset")
+            for q in queries(dataset):
+                for text in q["variants"].values():
+                    date = pt.query_date(dataset, q)
+                    if self.dates.setdefault(text, date) != date:
+                        raise ValueError(f"{model}: the query {text[:60]!r} has two dates in {dataset}")
         self.cache = ScoreCache(model)
         self.prompt = prompt_key(RERANKERS[model].template)
         self.work: dict[str, list[tuple[str, str]]] = {}  # question -> [(cache key, rendered context)] not scored
@@ -531,7 +543,7 @@ class CachedReranker(Reranker):
         return [ScoreCache.key(self.prompt, RENDER, query, c) for c in candidates]
 
     async def score(self, query: str, candidates: list[str]) -> list[float]:
-        query = query_for(self.model, query)  # what this reranker reads: work and asked are keyed by it
+        query = query_for(self.model, query, self.dates.get(query))  # what it reads: work and asked are keyed by it
         keys = self.keys(query, candidates)
         known = {k for k, _ in self.asked.setdefault(query, [])}
         for k, c in zip(keys, candidates, strict=True):  # in order, each key once (identical contexts render alike)

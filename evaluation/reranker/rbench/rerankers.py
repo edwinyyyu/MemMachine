@@ -97,6 +97,7 @@ class Reranker:
     # differ by shape, never by dashes (report/figures.py)
     markers: tuple[str, str] = ("2", "1")  # up caltrop: seeds; down caltrop: windows
     query_producer: str | None = None  # set: the query is sent as this producer's message (query_for)
+    query_date: bool = False  # the query is prefixed with its date as EventMemory heads a segment: "[<date>] "
 
     @property
     def price(self) -> float:
@@ -126,6 +127,12 @@ RERANKERS = {
     "q4-mem-user": Reranker("q4-mem-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025,
                             "Qwen3-Reranker-4B, memory instruction, User: query", "#eb6834", template=QWEN3_CARD_MEMORY,
                             query_producer="User"),
+    # The user's date arm (2026-11-11): the query as a dated message, `[<date>] User: "<query>"`,
+    # its date rendered as the documents' are (partitions.query_date); against "q4-mem-user"
+    # (no date) and "q4-mem" (the bare query).
+    "q4-mem-date-user": Reranker("q4-mem-date-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025,
+                                 "Qwen3-Reranker-4B, memory instruction, dated User: query", "#1baf7a",
+                                 template=QWEN3_CARD_MEMORY, query_producer="User", query_date=True),
 }
 # Instruction candidates for the 4B, tuned on the held-out sample "tune" (questions 101-200) with
 # the card's ("q4") and the user's ("q4-mem") as references; the user reviewed them and dropped
@@ -154,12 +161,19 @@ RERANKERS |= {
 PAID = [m for m, r in RERANKERS.items() if r.backend == "deepinfra"]
 
 
-def query_for(reranker: str, query: str) -> str:
+def query_for(reranker: str, query: str, date: str | None = None) -> str:
     """The query text a reranker reads: as it is, or as its query producer's message (the
-    `User: "<query>"` rendering the embedders' "-user" format uses). Every cache key and pair is
-    built from this, so a rendered query never reuses or mixes with the bare query's scores."""
-    producer = RERANKERS[reranker].query_producer
-    return query if producer is None else as_message(producer, query)
+    `User: "<query>"` rendering the embedders' "-user" format uses), headed by its date for a
+    dated reranker (`[<date>] User: "<query>"`, as EventMemory heads a segment; date: the
+    rendered date, partitions.query_date). Every cache key and pair is built from this, so a
+    rendered query never reuses or mixes with another rendering's scores."""
+    spec = RERANKERS[reranker]
+    text = query if spec.query_producer is None else as_message(spec.query_producer, query)
+    if spec.query_date:
+        if not date:
+            raise ValueError(f"{reranker} reads the query's date, and none was given")
+        text = f"[{date}] {text}"
+    return text
 
 
 def prompt_key(t: Template) -> str:

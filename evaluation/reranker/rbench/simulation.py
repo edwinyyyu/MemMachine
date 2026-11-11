@@ -288,7 +288,7 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
                                                                     limit)
                 g = pt.gold(pt.gold_spans(dataset, q, p), p, seg)
                 _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, prompts, caches,
-                        all_rankers, records, dropped)
+                        all_rankers, records, dropped, pt.query_date(dataset, q))
                 order.append(qi)
                 progress.step()
     frames = []
@@ -310,11 +310,12 @@ async def _run(embedder: str, dataset: str, chunking: str, sample_name: str, mod
 
 
 def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, prompts, caches, all_rankers, records,
-            dropped) -> None:
+            dropped, date: str | None = None) -> None:
     """Every ranker's reading of one query, appended to records (dropping a configuration
     whose scores do not reach its depth for this query)."""
-    overheads = {m: pair_overhead(query_for(m, query), RERANKERS[m].template) for m in models}
-    scores = {(m, e): scored_prefix(caches[m], m, keys_for_hashes(query_for(m, query), prompts[m], texts[e])) for m in models
+    overheads = {m: pair_overhead(query_for(m, query, date), RERANKERS[m].template) for m in models}
+    scores = {(m, e): scored_prefix(caches[m], m, keys_for_hashes(query_for(m, query, date), prompts[m], texts[e]))
+              for m in models
               for e in units}  # texts: the rendered contexts' hashes (first_stage_cached)
     unit_tokens = {e: float(np.mean([seg.tokens[u].sum() for u in units[e]])) if units[e] else 0.0 for e in units}
     priority = {e: np.asarray([2 if any(i in g.union for i in u) else 0 for u in units[e]]) for e in units}
@@ -397,7 +398,7 @@ async def _record(embedder: str, dataset: str, chunking: str, sample_name: str, 
                   pool_seeds: int, scope: str, variant: str) -> CachedReranker:
     rows = queries(dataset)
     fmt = pt.formats(dataset)
-    reranker = CachedReranker(model, mode="record")
+    reranker = CachedReranker(model, mode="record", dataset=dataset)
     for k, members in pt.groups(dataset, sample(dataset, sample_name), scope).items():
         async with Memory(embedder, dataset, chunking) as m:
             partition = await (await m.event_memory(reranker)).open_or_create_partition(k)

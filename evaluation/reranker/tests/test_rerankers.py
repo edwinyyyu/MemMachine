@@ -125,3 +125,32 @@ def test_the_tuning_candidates_are_the_reviewed_texts_in_the_card_format():
         t = rerankers.RERANKERS[f"q4-{c}"].template
         assert t.instruction == text and (t.prefix, t.format, t.suffix) == (QWEN3_CARD.prefix, QWEN3_CARD.format, QWEN3_CARD.suffix)
         assert rerankers.RERANKERS[f"q4-{c}"].query_producer is None and rerankers.RERANKERS[f"q4-{c}"].hf_model.endswith("4B")
+
+
+def test_a_dated_query_is_headed_as_eventmemory_heads_a_segment(tmp_path, monkeypatch):
+    """`[<date>] User: "<query>"`, the date by EventMemory's format_timestamp with the reranker's
+    format (as every document the reranker reads is headed); a dated reranker needs the date."""
+    import asyncio
+    import json
+
+    from rbench import memory, partitions as pt
+    from rbench.datasets.longmemeval import session_datetime
+    from memmachine_server.episodic_memory.event_memory.formatting import format_timestamp
+
+    row = {"variants": {"question": 'Is "it" here?'}, "features": {"question_date": "2023/05/30 (Tue) 23:31"}}
+    date = pt.query_date("longmemeval_m", row)
+    assert date == format_timestamp(session_datetime("2023/05/30 (Tue) 23:31"), pt.formats("longmemeval_m").rerank)
+    assert date == "Tuesday, May 30, 2023, 11:31 PM"
+    q = row["variants"]["question"]
+    assert rerankers.query_for("q4-mem-date-user", q, date) == f"[{date}] User: {json.dumps(q, ensure_ascii=False)}"
+    assert rerankers.query_for("q4-mem-user", q, date) == f"User: {json.dumps(q, ensure_ascii=False)}"  # no date asked
+    with pytest.raises(ValueError, match="date"):
+        rerankers.query_for("q4-mem-date-user", q)
+    assert pt.query_date("x", {"features": {}}) is None
+    monkeypatch.setattr(rerankers, "SCORES", tmp_path)
+    monkeypatch.setattr("rbench.schema.queries", lambda dataset: [row])
+    r = memory.CachedReranker("q4-mem-date-user", mode="record", dataset="longmemeval_m")
+    asyncio.run(r.score(q, ["[Saturday, May 20, 2023, 1:01 PM] User: \"doc\""]))
+    assert list(r.work) == [f"[{date}] User: {json.dumps(q, ensure_ascii=False)}"]
+    with pytest.raises(ValueError, match="dataset"):
+        memory.CachedReranker("q4-mem-date-user", mode="record")

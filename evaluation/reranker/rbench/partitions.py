@@ -51,6 +51,7 @@ from memmachine_server.episodic_memory.event_memory.data_types import (  # noqa:
 )
 from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import WholeTextDeriver  # noqa: E402
 from memmachine_server.episodic_memory.event_memory.event_memory import EventMemory  # noqa: E402
+from memmachine_server.episodic_memory.event_memory.formatting import format_timestamp  # noqa: E402
 
 NAMESPACE = uuid.UUID("6f1d8a52-3c1e-4c4f-9a43-2b6f1f0e9d11")  # event uuids: uuid5 of their source
 TICK = datetime.timedelta(microseconds=1)  # orders events; never rendered
@@ -75,6 +76,18 @@ DOCS = Formats(DOCUMENTS, DOCUMENTS, DOCUMENTS)
 
 def formats(dataset: str) -> Formats:
     return CHAT if info(dataset).partitioned else DOCS
+
+
+def query_date(dataset: str, q: dict) -> str | None:
+    """The question's date as EventMemory renders a segment's timestamp for its reranker
+    (format_timestamp with formats(dataset).rerank: "Tuesday, May 30, 2023, 11:31 PM" for
+    LongMemEval), from the dataset's question_date; None where it has none."""
+    when = q.get("features", {}).get("question_date")
+    if when is None:
+        return None
+    from rbench.datasets.longmemeval import session_datetime
+
+    return format_timestamp(session_datetime(when), formats(dataset).rerank)
 
 
 @dataclass(frozen=True)

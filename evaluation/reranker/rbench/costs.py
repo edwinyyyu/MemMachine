@@ -234,7 +234,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
                 before, after = expand // 3, expand - expand // 3  # EventMemory's split of expand_context
                 texts = [EventMemory.string_from_segment_context(segments[max(0, s - before) : s + after + 1],
                                                                  format_options=rerank) for s in seeds]
-                pair_tok.append(sum(len(x) for x in pair_ids(query_for(model, q["variants"][variant]), texts, template)))
+                pair_tok.append(sum(len(x) for x in pair_ids(query_for(model, q["variants"][variant], pt.query_date(dataset, q)), texts, template)))
             tokens = float(np.mean(pair_tok)) * len(picked)
             basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")

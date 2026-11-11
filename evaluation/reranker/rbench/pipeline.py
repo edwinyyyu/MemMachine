@@ -147,7 +147,7 @@ def _overlapped(embedder: str, dataset: str, scope: str, variant: str, sample_na
             for e, cap in caps.items():
                 if (model, e) not in wanted:  # only the (model, expansion) pairs a run asked for
                     continue
-                reranker = CachedReranker(model, mode="record")
+                reranker = CachedReranker(model, mode="record", dataset=dataset)
                 partition = await (await m.event_memory(reranker)).open_or_create_partition(k)
                 for qi in idx:
                     q = rows[qi]
