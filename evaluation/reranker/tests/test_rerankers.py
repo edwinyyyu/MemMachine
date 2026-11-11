@@ -1,9 +1,11 @@
 """The pair format is the model card's, and cache keys and score scales are stable."""
 
 import numpy as np
+import pytest
 
 from dataclasses import replace
 
+from rbench import rerankers
 from rbench.rerankers import PREFIX, QWEN3_CARD, SUFFIX, ScoreCache, pair_ids, pair_overhead, to_logit
 from rbench.text import QWEN, tokenizer
 
@@ -63,3 +65,51 @@ def test_cache_key_changes_with_instruction_text():
     from rbench.rerankers import prompt_key
 
     assert prompt_key(replace(QWEN3_CARD, instruction="Find it")) != prompt_key(replace(QWEN3_CARD, instruction="Find it."))
+
+
+def test_the_4b_query_arms_send_what_they_say():
+    """`-user` sends the query as the user's message (the embedders' rendering); `-mem` sends the
+    user's instruction in the card's fixed format; the bare 4B is unchanged."""
+    from rbench import embedding
+
+    q = 'What did I say about "basil"?\nAnything else?'
+    assert rerankers.query_for("q4", q) == q and rerankers.query_for("q4-mem", q) == q
+    assert rerankers.query_for("q4-user", q) == rerankers.query_for("q4-mem-user", q) == \
+        embedding.EMBEDDERS["gemma300m-di-raw-user"].render_query(q)
+    card, mem = rerankers.RERANKERS["q4"].template, rerankers.RERANKERS["q4-mem"].template
+    assert (mem.prefix, mem.format, mem.suffix) == (card.prefix, card.format, card.suffix)  # DeepInfra's fixed part
+    assert mem.instruction == rerankers.MEMORY_INSTRUCTION != card.instruction
+    assert rerankers.prompt_key(mem) != rerankers.prompt_key(card)  # its scores never mix with the card's
+    for m in ("q4-user", "q4-mem", "q4-mem-user"):
+        spec = rerankers.RERANKERS[m]
+        assert spec.hf_model == "Qwen/Qwen3-Reranker-4B" and spec.backend == "deepinfra" and spec.usd_per_mtok == 0.025
+
+
+def test_a_rendered_query_is_what_record_mode_queues_and_keys(tmp_path, monkeypatch):
+    """EventMemory passes the bare question; the reranker queues and keys the rendered one."""
+    import asyncio
+
+    from rbench import memory
+
+    monkeypatch.setattr(rerankers, "SCORES", tmp_path)
+    r = memory.CachedReranker("q4-user", mode="record")
+    asyncio.run(r.score("hi?", ["[2023-05-23] User: \"doc\""]))
+    assert list(r.work) == list(r.asked) == ['User: "hi?"']
+    bare = memory.CachedReranker("q4", mode="record")
+    asyncio.run(bare.score("hi?", ["[2023-05-23] User: \"doc\""]))
+    assert list(bare.work) == ["hi?"] and r.work['User: "hi?"'][0][0] != bare.work["hi?"][0][0]  # different keys
+
+
+def test_deepinfra_refuses_only_a_different_format_not_a_different_instruction(monkeypatch):
+    sent = []
+    monkeypatch.setattr(rerankers, "_deepinfra", lambda *a, **k: sent.append(a[2]) or _done())
+    rerankers.score("q4-mem", [], "t", progress=False)
+    assert sent and sent[0].instruction == rerankers.MEMORY_INSTRUCTION
+    monkeypatch.setitem(rerankers.RERANKERS, "odd", replace(rerankers.RERANKERS["q4"], name="odd",
+                                                            template=rerankers.RAW_PAIRS))
+    with pytest.raises(SystemExit, match="only the instruction is sent"):
+        rerankers.score("odd", [], "t", progress=False)
+
+
+async def _done() -> None:
+    return None

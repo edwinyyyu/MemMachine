@@ -20,7 +20,7 @@ from rbench import partitions as pt
 from rbench.embedding import DEFAULT as EMBEDDER
 from rbench.memory import Memory
 from rbench.rankers import Depth, Ranker
-from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key, score, to_logit
+from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key, query_for, score, to_logit
 from rbench.schema import queries
 from rbench.simulation import FIRST_STAGE_LIMIT, first_stage, keys_for, read
 
@@ -93,16 +93,16 @@ def run(dataset: str, chunking_name: str, qid: str, model: str = "q06-local", po
     cache, scored = ScoreCache(model), {}
     for e in units:
         texts = texts_all[e][:n]
-        keys = keys_for(query, prompt, texts)
+        keys = keys_for(query_for(model, query), prompt, texts)
         have = cache.get(keys)
         missing = [(k, t) for k, t in zip(keys, texts, strict=True) if k not in have]
         if missing:
             if RERANKERS[model].backend != "local":
                 raise SystemExit(f"{len(missing)} pairs are not scored for {model}; score the pool first")
-            score(model, [(query, missing)], f"explain/{dataset}/{qid}/x{e}")
+            score(model, [(query_for(model, query), missing)], f"explain/{dataset}/{qid}/x{e}")
             have = cache.get(keys)
         scored[e] = (to_logit(model, np.asarray([have[k][0] for k in keys])), np.asarray([have[k][1] for k in keys]), texts)
-    overhead = pair_overhead(query, tmpl)
+    overhead = pair_overhead(query_for(model, query), tmpl)
     w += [f"## 4. Rerank pool: the top {n} seeds (vector search limit {n})\n",
           f"Each pair is the model's fixed text + query ({overhead} tokens) + one unit rendered as EventMemory's "
           "reranker sees it. Reranker tokens for this query (API billing / with a prefix cache): "

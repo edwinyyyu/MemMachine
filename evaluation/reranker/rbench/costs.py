@@ -22,7 +22,7 @@ from rbench import partitions as pt
 from rbench.embedding import DEFAULT as DEFAULT_EMBEDDER
 from rbench.embedding import EMBEDDERS
 from rbench.memory import store_root
-from rbench.rerankers import RERANKERS, ScoreCache, pair_ids
+from rbench.rerankers import RERANKERS, ScoreCache, pair_ids, query_for
 from rbench.samples import ORDER
 from rbench.samples import sample as sample_of
 from rbench.schema import queries
@@ -233,7 +233,7 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
                 before, after = expand // 3, expand - expand // 3  # EventMemory's split of expand_context
                 texts = [EventMemory.string_from_segment_context(segments[max(0, s - before) : s + after + 1],
                                                                  format_options=rerank) for s in seeds]
-                pair_tok.append(sum(len(x) for x in pair_ids(q["variants"][variant], texts, template)))
+                pair_tok.append(sum(len(x) for x in pair_ids(query_for(model, q["variants"][variant]), texts, template)))
             tokens = float(np.mean(pair_tok)) * len(picked)
             basis[model].add("probe estimate (before encoding: random seeds, while retrieved ones run longer at long "
                              "segment lengths; ignores cached pairs)")

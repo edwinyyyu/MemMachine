@@ -40,7 +40,7 @@ import numpy as np
 from rbench.dbs import replace_atomically
 from rbench.paths import SECRETS, VECTORS
 from rbench.schema import queries
-from rbench.text import GEMMA, QWEN_EMBED, token_starts
+from rbench.text import GEMMA, QWEN_EMBED, as_message, token_starts
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ class Embedder:
         EventMemory's WholeTextDeriver renders a segment for embedding, without the timestamp:
         `User: "<the text, JSON-escaped>"` (the producer outside the quotes, ensure_ascii off), so
         the embedder knows who is asking. Otherwise the query as it is."""
-        return query if self.query_producer is None else f"{self.query_producer}: {json.dumps(query, ensure_ascii=False)}"
+        return query if self.query_producer is None else as_message(self.query_producer, query)
 
     def query_text(self, query: str) -> str:
         """The whole input sent for a query: the query prompt (an instruction), then render_query."""

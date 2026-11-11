@@ -70,7 +70,7 @@ from rbench.dbs import replace_atomically
 from rbench.memory import RENDER, CachedReranker, Memory
 from rbench.paths import SIM
 from rbench.reading import admission, reading
-from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key, to_logit
+from rbench.rerankers import RERANKERS, ScoreCache, pair_overhead, prompt_key, query_for, to_logit
 from rbench.samples import sample
 from rbench.schema import queries
 
@@ -313,8 +313,8 @@ def _replay(q, query, seg, head, sims, units, texts, g, chars, sizes, models, pr
             dropped) -> None:
     """Every ranker's reading of one query, appended to records (dropping a configuration
     whose scores do not reach its depth for this query)."""
-    overheads = {m: pair_overhead(query, RERANKERS[m].template) for m in models}
-    scores = {(m, e): scored_prefix(caches[m], m, keys_for_hashes(query, prompts[m], texts[e])) for m in models
+    overheads = {m: pair_overhead(query_for(m, query), RERANKERS[m].template) for m in models}
+    scores = {(m, e): scored_prefix(caches[m], m, keys_for_hashes(query_for(m, query), prompts[m], texts[e])) for m in models
               for e in units}  # texts: the rendered contexts' hashes (first_stage_cached)
     unit_tokens = {e: float(np.mean([seg.tokens[u].sum() for u in units[e]])) if units[e] else 0.0 for e in units}
     priority = {e: np.asarray([2 if any(i in g.union for i in u) else 0 for u in units[e]]) for e in units}

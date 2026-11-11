@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache
 
 import numpy as np
@@ -37,7 +37,7 @@ import numpy as np
 from rbench import credits, limits
 from rbench.dbs import connect
 from rbench.paths import SCORES, SECRETS
-from rbench.text import QWEN, tokenizer
+from rbench.text import QWEN, as_message, tokenizer
 
 PREFIX = (
     "<|im_start|>system\nJudge whether the Document meets the requirements based on the "
@@ -65,6 +65,11 @@ class Template:
 
 
 QWEN3_CARD = Template(PREFIX, FORMAT, SUFFIX, INSTRUCTION, 8192, QWEN)  # the Qwen3-Reranker model card's format
+# The user's instruction (2026-11-11), the embedder's "-mem" one: what is needed to answer a query,
+# not what literally answers it. DeepInfra takes the instruction as a field and wraps it in the
+# card's fixed format, so only the instruction changes.
+MEMORY_INSTRUCTION = "Given a user's query, retrieve relevant passages that provide the facts, preferences, or events needed to answer it."
+QWEN3_CARD_MEMORY = replace(QWEN3_CARD, instruction=MEMORY_INSTRUCTION)
 # Raw pairs: what a sentence-transformers CrossEncoder (MemMachine's CrossEncoderReranker) sends,
 # tokenizer(query, document), which for Qwen3's tokenizer is the two texts concatenated with no
 # separator or special tokens. Scored as the card's format is (yes minus no at the last token),
@@ -91,6 +96,7 @@ class Reranker:
     # models apart; the marker tells what the reranker scored, so the two lines of one model
     # differ by shape, never by dashes (report/figures.py)
     markers: tuple[str, str] = ("2", "1")  # up caltrop: seeds; down caltrop: windows
+    query_producer: str | None = None  # set: the query is sent as this producer's message (query_for)
 
     @property
     def price(self) -> float:
@@ -110,8 +116,26 @@ RERANKERS = {
                     local_tok_per_s=2500),
     "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B", "#1baf7a"),
     "q8": Reranker("q8", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B", "#eda100"),
+    # The 4B's query-side 2 x 2 (the user, 2026-11-11): the card's instruction or the user's
+    # ("-mem"), the bare query or the user's message (`User: "<query>"`, "-user"); "q4" is the card's
+    # with the bare query. Colors: the 0.6B models' slots, which these comparisons do not include.
+    "q4-user": Reranker("q4-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B, User: query", "#6250d6",
+                        query_producer="User"),
+    "q4-mem": Reranker("q4-mem", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B, memory instruction",
+                       "#e87ba4", template=QWEN3_CARD_MEMORY),
+    "q4-mem-user": Reranker("q4-mem-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025,
+                            "Qwen3-Reranker-4B, memory instruction, User: query", "#eb6834", template=QWEN3_CARD_MEMORY,
+                            query_producer="User"),
 }
 PAID = [m for m, r in RERANKERS.items() if r.backend == "deepinfra"]
+
+
+def query_for(reranker: str, query: str) -> str:
+    """The query text a reranker reads: as it is, or as its query producer's message (the
+    `User: "<query>"` rendering the embedders' "-user" format uses). Every cache key and pair is
+    built from this, so a rendered query never reuses or mixes with the bare query's scores."""
+    producer = RERANKERS[reranker].query_producer
+    return query if producer is None else as_message(producer, query)
 
 
 def prompt_key(t: Template) -> str:
@@ -339,6 +363,8 @@ def score(reranker: str, work: Work, note: str, progress: bool = True, cancel=No
             if shown is not None:
                 shown.step(sum(len(items) for _, items in group))
         return
-    if spec.template != QWEN3_CARD:
-        raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself; other templates run locally")
+    if (spec.template.prefix, spec.template.format, spec.template.suffix) != (QWEN3_CARD.prefix, QWEN3_CARD.format,
+                                                                           QWEN3_CARD.suffix):
+        raise SystemExit(f"{reranker}: DeepInfra applies the model card's format itself (only the instruction is sent); "
+                         "other templates run locally")
     asyncio.run(_deepinfra(spec.hf_model, work, spec.template, cache_, note, shown, cancel))

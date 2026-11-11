@@ -3,11 +3,14 @@ tokens (the rendered context a reader LLM gets: budgets, token tables, fill dept
 axes), segment sizes, reranker pairs (all Qwen3-Reranker sizes share it) and Qwen3-Embedding
 inputs (the same vocabulary: identical counts, checked). It is public, so nothing needs a
 Hugging Face login. embeddinggemma's tokenizer (gated) is loaded only for a gemma embedder's
-own input limit and billing, never on the paid path. Tokenizers load from the local Hugging
-Face cache, else download."""
+own input limit and billing (the paid first stage since 2026-11-11, so a paid run needs the
+login). Tokenizers load from the local Hugging Face cache, else download.
+
+as_message renders a text as EventMemory renders a turn for embedding, less the timestamp."""
 
 from __future__ import annotations
 
+import json
 from functools import cache
 from pathlib import Path
 
@@ -33,6 +36,12 @@ def tokenizer(repo: str) -> Tokenizer:
     t.no_truncation()
     t.no_padding()
     return t
+
+
+def as_message(producer: str, text: str) -> str:
+    """`<producer>: "<text, JSON-escaped>"`: EventMemory's WholeTextDeriver rendering of a
+    message (the producer outside the quotes, ensure_ascii off), without the timestamp."""
+    return f"{producer}: {json.dumps(text, ensure_ascii=False)}"
 
 
 def count(texts: list[str], repo: str = READER) -> np.ndarray:

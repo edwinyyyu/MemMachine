@@ -79,7 +79,7 @@ from rbench import credits, limits  # noqa: E402
 from rbench.dbs import checkpoint, connect, replace_atomically, sqlite_pragmas  # noqa: E402
 from rbench import embedding as emb  # noqa: E402
 from rbench.paths import DATA, EMBEDDINGS, SECRETS  # noqa: E402
-from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, to_logit  # noqa: E402
+from rbench.rerankers import RERANKERS, ScoreCache, prompt_key, query_for, to_logit  # noqa: E402
 from rbench.vectorstore import ContentVectorStore, ensure_content, vector_hash  # noqa: E402
 
 MEMORY = DATA / "memory"
@@ -531,6 +531,7 @@ class CachedReranker(Reranker):
         return [ScoreCache.key(self.prompt, RENDER, query, c) for c in candidates]
 
     async def score(self, query: str, candidates: list[str]) -> list[float]:
+        query = query_for(self.model, query)  # what this reranker reads: work and asked are keyed by it
         keys = self.keys(query, candidates)
         known = {k for k, _ in self.asked.setdefault(query, [])}
         for k, c in zip(keys, candidates, strict=True):  # in order, each key once (identical contexts render alike)
