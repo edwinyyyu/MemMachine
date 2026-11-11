@@ -128,7 +128,7 @@ def embed_fidelity(dataset: str = "longmemeval_m", chunking_name: str = "seg500"
         docs += [texts[int(i)] for i in rng.choice(len(texts), min(len(texts), n // 3), replace=False)]
     qs = [q["variants"][next(iter(q["variants"]))] for q in queries(dataset)[:50]]
     va, vb = (embed(EMBEDDERS[e], docs, EMBEDDERS[e].doc_prompt) for e in (a, b))
-    qa, qb = (embed(EMBEDDERS[e], qs, EMBEDDERS[e].query_prompt) for e in (a, b))
+    qa, qb = (embed(EMBEDDERS[e], [EMBEDDERS[e].render_query(x) for x in qs], EMBEDDERS[e].query_prompt) for e in (a, b))
     cos = np.concatenate([(va * vb).sum(1), (qa * qb).sum(1)])
     top_a, top_b = np.argsort(-(qa @ va.T), 1)[:, :10], np.argsort(-(qb @ vb.T), 1)[:, :10]
     overlap = np.mean([len(set(x) & set(y)) / 10 for x, y in zip(top_a, top_b, strict=True)])
@@ -214,8 +214,8 @@ def truncation_check(embedder: str = "qwen3-8b-di", probes: int = 16, partitions
     for k, members in keyed:
         distinct = list(dict.fromkeys(pt.offline(dataset, k, "seg500", "history")[2]))
         hays.append([distinct[i] for i in sorted(rng.choice(len(distinct), min(haystack, len(distinct)), replace=False))])
-        asks.append([spec.query_prompt + rows[i]["variants"]["question"] for i in members])
-    probe = [spec.query_prompt + rows[i]["variants"]["question"] for i in picked[:probes]] + hays[0][:probes]
+        asks.append([spec.query_text(rows[i]["variants"]["question"]) for i in members])
+    probe = [spec.query_text(rows[i]["variants"]["question"]) for i in picked[:probes]] + hays[0][:probes]
     tokens = 0
 
     def ask(texts: list[str], dimensions: int) -> np.ndarray:

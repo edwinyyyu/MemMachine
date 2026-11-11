@@ -68,3 +68,69 @@ def test_prompt_setups_share_document_vectors_only_with_the_same_document_prompt
     assert EMBEDDERS["gemma300m-q"].doc_prompt == "" and EMBEDDERS["gemma300m-q"].query_prompt.startswith("task:")
     assert EMBEDDERS["gemma300m-raw"].query_prompt == EMBEDDERS["gemma300m-raw"].doc_prompt == ""
     assert EMBEDDERS["gemma300m-di-q"].url.startswith("https://api.deepinfra.com")
+
+
+TRICKY = 'He said "hi"\nthen left \\ ✓ — 日本'
+
+
+def test_a_user_query_reads_as_event_memory_renders_the_users_turn():
+    """`User: "<query>"` is byte for byte what EventMemory's WholeTextDeriver embeds for a User
+    turn, less the timestamp: the producer outside the quotes, the text JSON-dumped with
+    ensure_ascii off."""
+    import json
+
+    from memmachine_server.episodic_memory.event_memory.data_types import ProducerContext
+    from memmachine_server.episodic_memory.event_memory.deriver.text_deriver import _format_with_context
+
+    spec = embedding.EMBEDDERS["gemma300m-di-raw-user"]
+    assert spec.render_query(TRICKY) == _format_with_context(ProducerContext(producer="User"), json.dumps(TRICKY, ensure_ascii=False))
+    assert spec.query_text(TRICKY) == spec.render_query(TRICKY)  # no prompt
+    assert embedding.EMBEDDERS["gemma300m-di-raw"].render_query(TRICKY) == TRICKY  # unformatted: as it is
+
+
+def test_the_instruction_comes_before_the_rendered_query():
+    e = embedding.EMBEDDERS
+    assert e["qwen3-8b-di-mem-user"].query_text("x") == embedding.QWEN3_MEMORY_QUERY + 'User: "x"'
+    assert e["qwen3-8b-di-mem"].query_text("x") == embedding.QWEN3_MEMORY_QUERY + "x"
+    assert e["qwen3-8b-di"].query_text("x") == embedding.QWEN3_QUERY + "x"
+    assert e["qwen3-8b-di-raw-user"].query_text("x") == 'User: "x"'
+    assert embedding.QWEN3_MEMORY_QUERY == ("Instruct: Given a user's query, retrieve relevant passages that provide the facts, "
+                                            "preferences, or events needed to answer it.\nQuery:")
+
+
+def test_the_qwen3_grid_shares_documents_per_size_and_keeps_the_first_setups():
+    e = embedding.EMBEDDERS
+    names = [f"qwen3-{s}-di{i}{f}" for s in ("8b", "4b", "0.6b") for i in ("", "-mem", "-raw") for f in ("", "-user")]
+    assert all(n in e for n in names)
+    for size, model, usd in (("8b", "Qwen/Qwen3-Embedding-8B", 0.010), ("4b", "Qwen/Qwen3-Embedding-4B", 0.020),
+                             ("0.6b", "Qwen/Qwen3-Embedding-0.6B", 0.010)):
+        group = [e[n] for n in names if n.startswith(f"qwen3-{size}-")]
+        assert {g.documents for g in group} == {f"qwen3-{size}-di"}  # one document store per size
+        assert {(g.model, g.usd_per_mtok, g.dimensions, g.doc_prompt, g.tokenizer) for g in group} == \
+            {(model, usd, 1024, "", embedding.QWEN_EMBED)}
+    assert not e["qwen3-0.6b-di"].send_dimensions and e["qwen3-4b-di"].send_dimensions  # 0.6B is natively 1,024
+    # the setups compared first are what they were: same request, same caches
+    assert e["qwen3-8b-di"].query_prompt == embedding.QWEN3_QUERY and e["qwen3-8b-di"].query_producer is None
+    assert e["qwen3-8b-di-raw"].query_prompt == "" and e["qwen3-8b-di-raw"].query_producer is None
+    assert e["qwen3-8b-di"].documents == e["qwen3-8b-di-raw"].documents == "qwen3-8b-di"
+    # every 8B setup has its full-width twin for --widths
+    assert all(e[f"{n}-{embedding.FULL}"].dimensions == embedding.FULL for n in names if n.startswith("qwen3-8b-"))
+
+
+def test_query_vectors_embed_the_rendered_queries(tmp_path, monkeypatch):
+    rows = [{"variants": {"question": TRICKY}}, {"variants": {"question": "b"}}]
+    sent = {}
+
+    def fake_run(spec, texts, prompt, target):
+        sent[spec.name] = (list(texts), prompt)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        np.save(target, np.zeros((len(texts), 2), dtype=np.float16))
+
+    monkeypatch.setattr(embedding, "VECTORS", tmp_path)
+    monkeypatch.setattr(embedding, "queries", lambda dataset: rows)
+    monkeypatch.setattr(embedding, "_run", fake_run)
+    embedding.query_vectors("qwen3-8b-di-mem-user", "d", "question")
+    embedding.query_vectors("qwen3-8b-di", "d", "question")
+    assert sent["qwen3-8b-di-mem-user"] == ([embedding.EMBEDDERS["gemma300m-raw-user"].render_query(TRICKY), 'User: "b"'],
+                                            embedding.QWEN3_MEMORY_QUERY)
+    assert sent["qwen3-8b-di"] == ([TRICKY, "b"], embedding.QWEN3_QUERY)

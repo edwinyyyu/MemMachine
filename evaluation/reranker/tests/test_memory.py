@@ -320,3 +320,19 @@ def test_question_cache_is_keyed_on_the_query_side_and_survives_a_torn_line(tmp_
     assert memory._read_questions(path) == {"a": [1.0, 0.0]}
     assert memory.store_root("qwen3-8b-di", "d", "seg500") == memory.store_root("qwen3-8b-di-raw", "d", "seg500")
     assert memory.store_root("gemma300m-raw", "d", "seg500") != memory.store_root("qwen3-8b-di", "d", "seg500")
+
+
+def test_question_cache_names_change_only_for_a_rendered_query():
+    """A query rendered as the user's message gets its own question cache; the setups without a
+    rendering keep the cache names they had (the key is unchanged for them)."""
+    import json
+
+    from rbench import embedding as emb
+    from rbench import memory
+
+    spec = emb.EMBEDDERS["qwen3-8b-di"]
+    before = json.dumps([spec.model, spec.url, spec.query_prompt, spec.dimensions, spec.request_dimensions])
+    assert memory.questions_path("qwen3-8b-di").name == f"qwen3-8b-di__{hashlib.sha1(before.encode()).hexdigest()[:12]}.jsonl"
+    user, plain = emb.EMBEDDERS["qwen3-8b-di-user"], emb.EMBEDDERS["qwen3-8b-di"]
+    assert user.query_prompt == plain.query_prompt and user.query_producer == "User"
+    assert memory.questions_path("qwen3-8b-di-user").name.split("__")[1] != memory.questions_path("qwen3-8b-di").name.split("__")[1]

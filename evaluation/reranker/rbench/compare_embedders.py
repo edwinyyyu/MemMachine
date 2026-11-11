@@ -15,9 +15,13 @@ how they rank the gold segments, paired by question:
   first@k   some gold turn is complete in the top k
   MRR       1 / rank of the first gold segment
 The haystack is smaller than the real one, so absolute numbers are higher than the
-benchmark's; the comparison between setups is what this measures.
+benchmark's; the comparison between setups is what this measures. With --embedders, the report
+also gives MRR by question type and the share of Assistant turns in each top 5 beside the gold
+segments' share (Qwen3-Embedding-8B with the card's instruction ranked Assistant replies above
+the user's own statements, 2026-11-11).
 
   python -m rbench compare-embedders [--server gemma300m] [--questions 100]
+  python -m rbench compare-embedders --embedders a,b,c [--questions 200]
 """
 
 from __future__ import annotations
@@ -45,6 +49,15 @@ def haystack(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int
     """(embedding texts in EventMemory's order, segment ids of each gold turn) for one question's
     reduced haystack: its evidence sessions plus EXTRA others, as MemMachine segments and derives
     the whole history (partitions.offline)."""
+    texts, gold, _ = haystack_producers(dataset, q, size)
+    return texts, gold
+
+
+def haystack_producers(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int]], list[str]]:
+    """haystack(), plus each segment's producer (histories.PRODUCERS: User or Assistant), read
+    from the turn it came from."""
+    from rbench.histories import PRODUCERS
+
     sessions = history(dataset, q["qid"])["sessions"]
     evidence = sorted({s for s, _ in q["gold_turns"][0]} | set(q["gold_sessions"]))
     others = [s for s in range(len(sessions)) if s not in evidence]
@@ -56,7 +69,11 @@ def haystack(dataset: str, q: dict, size: int) -> tuple[list[str], list[list[int
     position = {i: k for k, i in enumerate(picked)}
     turns = pt.gold(pt.gold_spans(dataset, q, p), p, seg).alternatives[0]
     gold = [[position[i] for i, _ in span] for span in turns]
-    return [texts[i] for i in picked], gold
+    producers = []
+    for i in picked:
+        s, t = (int(x.split()[-1]) for x in p.labels[seg.event[i]].split(","))  # "session s, turn t"
+        producers.append(PRODUCERS[sessions[s]["turns"][t]["role"]])
+    return [texts[i] for i in picked], gold, producers
 
 
 def _vectors(embedder: str, dataset: str, qid: str, texts: list[str], size: int) -> np.ndarray:
@@ -145,12 +162,16 @@ def _figure(results: dict[str, dict[str, np.ndarray]], dataset: str, size: int, 
 
 
 def measure_embedders(embedders: list[str], dataset: str, size: int, picked: list[int]) -> dict[str, dict[str, np.ndarray]]:
-    """measure() for any embedders (embedding.EMBEDDERS names), not only one server's setups."""
+    """measure() for any embedders (embedding.EMBEDDERS names), not only one server's setups.
+    Besides the metrics: "assistant@5", the share of the top 5 segments that are Assistant turns,
+    and "gold assistant", that share among the gold segments (the same for every embedder)."""
     rows = queries(dataset)
     out: dict[str, dict[str, list[float]]] = {e: {} for e in embedders}
     for n, qi in enumerate(picked):
         q = rows[qi]
-        texts, gold = haystack(dataset, q, size)
+        texts, gold, producers = haystack_producers(dataset, q, size)
+        assistant = np.asarray([p == "Assistant" for p in producers])
+        gold_segments = sorted({i for turn in gold for i in turn})
         for e in embedders:
             sims = _vectors(e, dataset, q["qid"], texts, size).astype(np.float32) @ \
                 emb.query_vectors(e, dataset, "question")[qi].astype(np.float32)
@@ -162,9 +183,28 @@ def measure_embedders(embedders: list[str], dataset: str, size: int, picked: lis
                 m.setdefault(f"every@{k}", []).append(float(max(complete) <= k))
                 m.setdefault(f"first@{k}", []).append(float(min(complete) <= k))
             m.setdefault("MRR", []).append(1.0 / min(rank[i] for turn in gold for i in turn))
+            m.setdefault("assistant@5", []).append(float(assistant[np.argsort(-sims, kind="stable")[:5]].mean()))
+            m.setdefault("gold assistant", []).append(float(assistant[gold_segments].mean()))
         if (n + 1) % 10 == 0:
             print(f"{n + 1}/{len(picked)} questions", flush=True)
     return {e: {k: np.asarray(v) for k, v in m.items()} for e, m in out.items()}
+
+
+def by_type(rows: list[dict], picked: list[int]) -> dict[str, np.ndarray]:
+    """Each LongMemEval question type: a mask over the picked questions, types in name order."""
+    types = np.asarray([rows[i]["features"]["question_type"] for i in picked])
+    return {t: types == t for t in sorted(set(types))}
+
+
+def summary_name(dataset: str, size: int, n: int, embedders: list[str]) -> str:
+    """The report's file name: the embedders joined, or (a long list, past file-name limits)
+    their count and a hash of the list."""
+    import hashlib
+
+    joined = "_".join(embedders)
+    if len(joined) > 120:
+        joined = f"{len(embedders)}setups_{hashlib.sha1(','.join(embedders).encode()).hexdigest()[:8]}"
+    return f"embedders__{dataset}__seg{size}__{n}q__{joined}"
 
 
 def write_embedders(embedders: list[str], dataset: str = "longmemeval_m", size: int = 500, questions: int = 100) -> str:
@@ -172,6 +212,8 @@ def write_embedders(embedders: list[str], dataset: str = "longmemeval_m", size: 
     order): every@k, first@k and MRR per embedder, and each minus the first one listed, with
     95% paired bootstrap intervals over questions. The user's rule picks among them:
     whatever performs best (Qwen3-Embedding-8B with or without its query instruction)."""
+    if unknown := [e for e in embedders if e not in emb.EMBEDDERS]:
+        raise ValueError(f"unknown embedders {unknown}; known: {sorted(emb.EMBEDDERS)}")
     rows = queries(dataset)
     picked = sorted(sample_order(dataset)[:questions])  # the samples' order: the first 100 are the pilot's questions
     results = measure_embedders(embedders, dataset, size, picked)
@@ -187,7 +229,23 @@ def write_embedders(embedders: list[str], dataset: str = "longmemeval_m", size: 
     lines += ["", f"| Δ vs {ref} | " + " | ".join(metrics) + " |", "|---|" + "---|" * len(metrics)]
     lines += [f"| {e} | " + " | ".join(delta(m[x] - results[ref][x], clusters) for x in metrics) + " |"
               for e, m in results.items() if e != ref]
-    name = f"embedders__{dataset}__seg{size}__{len(picked)}q__{'_'.join(embedders)}"
+    types = by_type(rows, picked)
+    lines += ["", "**MRR by question type** (n: questions of the type).\n",
+              "| embedder | " + " | ".join(f"{t} (n={mask.sum()})" for t, mask in types.items()) + " |",
+              "|---|" + "---|" * len(types)]
+    lines += [f"| {e} | " + " | ".join(f"{m['MRR'][mask].mean():.3f}" for mask in types.values()) + " |"
+              for e, m in results.items()]
+    gold = results[ref]["gold assistant"]
+    lines += ["", "**Assistant turns in the top 5 segments** (share, averaged over questions), beside their share of the "
+              "gold segments: a first stage that ranks Assistant replies above the user's own statements shows a top-5 "
+              "share far above the gold's.\n",
+              "| | all | " + " | ".join(types) + " |", "|---|---|" + "---|" * len(types),
+              "| gold segments | " + " | ".join(f"{gold[mask].mean():.2f}" for mask in [np.ones_like(gold, bool), *types.values()])
+              + " |"]
+    lines += [f"| {e} | " + " | ".join(f"{m['assistant@5'][mask].mean():.2f}"
+                                        for mask in [np.ones_like(gold, bool), *types.values()]) + " |"
+              for e, m in results.items()]
+    name = summary_name(dataset, size, len(picked), embedders)
     path = SUMMARY / f"{name}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
@@ -201,7 +259,9 @@ def _figure_embedders(results: dict[str, dict[str, np.ndarray]], dataset: str, n
 
     palette = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#6250d6")  # categorical slots, in order
     shapes = ("x", "2", "1", "3", "4", "+")
-    style = {e: (palette[i % len(palette)], shapes[i % len(shapes)]) for i, e in enumerate(results)}
+    # up to six: a color and a marker each, as before; past six the markers shift by one per round of colors,
+    # so every (color, marker) pair stays distinct
+    style = {e: (palette[i % len(palette)], shapes[(i + i // len(palette)) % len(shapes)]) for i, e in enumerate(results)}
     fig, axes = _figure(1, 2, panel=(4.6, 3.4), sharey=True)
     for j, event in enumerate(("every", "first")):
         ax = axes[0][j]

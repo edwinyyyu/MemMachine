@@ -255,10 +255,13 @@ def store_root(embedder: str, dataset: str, chunking: str) -> Path:
 
 def questions_path(embedder: str) -> Path:
     """The question-embedding cache of an embedder, keyed by everything that changes a query's
-    vector (the model, its URL, the query prompt, the dimensions), so a changed instruction or
-    size never reuses old vectors."""
+    vector (the model, its URL, the query prompt, the dimensions, the query's rendering), so a
+    changed instruction, rendering or size never reuses old vectors."""
     spec = emb.EMBEDDERS.get(embedder)
-    key = json.dumps([spec.model, spec.url, spec.query_prompt, spec.dimensions, spec.request_dimensions]) if spec else embedder
+    parts = [spec.model, spec.url, spec.query_prompt, spec.dimensions, spec.request_dimensions] if spec else None
+    if spec and spec.query_producer is not None:  # appended only when set: existing caches keep their names
+        parts.append(spec.query_producer)
+    key = json.dumps(parts) if spec else embedder
     return MEMORY / "questions" / f"{embedder}__{hashlib.sha1(key.encode()).hexdigest()[:12]}.jsonl"
 
 
@@ -358,7 +361,8 @@ class QueryCachingEmbedder(Embedder):
     model, fixed for the shared local server) and are retried here, one attempt per MemMachine
     call, for up to an hour (limits.PATIENCE). Documents are sent as they are (MemMachine's
     OpenAIEmbedder adds no prompt); a query prompt (Qwen3-Embedding's instruction) is put
-    before each question, as a deployment would format its queries. Vectors come back at the
+    before each question, rendered as the user's message if the embedder says so (render_query),
+    as a deployment would format its queries. Vectors come back at the
     embedder's size: asked for directly, or truncated and re-normalized when the API is asked
     for more (request_dimensions)."""
 
@@ -485,7 +489,7 @@ class QueryCachingEmbedder(Embedder):
     async def _search_embed(self, queries: list, max_attempts: int = 1) -> list[list[float]]:
         missing = [q for q in dict.fromkeys(queries) if q not in self._questions]
         if missing:
-            prompted = [self._spec.query_prompt + q for q in missing]
+            prompted = [self._spec.query_text(q) for q in missing]
             vectors = await self._batches(prompted, self._inner._search_embed)
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a") as file:  # appended: a crash loses at most the line being written

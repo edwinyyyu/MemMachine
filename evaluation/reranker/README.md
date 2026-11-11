@@ -51,6 +51,8 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no s
 .venv/bin/python -m rbench smoke
 .venv/bin/python -m rbench embed-checks
 .venv/bin/python -m rbench compare-embedders --embedders qwen3-8b-di,qwen3-8b-di-raw,gemma300m-di-raw
+# the query grid (METHODOLOGY section 3): qwen3-<0.6b|4b|8b>-di<""|-mem|-raw><""|-user>, gemma300m-di-raw[-user]
+.venv/bin/python -m rbench compare-embedders --questions 200 --embedders qwen3-8b-di,qwen3-8b-di-mem-user,...
 .venv/bin/python -m rbench run lme-pilot
 .venv/bin/python -m rbench run lme-core
 ```

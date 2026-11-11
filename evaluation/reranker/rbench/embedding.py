@@ -7,6 +7,10 @@ context limit. Two serve google/embeddinggemma-300m:
   gemma300m     llama.cpp's llama-server on this machine (127.0.0.1:9931), free, ~7-10k tokens/s
   gemma300m-di  DeepInfra's hosted model, $0.002 per million tokens (checked 2026-11-05)
 each with four prompt setups (SETUPS: "", "-q", "-raw", "-d"); the benchmark uses "-raw".
+Qwen3-Embedding 0.6B, 4B and 8B on DeepInfra are named qwen3-<size>-di<setup><format>: the
+setup is the query instruction (QWEN3_SETUPS: the card's, "-mem" the user's, "-raw" none) and
+the format how the query is rendered (QUERY_FORMATS: as it is, or "-user", the user's message
+as EventMemory renders a turn); gemma's "-raw-user" is the same rendering with no prompts.
 The client adds the model's prompts itself, as sentence-transformers does. Vectors live
 under the embedder's name, so the two never mix; `preflight embed-fidelity` compares them.
 Adding an embedder (another server, an API) adds a first stage whose results come out of the
@@ -24,6 +28,7 @@ take this path.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import time
 from dataclasses import dataclass, replace
@@ -59,10 +64,22 @@ class Embedder:
     send_dimensions: bool = False  # whether direct requests carry a dimensions field (hosted Matryoshka models)
     tokenizer: str = GEMMA  # counts the tokens an input is billed for
     special_tokens: int = 2  # added per input (BOS and EOS for embeddinggemma; EOS for Qwen3)
+    query_producer: str | None = None  # set: a query is rendered as EventMemory renders a message by this producer
 
     @property
     def documents(self) -> str:
         return self.doc_store or self.name
+
+    def render_query(self, query: str) -> str:
+        """The query as embedded, before the query prompt. With a query producer, it reads as
+        EventMemory's WholeTextDeriver renders a segment for embedding, without the timestamp:
+        `User: "<the text, JSON-escaped>"` (the producer outside the quotes, ensure_ascii off), so
+        the embedder knows who is asking. Otherwise the query as it is."""
+        return query if self.query_producer is None else f"{self.query_producer}: {json.dumps(query, ensure_ascii=False)}"
+
+    def query_text(self, query: str) -> str:
+        """The whole input sent for a query: the query prompt (an instruction), then render_query."""
+        return self.query_prompt + self.render_query(query)
 
 
 QUERY_PROMPT, DOC_PROMPT = "task: search result | query: ", "title: none | text: "  # the model card's recommended prompts
@@ -87,6 +104,12 @@ EMBEDDERS = {
                                   doc_store=server if d else f"{server}-nodoc", **GEMMA_LIMITS, **settings)
     for server, settings in SERVERS.items() for suffix, (q, d) in SETUPS.items()
 }
+# Query formats (the user's request, 2026-11-11): "" sends the query as it is; "-user" renders it
+# as the user's message, `User: "<query>"`, the way EventMemory renders each turn it embeds (less
+# the timestamp), so the embedder knows who is asking. Documents are unchanged either way.
+QUERY_FORMATS = {"": None, "-user": "User"}
+EMBEDDERS |= {f"{server}-raw-user": replace(EMBEDDERS[f"{server}-raw"], name=f"{server}-raw-user", query_producer="User")
+              for server in SERVERS}
 # Qwen3-Embedding-8B on DeepInfra (the user's decision, 2026-11-09: the default first stage, at
 # 1,024 dimensions; production may use it). Model card (checked 2026-11-09): queries are
 # "Instruct: {task}\nQuery:{query}" (the card's Python has no space after "Query:"), documents get
@@ -96,17 +119,37 @@ EMBEDDERS = {
 # compare-embedders (the user's rule: whatever performs best): "-raw" sends no instruction.
 QWEN3_TASK = "Given a web search query, retrieve relevant passages that answer the query"  # the card's example
 QWEN3_QUERY = f"Instruct: {QWEN3_TASK}\nQuery:"
+# The user's instruction (2026-11-11): what is needed to answer a query, not what literally answers
+# it (compare-embedders on 100 pilot questions: with the card's, Assistant replies outranked the
+# user's own statements); a query need not be a question, nor the passages conversation.
+QWEN3_MEMORY_TASK = "Given a user's query, retrieve relevant passages that provide the facts, preferences, or events needed to answer it."
+QWEN3_MEMORY_QUERY = f"Instruct: {QWEN3_MEMORY_TASK}\nQuery:"
 QWEN3 = dict(url="https://api.deepinfra.com/v1/openai", route="/embeddings", model="Qwen/Qwen3-Embedding-8B",
              key_file="deepinfra_api_key", usd_per_mtok=0.010, request_inputs=64, in_flight=16, max_tokens=32768,
              max_input_chars=40000, dimensions=1024, send_dimensions=True, tokenizer=QWEN_EMBED, special_tokens=1,
              doc_store="qwen3-8b-di")
-EMBEDDERS |= {"qwen3-8b-di": Embedder("qwen3-8b-di", query_prompt=QWEN3_QUERY, doc_prompt="", **QWEN3),
-              "qwen3-8b-di-raw": Embedder("qwen3-8b-di-raw", query_prompt="", doc_prompt="", **QWEN3)}
+# The three sizes on DeepInfra (its model listing, 2026-11-11: cents_per_input_token 1e-6 for 0.6B
+# and 8B, 2e-6 for 4B), all at 1,024 dimensions with the same tokenizer and EOS: 0.6B's native width
+# (no dimensions field sent), the 4B's 2,560 and the 8B's 4,096 asked for 1,024. Each size has its
+# own document store, shared by its query setups.
+QWEN3_SIZES = {
+    "8b": dict(),
+    "4b": dict(model="Qwen/Qwen3-Embedding-4B", usd_per_mtok=0.020, doc_store="qwen3-4b-di"),
+    "0.6b": dict(model="Qwen/Qwen3-Embedding-0.6B", usd_per_mtok=0.010, doc_store="qwen3-0.6b-di", send_dimensions=False),
+}
+# Query setups: the card's instruction (""), the user's ("-mem"), none ("-raw"); each in each
+# query format. qwen3-8b-di and qwen3-8b-di-raw are the setups compared first (2026-11-11).
+QWEN3_SETUPS = {"": QWEN3_QUERY, "-mem": QWEN3_MEMORY_QUERY, "-raw": ""}
+EMBEDDERS |= {
+    f"qwen3-{size}-di{setup}{fmt}": Embedder(f"qwen3-{size}-di{setup}{fmt}", query_prompt=prompt, doc_prompt="",
+                                             query_producer=producer, **(QWEN3 | settings))
+    for size, settings in QWEN3_SIZES.items() for setup, prompt in QWEN3_SETUPS.items() for fmt, producer in QUERY_FORMATS.items()
+}
 # Full width (4,096): compare-embedders --widths scores 4,096, 2,048 and 1,024 from one response
 # (truncated and re-normalized), and keeps these vectors in their own cache and document store.
 FULL = 4096
-EMBEDDERS |= {f"{name}-{FULL}": replace(EMBEDDERS[name], name=f"{name}-{FULL}", dimensions=FULL,
-                                         doc_store=f"qwen3-8b-di-{FULL}") for name in ("qwen3-8b-di", "qwen3-8b-di-raw")}
+EMBEDDERS |= {f"{name}-{FULL}": replace(EMBEDDERS[name], name=f"{name}-{FULL}", dimensions=FULL, doc_store=f"qwen3-8b-di-{FULL}")
+              for name in [n for n in EMBEDDERS if n.startswith("qwen3-8b-di")]}
 # max_input_chars 40,000: pieces of dense code (about 1.7 characters per token) stay under 32k tokens.
 PAID = "qwen3-8b-di"  # the paid stages' first stage; the instruction setting is pending compare-embedders
 
@@ -124,13 +167,13 @@ def path(embedder: str, dataset: str, name: str) -> Path:
 
 
 def query_vectors(embedder: str, dataset: str, variant: str) -> np.ndarray:
-    """Query vectors in queries(dataset) order; remade when the questions or the prompt change."""
+    """Query vectors in queries(dataset) order; remade when the questions, their rendering or the
+    prompt change."""
     import hashlib
-    import json
 
     target = path(embedder, dataset, f"query_{variant}")
     spec, rows = EMBEDDERS[embedder], queries(dataset)
-    texts = [q["variants"][variant] for q in rows]
+    texts = [spec.render_query(q["variants"][variant]) for q in rows]
     key = hashlib.sha1(json.dumps([spec.query_prompt, spec.model or spec.url, texts]).encode()).hexdigest()[:16]
     meta = target.with_suffix(".key")
     if target.exists() and (not meta.exists() or meta.read_text() != key):
