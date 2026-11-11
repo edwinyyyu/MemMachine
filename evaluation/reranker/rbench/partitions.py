@@ -78,16 +78,20 @@ def formats(dataset: str) -> Formats:
     return CHAT if info(dataset).partitioned else DOCS
 
 
-def query_date(dataset: str, q: dict) -> str | None:
-    """The question's date as EventMemory renders a segment's timestamp for its reranker
+def query_date(dataset: str, q: dict, for_embedding: bool = False) -> str | None:
+    """The question's date as EventMemory renders a segment's timestamp: for its reranker
     (format_timestamp with formats(dataset).rerank: "Tuesday, May 30, 2023, 11:31 PM" for
-    LongMemEval), from the dataset's question_date; None where it has none."""
+    LongMemEval), or for embedding (WholeTextDeriver's options: formats(dataset).embed, else its
+    default, the date alone: "Tuesday, May 30, 2023"), from the dataset's question_date; None
+    where it has none."""
     when = q.get("features", {}).get("question_date")
     if when is None:
         return None
     from rbench.datasets.longmemeval import session_datetime
 
-    return format_timestamp(session_datetime(when), formats(dataset).rerank)
+    f = formats(dataset)
+    options = (f.embed or FormatOptions(time_style=None)) if for_embedding else f.rerank
+    return format_timestamp(session_datetime(when), options)
 
 
 @dataclass(frozen=True)

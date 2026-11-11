@@ -65,21 +65,29 @@ class Embedder:
     tokenizer: str = GEMMA  # counts the tokens an input is billed for
     special_tokens: int = 2  # added per input (BOS and EOS for embeddinggemma; EOS for Qwen3)
     query_producer: str | None = None  # set: a query is rendered as EventMemory renders a message by this producer
+    query_date: bool = False  # the query is headed by its date as EventMemory heads an embedded segment: "[<date>] "
 
     @property
     def documents(self) -> str:
         return self.doc_store or self.name
 
-    def render_query(self, query: str) -> str:
+    def render_query(self, query: str, date: str | None = None) -> str:
         """The query as embedded, before the query prompt. With a query producer, it reads as
-        EventMemory's WholeTextDeriver renders a segment for embedding, without the timestamp:
-        `User: "<the text, JSON-escaped>"` (the producer outside the quotes, ensure_ascii off), so
-        the embedder knows who is asking. Otherwise the query as it is."""
-        return query if self.query_producer is None else as_message(self.query_producer, query)
+        EventMemory's WholeTextDeriver renders a segment for embedding: `User: "<the text,
+        JSON-escaped>"` (the producer outside the quotes, ensure_ascii off), so the embedder knows
+        who is asking; a dated embedder heads it with the date as the deriver does,
+        `[<date>] User: "<query>"` (date: partitions.query_date(..., for_embedding=True)).
+        Otherwise the query as it is."""
+        text = query if self.query_producer is None else as_message(self.query_producer, query)
+        if self.query_date:
+            if not date:
+                raise ValueError(f"{self.name} embeds the query's date, and none was given")
+            text = f"[{date}] {text}"
+        return text
 
-    def query_text(self, query: str) -> str:
+    def query_text(self, query: str, date: str | None = None) -> str:
         """The whole input sent for a query: the query prompt (an instruction), then render_query."""
-        return self.query_prompt + self.render_query(query)
+        return self.query_prompt + self.render_query(query, date)
 
 
 QUERY_PROMPT, DOC_PROMPT = "task: search result | query: ", "title: none | text: "  # the model card's recommended prompts
@@ -110,6 +118,11 @@ EMBEDDERS = {
 QUERY_FORMATS = {"": None, "-user": "User"}
 EMBEDDERS |= {f"{server}-raw-user": replace(EMBEDDERS[f"{server}-raw"], name=f"{server}-raw-user", query_producer="User")
               for server in SERVERS}
+# "-raw-date-user" (the user's request, 2026-11-11): the query as a dated message,
+# `[<date>] User: "<query>"`, dated as the deriver dates the documents (the date alone); against
+# "-raw-user" (no date) and "-raw" (the bare query), in compare-embedders.
+EMBEDDERS |= {f"{server}-raw-date-user": replace(EMBEDDERS[f"{server}-raw-user"], name=f"{server}-raw-date-user",
+                                                 query_date=True) for server in SERVERS}
 # Qwen3-Embedding-8B on DeepInfra (the user's decision, 2026-11-09: the default first stage, at
 # 1,024 dimensions; production may use it). Model card (checked 2026-11-09): queries are
 # "Instruct: {task}\nQuery:{query}" (the card's Python has no space after "Query:"), documents get
@@ -178,7 +191,12 @@ def query_vectors(embedder: str, dataset: str, variant: str) -> np.ndarray:
 
     target = path(embedder, dataset, f"query_{variant}")
     spec, rows = EMBEDDERS[embedder], queries(dataset)
-    texts = [spec.render_query(q["variants"][variant]) for q in rows]
+    if spec.query_date:
+        from rbench import partitions as pt
+
+        texts = [spec.render_query(q["variants"][variant], pt.query_date(dataset, q, for_embedding=True)) for q in rows]
+    else:
+        texts = [spec.render_query(q["variants"][variant]) for q in rows]
     key = hashlib.sha1(json.dumps([spec.query_prompt, spec.model or spec.url, texts]).encode()).hexdigest()[:16]
     meta = target.with_suffix(".key")
     if target.exists() and (not meta.exists() or meta.read_text() != key):

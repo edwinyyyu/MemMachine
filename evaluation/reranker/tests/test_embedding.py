@@ -134,3 +134,23 @@ def test_query_vectors_embed_the_rendered_queries(tmp_path, monkeypatch):
     assert sent["qwen3-8b-di-mem-user"] == ([embedding.EMBEDDERS["gemma300m-raw-user"].render_query(TRICKY), 'User: "b"'],
                                             embedding.QWEN3_MEMORY_QUERY)
     assert sent["qwen3-8b-di"] == ([TRICKY, "b"], embedding.QWEN3_QUERY)
+
+
+def test_a_dated_query_embeds_as_the_deriver_heads_a_segment():
+    """`[<date>] User: "<query>"` with the date as WholeTextDeriver dates the documents (the date
+    alone, MemMachine's default embedding options); a dated embedder needs the date and is not
+    run inside EventMemory (which passes the bare question)."""
+    import json
+
+    from rbench import memory, partitions as pt
+
+    row = {"variants": {"question": "Where?"}, "features": {"question_date": "2023/05/30 (Tue) 23:31"}}
+    date = pt.query_date("longmemeval_m", row, for_embedding=True)
+    assert date == "Tuesday, May 30, 2023"
+    spec = embedding.EMBEDDERS["gemma300m-di-raw-date-user"]
+    assert spec.render_query("Where?", date) == f"[{date}] User: {json.dumps('Where?')}"
+    assert spec.documents == embedding.EMBEDDERS["gemma300m-di-raw"].documents  # the same document vectors
+    with pytest.raises(ValueError, match="date"):
+        spec.render_query("Where?")
+    with pytest.raises(NotImplementedError):
+        memory.QueryCachingEmbedder("gemma300m-di-raw-date-user")
