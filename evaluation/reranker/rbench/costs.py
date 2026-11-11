@@ -211,7 +211,8 @@ def estimate(runs, embedder: str = DEFAULT_EMBEDDER, probes: int = 8) -> dict:
     unknown: list[str] = []  # groups whose pool depth is not measured yet
     by_group: dict[str, dict] = {}  # model, dataset, chunking, sample, seeds or windows -> pool, tokens, dollars
     for (dataset, scope, variant, c, expand, model), members in groups.items():
-        sample_name = max((r.sample for r in members), key=ORDER.index)  # the largest holds the others
+        names = {r.sample for r in members}  # nested samples: the largest holds the others (a slice mixes with none)
+        sample_name = names.pop() if len(names) == 1 else max(names, key=ORDER.index)
         template = RERANKERS[model].template
         rows, picked = queries(dataset), sample_of(dataset, sample_name)
         keys = pt.groups(dataset, picked, scope)

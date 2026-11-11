@@ -268,7 +268,8 @@ def shares_for(run, chunking: str, embedder: str) -> tuple[float, float] | None:
     (any embedder, its own first)."""
     from rbench.samples import ORDER
 
-    for sample_name in reversed(ORDER[: ORDER.index(run.sample) + 1]):
+    nested = ORDER[: ORDER.index(run.sample) + 1] if run.sample in ORDER else [run.sample]  # a slice: its own only
+    for sample_name in reversed(nested):
         for e in (embedder, *sorted(p.name for p in DEPTH.glob("*") if p.name != embedder)):
             got = pool_shares(e, run.dataset, chunking, sample_name, run.expand, pool(run))
             if got is not None:

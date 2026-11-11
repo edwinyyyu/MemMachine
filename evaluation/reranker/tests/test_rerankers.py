@@ -113,3 +113,15 @@ def test_deepinfra_refuses_only_a_different_format_not_a_different_instruction(m
 
 async def _done() -> None:
     return None
+
+
+def test_the_tuning_candidates_are_the_reviewed_texts_in_the_card_format():
+    """The six candidates the user reviewed (c6 and c7 dropped), each only an instruction change."""
+    assert list(rerankers.TUNING) == ["c1", "c2", "c3", "c4", "c5", "c8"]
+    assert rerankers.TUNING["c1"][1] == "Given a user's query, retrieve passages relevant to it."
+    keys = {rerankers.prompt_key(rerankers.RERANKERS[m].template) for m in ("q4", "q4-mem", *(f"q4-{c}" for c in rerankers.TUNING))}
+    assert len(keys) == 8  # every arm's scores are its own
+    for c, (_, text) in rerankers.TUNING.items():
+        t = rerankers.RERANKERS[f"q4-{c}"].template
+        assert t.instruction == text and (t.prefix, t.format, t.suffix) == (QWEN3_CARD.prefix, QWEN3_CARD.format, QWEN3_CARD.suffix)
+        assert rerankers.RERANKERS[f"q4-{c}"].query_producer is None and rerankers.RERANKERS[f"q4-{c}"].hf_model.endswith("4B")

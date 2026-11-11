@@ -127,6 +127,30 @@ RERANKERS = {
                             "Qwen3-Reranker-4B, memory instruction, User: query", "#eb6834", template=QWEN3_CARD_MEMORY,
                             query_producer="User"),
 }
+# Instruction candidates for the 4B, tuned on the held-out sample "tune" (questions 101-200) with
+# the card's ("q4") and the user's ("q4-mem") as references; the user reviewed them and dropped
+# two (time and change; a 65-token full description), 2026-11-11. The decision rule is fixed in
+# METHODOLOGY section 8 before any is scored. Colors repeat across these (six slots): the tuning
+# report is read by its tables.
+TUNING = {
+    "c1": ("topical relevance", "Given a user's query, retrieve passages relevant to it."),
+    "c2": ("evidence, indirect", "Given a user's query, retrieve passages containing evidence needed to answer it, "
+                                 "even if they do not answer it on their own."),
+    "c3": ("memory domain", "Given a user's query, retrieve memories from the user's past conversations that contain "
+                            "information needed to answer it."),
+    "c4": ("judgment framing", "Judge whether this passage contains information that would help answer the user's "
+                               "query: a fact, preference, plan, or event it depends on, or when something happened."),
+    "c5": ("personal context", "Given a request from a user, retrieve passages that reveal the user's circumstances, "
+                               "preferences, or history that a good answer should take into account."),
+    "c8": ("pieces to combine", "Given a user's query that may need several pieces of information combined, retrieve "
+                                "passages that provide any one of those pieces."),
+}
+_SLOTS = ("#6250d6", "#e87ba4", "#eb6834", "#1baf7a", "#eda100", "#6250d6")
+RERANKERS |= {
+    f"q4-{c}": Reranker(f"q4-{c}", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, f"Qwen3-Reranker-4B, {c} ({label})",
+                        _SLOTS[i % len(_SLOTS)], template=replace(QWEN3_CARD, instruction=text))
+    for i, (c, (label, text)) in enumerate(TUNING.items())
+}
 PAID = [m for m, r in RERANKERS.items() if r.backend == "deepinfra"]
 
 

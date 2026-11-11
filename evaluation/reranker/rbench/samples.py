@@ -7,6 +7,8 @@ is no dev/test split (decided 2026-11-06): every sampled query is evaluated.
   panel  300
   large  500
   all    every query
+  tune   the 101st to 200th: held out from the pilot, for tuning the reranker's instruction
+         (2026-11-11); inside panel, large and all, but not nested with proto
 
 Datasets with fewer queries than a sample asks for contribute all they have.
 """
@@ -17,8 +19,9 @@ import hashlib
 
 from rbench.schema import queries
 
-SAMPLES = {"tiny": 8, "proto": 100, "panel": 300, "large": 500, "all": 10**9}
-ORDER = list(SAMPLES)  # each nests in the next
+SAMPLES: dict[str, int | tuple[int, int]] = {"tiny": 8, "proto": 100, "panel": 300, "large": 500, "all": 10**9,
+                                             "tune": (100, 200)}
+ORDER = [k for k, v in SAMPLES.items() if isinstance(v, int)]  # the nested ones: each in the next
 
 
 def sample_order(dataset: str) -> list[int]:
@@ -28,5 +31,7 @@ def sample_order(dataset: str) -> list[int]:
 
 
 def sample(dataset: str, name: str) -> list[int]:
-    """Indices into queries(dataset), in file order."""
-    return sorted(sample_order(dataset)[: SAMPLES[name]])
+    """Indices into queries(dataset), in file order: the first N of the hash order, or a slice of it."""
+    n = SAMPLES[name]
+    start, stop = (0, n) if isinstance(n, int) else n
+    return sorted(sample_order(dataset)[start:stop])

@@ -106,6 +106,11 @@ STAGES: dict[str, list[Run]] = {
     # scored. The pilot first: the same on 100 questions.
     "lme-pilot": [replace(lme(("seg500",), ("q4", "q8"), 0), sample="proto")],
     "lme-core": [lme(("seg500",), ("q4", "q8"), 0)],
+    # The 4B's instruction, tuned on questions 101-200 (held out from the pilot; part of the core,
+    # so their embedding is the core's): the top 50 seeds scored with each candidate and the two
+    # references (the user's request, 2026-11-11; the decision rule: METHODOLOGY section 8).
+    "lme-tune": [replace(lme(("seg500",), ("q4", "q4-mem", "q4-c1", "q4-c2", "q4-c3", "q4-c4", "q4-c5", "q4-c8"), 0),
+                         sample="tune", pool_seeds=50)],
     # Optional, later: the reranker scoring each seed's expand_context-3 window (expand, then rerank).
     "lme-windows": [lme(("seg500",), ("q8",), 3)],
     "lme-sizes": [lme(("seg250", "seg1000", "seg2000"), ("q8",), e) for e in (0, 3)],
