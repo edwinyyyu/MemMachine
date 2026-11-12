@@ -280,6 +280,12 @@ def _key(color: str, ls="-", marker=None) -> Line2D:
                   **_hollow({"marker": marker, "color": color, "markersize": 9}))
 
 
+def _windows_scored(r: Results) -> bool:
+    """Whether any reranker scored windows (expand, then rerank) in these results: notes mention
+    the lighter "scored the windows" shade only then."""
+    return bool(r.df.ranker.astype(str).str.startswith("xrerank:").any())
+
+
 def _save(fig, path, title: str, handles=None, labels=None, ncol: int | None = None,
           groups: list[tuple[str, list, list[str]]] | None = None, note: str | list[str] = "") -> None:
     """Title above the panels and legend below them (the figure must use constrained layout). `groups`
@@ -485,12 +491,16 @@ def coverage_by_tokens(r: Results, out, head: str) -> None:
             _save(fig, out / (f"coverage_tokens_{reading}" + (f"_{c}" if len(r.chunkings) > 1 else "") + ".png"),
                   f"Coverage ({EVENT_TEXT[reading]}) vs reader tokens, {_sized(r, c)} — {head}", groups=_ranker_groups(r, keys),
                   note=[
-                "Does reranking read more of the evidence within the same reader budget?",
-                "Same for both: reader tokens (x), the vector search limit and expand_context (one pair per panel).",
-                "Differs: the order the seeds are read in; reranking also pays for reranker tokens.",
-                "Blue: the first stage. The model's hue: reranked (lighter: it scored the windows). Gray: the best any "
-                "order of the same seeds could do (seeds alone).",
-                f"Reading: {EVENT_TEXT[reading]}. Details: report section 3."])
+                "Does reranking read more of the evidence within the same number of reader tokens?",
+                "Each panel: one vector search limit L (the seeds the vector search retrieves) and one expand_context "
+                "(the neighbouring segments read with each seed). x: the reader's token budget (log scale).",
+                f"y: the share of questions with {EVENT_TEXT[reading]} within that budget.",
+                "Blue: the first stage, reading the L seeds in search order. The model's color: the same seeds in the "
+                "reranker's order. Gray: the ceiling, the best any order of those seeds could do.",
+                ("Lighter model color: the reranker scored each seed's window instead of the seed." if _windows_scored(r)
+                 else ""),
+                "The reranker's own cost is not on this chart: at a fixed reader budget it is an extra cost "
+                "(cost_equal.png weighs it). Details: report section 3."])
 
 
 def recall_precision_f1(r: Results, out, head: str) -> None:
@@ -536,13 +546,17 @@ def recall_precision_f1(r: Results, out, head: str) -> None:
                 _save(fig, out / _file(name, None, c, r), f"Gold-character recall, precision and F1 vs {xlabel}, {_sized(r, c)} — {head}",
                       groups=_ranker_groups(r, keys), note=[
                     "Recall, precision and F1 of the evidence's characters read, with and without reranking.",
-                    "Same for both: " + ("reader tokens" if axis == "tokens" else "segments read") + " (x), the vector "
-                    "search limit and expand_context (panel).",
-                    "L: the vector search limit, the seeds retrieved and reranked (the deepest is the pool scored, "
-                    "200; each shallower L replays its first L seeds)."
-                    + (" Each line ends where its L seeds' windows run out: L x (1 + expand_context) segments at most."
-                       if axis == "k" else " A budget: past the tokens its L seeds hold, nothing more is read."),
-                    "Blue: the first stage. The model's hue: reranked (lighter: it scored the windows).",
+                    "Recall: the share of the evidence's characters read. Precision: the share of the characters read "
+                    "that are evidence.",
+                    "Each panel: one vector search limit L (the seeds retrieved; the deepest, 200, is the pool scored, and "
+                    "a smaller L uses the first L seeds of the same ranking) and one expand_context (neighbouring segments "
+                    "read with each seed).",
+                    ("x: the segments read, a seed's neighbours counted. Each line ends where its L seeds run out: at most "
+                     "L x (1 + expand_context) segments." if axis == "k" else
+                     "x: the reader's token budget (log scale). Lines flatten once the budget holds everything the L seeds "
+                     "contain."),
+                    "Blue: the first stage, in search order. The model's color: the same seeds in the reranker's order."
+                    + (" Lighter: it scored each seed's window." if _windows_scored(r) else ""),
                     "Details: METHODOLOGY section 2."])
 
 
@@ -580,10 +594,14 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
               groups=_ranker_groups(r, keys),
               note=[
                   "How much evidence is read for a given number of segments (EventMemory's max_num_segments)?",
-                  f"Same for both: segments read (x), the vector search limit ({limit[1:]}) and expand_context (panel).",
-                  "Each axis ends where the windows of the L seeds run out: L x (1 + expand_context).",
-                  "Blue: the first stage. The model's hue: reranked (lighter: it scored the windows).",
-                  "Seeds kept (k) and the vector search limit: see the top-k chart."])
+                  f"Each panel: the vector search limit L = {limit[1:]} and one expand_context (the neighbouring segments "
+                  "read with each seed).",
+                  "x: the segments read, a seed's neighbours counted. Each axis ends where the L seeds run out: "
+                  "L x (1 + expand_context) segments.",
+                  f"y: the share of questions with {EVENT_TEXT[reading]} within that many segments.",
+                  "Blue: the first stage, in search order. The model's color: the same seeds in the reranker's order."
+                  + (" Lighter: it scored each seed's window." if _windows_scored(r) else ""),
+                  "Seeds kept (k) and other vector search limits: topk_recall_*.png."])
 
 
 def _size_line(r: Results, chunkings) -> str:
@@ -667,11 +685,13 @@ def expansion_compare(r: Results, out, head: str) -> None:
                   ["first stage (blue)", f"{LABEL[m]} (its hue)"], ncol=2,
                   note=[
                       "Which expand_context reads the evidence most cheaply?",
-                      "One line per expand_context, labelled at its right end; darker means smaller.",
-                      "Same for every line in a panel: the vector search limit (row) and how the seeds are ordered "
-                      "(column).",
-                      "Reader tokens on x count the windows' extra text too.",
-                      f"Expand, then rerank appears only where the windows were scored: up to L {config.EVAL.pool_windows}.",
+                      "Each line: one expand_context (the neighbouring segments read with each seed), labelled at its "
+                      "right end; darker: fewer neighbours.",
+                      "Each panel: one vector search limit (row) and one order of reading the seeds (column: search order, "
+                      "or reranked).",
+                      "x: the reader's token budget, counting the neighbours' text too.",
+                      (f"Expand, then rerank (the reranker scoring windows) appears only where windows were scored: up to "
+                       f"L {config.EVAL.pool_windows}." if _windows_scored(r) else ""),
                       "Details: report section 12."])
 
 
@@ -811,13 +831,13 @@ def rerank_cost(r: Results, out, head: str, reading: str) -> None:
           handles, labels, ncol=2,
           note=[
               "What does a deeper vector search buy, with and without reranking, and what does the reranker cost?",
-              "x: the vector search limit L, the same for both lines: the seeds retrieved (5, 10, 20 and so on up to "
-              "the pool). The first stage reads them in search order; the reranker scores all L and reads them in its "
-              "order.",
-              ("Top axis: the reranker's cost at that L, in $ per 1,000 questions at DeepInfra list prices "
-               "(nearly proportional to L: one pair per seed)." if len(chunkings) == 1 else
-               "Several chunkings: their reranker costs per seed differ, so no cost axis; report section 6."),
-              "Same for both: the reader budget (panel).",
+              "Each panel: one reader token budget. x: the vector search limit L, the seeds retrieved (5, 10, 20 and so "
+              "on up to the pool), the same for both lines.",
+              "Blue: the first stage, reading the L seeds in search order. The model's color: the reranker scores all L "
+              "seeds and they are read in its order.",
+              ("Top axis: what the reranker costs at that L, in $ per 1,000 questions at DeepInfra's list price (nearly "
+               "proportional to L: one pair per seed)." if len(chunkings) == 1 else
+               "Several chunkings: their reranker costs per seed differ, so there is no cost axis; report section 6."),
               ("Lighter: smaller segments. " if len(chunkings) > 1 else "") + sizes,
               ])
 
@@ -980,7 +1000,7 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
     if identical:
         legend.append((Patch(facecolor=SAME, edgecolor=SAME_HATCH, hatch="///", linewidth=0),
                        "identical on every question: both read all L seeds"))
-    legend.append((Patch(facecolor=SURFACE, edgecolor=GRID), "blank: the reranker alone costs more than this spend"))
+    legend.append((Patch(facecolor=SURFACE, edgecolor=GRID), "blank: the budget cannot even pay for the reranker"))
     if lines:
         legend.insert(0, (_key(INK), "break-even: reranking clearly gets more for the money inside the line" if not few
                           else "break-even (point estimate): reranking gets more inside the line"))
@@ -990,19 +1010,22 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
           [h for h, _ in legend], [lab for _, lab in legend], ncol=2,
           note=[
               "Does reranking get more evidence for the same total money, its own cost included?",
-              "The reranker's cost: its DeepInfra list price per pair token ("
-              + "; ".join(f"{LABEL[m]} ${RERANKERS[m].price:g}/M" for m in r.models)
-              + "; checked 2026-11-05) x the mean reranker tokens per question at the panel's limit.",
-              "Same for both: the budget per question, and the vector search limit (one per panel). Without reranking "
-              "the reader gets the whole budget as tokens; with reranking the reranker's cost comes out of it, so the "
-              "reader gets fewer tokens (the budget minus the reranker's cost / the LLM price), in reranked order.",
-              "At a fixed number of reader tokens the reranker is only an added cost: see coverage_tokens_*.png.",
-              "Dashed: lines of constant money, in dollars per 1,000 questions (budget x LLM price).",
-              f"Color: extra coverage from reranking ({EVENT_TEXT[reading]}). Gray: no clear difference.",
-              "Line: where reranking clearly gets more for the money (inside it).",
+              "How to read a cell: an LLM input price (x) and a budget per question (y, shown as the reader tokens it "
+              "buys at that price). Without reranking, the reader gets the whole budget. With reranking, the reranker is "
+              "paid first and the reader gets the rest: fewer tokens, read in the reranker's order.",
+              f"Color: how much more of the evidence the reranked side reads ({EVENT_TEXT[reading]}).",
+              "Gray: no clear difference (the 95% interval includes 0). Hatched: both sides read all L seeds, so nothing "
+              "changes. Blank: the budget cannot even pay for the reranker. Black line: break-even; inside it reranking "
+              "clearly gets more for the money.",
+              "The reranker's cost: DeepInfra's list price ("
+              + "; ".join(f"{LABEL[m]} ${RERANKERS[m].price:g}/M pair tokens" for m in r.models)
+              + "; checked 2026-11-05) times its tokens per "
+              "question (in each panel's title).",
+              "Dashed lines: constant money, in $ per 1,000 questions (reader tokens x LLM price).",
+              "At a fixed number of reader tokens the reranker is simply an extra cost: coverage_tokens_*.png.",
               ("Pipeline test: fewer than 20 questions, so no intervals and no gray." if few else ""),
-              "Long sessions: if retrieved text is re-sent m times, read the price as price x m. Details: report "
-              "section 7."])
+              "Long conversations: if the retrieved text is re-sent m times, read the price as m x the price. Details: "
+              "report section 7."])
 
 
 def query_types(r: Results, out, head: str, reading: str) -> None:
@@ -1054,9 +1077,11 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
           [_key(SERIES[m], marker="o") for m in models], [LABEL[m] for m in models],
           note=[
               "Which kinds of question does reranking help?",
-              f"Gain: coverage reranked minus the first stage over the same {limit[1:]} seeds (the best limit overall).",
-              "Dot: the mean. Line: its 95% interval. No interval for groups of fewer than 20 questions.",
-              "Same for both: the reader budget (panel). Details: report section 9."])
+              f"Each dot: one group of questions, its gain: coverage reranked minus the first stage over the same "
+              f"{limit[1:]} seeds (the best vector search limit overall), at the panel's reader budget.",
+              "Line: the gain's 95% interval (none for groups of fewer than 20 questions).",
+              "Groups: the dataset's own question types, and simple features of the question (report section 9 "
+              "defines each)."])
 
 
 def first_stage_sizes(r: Results, out, head: str, reading: str) -> None:
@@ -1199,12 +1224,13 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
           [k if k.startswith("seeds,") else f"{LABEL[m]}: {k}" for k, m in entries],
           ncol=min(len(entries), 3),
           note=[
-              "Read the seeds' windows, or plain chunks of the same size?",
-              "Same for all: reader tokens (x).",
-              "Differs: what is embedded, what the reranker scores and what is read.",
-              "Blue: the first stage. Shades of the model's hue: its reranked approaches.",
-              ("Sizes are measured; panels flag pairs more than " + f"{config.EVAL.size_tolerance:.0%}" + " apart."
-               if unmatched else "Sizes are measured: mean tokens per retrieved seed's window."),
+              "Read each seed with its neighbouring segments (its window), or plain chunks of the same size?",
+              "Each panel: one model and one expand_context (the neighbours read with each seed). x: the reader's token "
+              "budget (log scale).",
+              "Blue: the first stage, reading the windows in search order. The model's colors: its reranked approaches "
+              "(legend).",
+              ("Window sizes are measured; panels flag pairs more than " + f"{config.EVAL.size_tolerance:.0%}" + " apart."
+               if unmatched else "Window sizes in the titles: the mean segment-text tokens of a retrieved seed's window."),
               "Details: report section 11."])
 
 
@@ -1342,11 +1368,14 @@ def topk_recall(r: Results, out, head: str) -> None:
               handles, labels, ncol=3,
               note=[
               "Recall with and without reranking across top-k: the asker's metric.",
-              "Top-k two ways: L, the vector search limit (every seed reranked), and k, the seeds kept after "
-              "reranking.",
-              "Top row: the gain at each L and k, colored only where it is clear; '=' where k = L and nothing changes.",
-              "Middle: recall vs k. Bottom: recall vs L at k = 5, 10 and 20, labelled at the right.",
-              "Blue: the first stage. The model's hue: reranked; lighter shades are other L or k values."
+              "Top-k two ways: L, the vector search limit (the seeds retrieved, every one reranked), and k, the seeds "
+              "kept after reranking. Without a reranker the two are the same.",
+              "Columns: three meanings of recall: the share of a question's evidence turns read in full; read at least "
+              "in part (touched); and all of a question's evidence read in full (counted 1 or 0). Each is averaged over "
+              "questions, every question counting equally (not pooled over evidence turns).",
+              "Top row: the gain at each L and k, colored only where its 95% interval excludes 0; '=' where k = L, so "
+              "nothing changes. Middle: recall vs k. Bottom: recall vs L at k = 5, 10 and 20, labelled at the right.",
+              "Blue: the first stage. The model's color: reranked; lighter shades: other L or k values."
               + (" Pipeline test: no intervals." if _few(r) else ""),
               "Details: report section 16."])
 
@@ -1403,7 +1432,7 @@ def cost_equal_usd(r: Results, out, head: str, reading: str) -> None:
             own = price(m) * es.tokens / 1e6 * 1000  # the reranker's cost per 1,000 questions
             if es.spends[0] <= own <= es.spends[-1]:
                 ax.axhline(own, color=INK, linewidth=0.8, linestyle=":")
-                ax.annotate(f"the reranker alone: ${own:.2g}", (es.prices[0], own), fontsize=6.5, color=INK,
+                ax.annotate(f"reranker cost: ${own:.2g} per 1,000 questions", (es.prices[0], own), fontsize=6.5, color=INK,
                             xytext=(3, 3), textcoords="offset points")
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
             ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:g}"))
@@ -1421,7 +1450,7 @@ def cost_equal_usd(r: Results, out, head: str, reading: str) -> None:
     if identical:
         legend.append((Patch(facecolor=SAME, edgecolor=SAME_HATCH, hatch="///", linewidth=0),
                        "identical on every question: both read all L seeds"))
-    legend.append((Patch(facecolor=SURFACE, edgecolor=GRID), "blank: below the reranker's own cost"))
+    legend.append((Patch(facecolor=SURFACE, edgecolor=GRID), "blank: below the reranker's own cost (the dotted line)"))
     if lines:
         legend.insert(0, (_key(INK), "break-even: reranking clearly gets more for the money inside the line" if not few
                           else "break-even (point estimate): reranking gets more inside the line"))
@@ -1431,14 +1460,22 @@ def cost_equal_usd(r: Results, out, head: str, reading: str) -> None:
           f"{fixed[1]}) — {head}",
           [h for h, _ in legend], [lab for _, lab in legend], ncol=2,
           note=[
-              "Does reranking get more evidence for the same total money, its own cost included? (cost_equal.png, "
-              "with the budget in dollars)",
-              "The reranker's cost: its DeepInfra list price per pair token ("
-              + "; ".join(f"{LABEL[m]} ${RERANKERS[m].price:g}/M" for m in r.models)
-              + "; checked 2026-11-05) x the mean reranker tokens per question at the panel's limit: the dotted line.",
-              "Without reranking the whole budget buys reader tokens (the dashed diagonals: budget / LLM price); with "
-              "reranking the reranker's cost comes out of it first, so the reader gets fewer, in reranked order.",
-              f"Color: extra coverage from reranking ({EVENT_TEXT[reading]}). Gray: no clear difference.",
+              "Does reranking get more evidence for the same total money, its own cost included? (cost_equal.png with "
+              "the budget in dollars.)",
+              "How to read a cell: an LLM input price (x) and a total budget in $ per 1,000 questions (y). Without "
+              "reranking, the reader gets the whole budget as tokens. With reranking, the reranker is paid first and the "
+              "reader gets the rest, read in the reranker's order.",
+              "Dashed diagonals: the reader tokens the budget buys without a reranker (budget / LLM price).",
+              "Dotted horizontal line: the reranker's own cost per 1,000 questions at this panel's L. At the line the "
+              "budget pays for reranking and leaves nothing for the reader; below it (blank) it cannot pay for "
+              "reranking at all.",
+              "The reranker's cost: DeepInfra's list price ("
+              + "; ".join(f"{LABEL[m]} ${RERANKERS[m].price:g}/M pair tokens" for m in r.models)
+              + "; checked 2026-11-05) times its tokens per "
+              "question (in each panel's title).",
+              f"Color: how much more of the evidence the reranked side reads ({EVENT_TEXT[reading]}). Gray: no clear "
+              "difference (the 95% interval includes 0). Hatched: both sides read all L seeds. Black line: break-even; "
+              "inside it reranking clearly gets more for the money.",
               ("Pipeline test: fewer than 20 questions, so no intervals and no gray." if few else ""),
               "Details: report section 7."])
 
