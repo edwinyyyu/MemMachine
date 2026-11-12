@@ -567,7 +567,7 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
             for key, name, color, ls in _series(r, c, limit, e):
                 counts = np.arange(1, top + 1)  # segments are read whole: coverage exists at each count only
                 _plot(ax, counts, rd.coverage(r.rows(c, name)[f"{reading}_k"].to_numpy(), counts), color=color,
-                      linestyle=ls, **({"marker": "o", "markersize": 3} if top <= 40 else {}))
+                      linestyle=ls)
                 keys.add(key)
             _k_x(ax, top)
             ax.set_xlabel("segments read (m = max_num_segments)\nexact at every count")
@@ -891,6 +891,33 @@ def _few(r: Results) -> bool:
     return len(np.unique(frontier._clusters(r))) < MIN_CLUSTERS
 
 
+def _spend_map(ax, es, few: bool, norm):
+    """One equal-spend map (frontier.EqualSpend) on log axes, x the LLM price and y its budgets
+    (reader-token equivalents or dollars): the gain where clear, gray where its interval includes
+    0, a hatch where both sides read the same, the break-even line. Returns (the gain's image,
+    whether any cell is identical, whether a break-even line was drawn)."""
+    clear = (np.isfinite(es.gain) if few else (es.lo > 0) | (es.hi < 0)) & ~es.same
+    im = ax.pcolormesh(es.prices, es.spends, np.where(clear, es.gain, np.nan).T, cmap=DIVERGING, norm=norm,
+                       shading="nearest")
+    ax.pcolormesh(es.prices, es.spends, np.where(np.isfinite(es.gain) & ~clear & ~es.same, 1.0, np.nan).T,
+                  shading="nearest", cmap=LinearSegmentedColormap.from_list("muted", [MUTED, MUTED]))
+    ax.pcolormesh(es.prices, es.spends, np.where(es.same, 1.0, np.nan).T, shading="nearest",
+                  cmap=LinearSegmentedColormap.from_list("same", [SAME, SAME]))
+    if es.same.any():  # a light 45-degree hatch: identical by construction, not "no clear difference"
+        with matplotlib.rc_context({"hatch.color": SAME_HATCH, "hatch.linewidth": 0.6}):
+            ax.contourf(es.prices, es.spends, es.same.T.astype(float), levels=[0.5, 1.5], colors="none",
+                        hatches=["///"])
+    edge = np.nan_to_num(es.gain if few else es.lo, nan=-1.0).T  # where the gain (its lower bound) crosses 0
+    line = bool((edge > 0).any() and (edge <= 0).any())
+    if line:
+        ax.contour(es.prices, es.spends, edge, levels=[0.0], colors=[INK], linewidths=LINE)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(es.prices[0], es.prices[-1])
+    ax.set_ylim(es.spends[0], es.spends[-1])
+    return im, bool(es.same.any()), line
+
+
 DOLLARS_PER_1000 = (0.01, 0.1, 1.0, 10.0, 100.0)  # cost_equal's lines of constant money
 
 
@@ -926,26 +953,8 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
                 ax.set_visible(False)
                 continue
             _, L, what, es = mine[col]
-            clear = (np.isfinite(es.gain) if few else (es.lo > 0) | (es.hi < 0)) & ~es.same
-            im = ax.pcolormesh(es.prices, es.spends, np.where(clear, es.gain, np.nan).T, cmap=DIVERGING, norm=norm,
-                               shading="nearest")
-            ax.pcolormesh(es.prices, es.spends, np.where(np.isfinite(es.gain) & ~clear & ~es.same, 1.0, np.nan).T,
-                          shading="nearest", cmap=LinearSegmentedColormap.from_list("muted", [MUTED, MUTED]))
-            ax.pcolormesh(es.prices, es.spends, np.where(es.same, 1.0, np.nan).T, shading="nearest",
-                          cmap=LinearSegmentedColormap.from_list("same", [SAME, SAME]))
-            if es.same.any():  # a light 45-degree hatch: identical by construction, not "no clear difference"
-                with matplotlib.rc_context({"hatch.color": SAME_HATCH, "hatch.linewidth": 0.6}):
-                    ax.contourf(es.prices, es.spends, es.same.T.astype(float), levels=[0.5, 1.5], colors="none",
-                                hatches=["///"])
-            identical = identical or bool(es.same.any())
-            edge = np.nan_to_num(es.gain if few else es.lo, nan=-1.0).T  # where the gain (its lower bound) crosses 0
-            if (edge > 0).any() and (edge <= 0).any():
-                ax.contour(es.prices, es.spends, edge, levels=[0.0], colors=[INK], linewidths=LINE)
-                lines = True
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-            ax.set_xlim(es.prices[0], es.prices[-1])
-            ax.set_ylim(es.spends[0], es.spends[-1])
+            im, same_here, line_here = _spend_map(ax, es, few, norm)
+            identical, lines = identical or same_here, lines or line_here
             for usd in DOLLARS_PER_1000:  # budget in money: reader tokens = (dollars per question) / (price per token)
                 tokens = usd / 1000 / (es.prices / 1e6)
                 inside = (tokens >= es.spends[0]) & (tokens <= es.spends[-1])
@@ -1345,8 +1354,93 @@ def topk_recall(r: Results, out, head: str) -> None:
 ALL_READINGS = ("coverage", "rpf", "topk", "expansion_compare", "chunker_compare")  # every reading at once
 CHARTS = {"coverage": "coverage_by_tokens", "rpf": "recall_precision_f1", "counts": "coverage_counts",
           "rerank_cost": "rerank_cost", "gain_sizes": "gain_sizes", "cost_equal": "cost_equal",
-          "query_types": "query_types", "sizes": "first_stage_sizes", "expansion": "expansion", "topk": "topk_recall",
+          "cost_equal_usd": "cost_equal_usd", "query_types": "query_types", "sizes": "first_stage_sizes", "expansion": "expansion", "topk": "topk_recall",
           "expansion_compare": "expansion_compare", "chunker_compare": "chunker_compare"}
+
+
+READER_TOKENS_SHOWN = (500, 1000, 2000, 4000, 8000, 16000)  # cost_equal_usd's diagonals
+
+
+def cost_equal_usd(r: Results, out, head: str, reading: str) -> None:
+    """cost_equal with the budget in money (frontier.equal_spend_usd): y the dollars per 1,000
+    questions, x the LLM input price; diagonals mark the reader tokens that budget buys without a
+    reranker (dollars / price), and a horizontal line the reranker's own cost (below it the
+    reranker alone costs more than the budget). The same data as cost_equal, on a money axis."""
+    if not r.models:
+        return
+    fixed = frontier.setting(r)
+    few = _few(r)
+    panels = [(m, L, what, frontier.equal_spend_usd(r, m, price(m), L, reading, fixed))
+              for m in r.models for L, what in frontier.cost_limits(r, m, reading)]
+    panels = [p for p in panels if p[3] is not None]
+    if not panels:
+        return
+    models = [m for m in r.models if any(p[0] == m for p in panels)]
+    columns = max(sum(p[0] == m for p in panels) for m in models)
+    low = min(-0.05, float(np.nanmin([np.nanmin(p[3].gain) for p in panels])))
+    high = max(0.05, float(np.nanmax([np.nanmax(p[3].gain) for p in panels])))
+    norm = TwoSlopeNorm(0, low, high)
+    fig, axes = _figure(len(models), columns, panel=(4.6, 3.8), sharey=True)
+    lines, identical = False, False
+    for row, m in enumerate(models):
+        mine = [p for p in panels if p[0] == m]
+        for col in range(columns):
+            ax = axes[row][col]
+            if col >= len(mine):
+                ax.set_visible(False)
+                continue
+            _, L, what, es = mine[col]
+            im, same_here, line_here = _spend_map(ax, es, few, norm)
+            identical, lines = identical or same_here, lines or line_here
+            for t in READER_TOKENS_SHOWN:  # the budget's reader tokens without a reranker: dollars = tokens x price
+                usd = t * es.prices / 1e6 * 1000
+                inside = (usd >= es.spends[0]) & (usd <= es.spends[-1])
+                if inside.sum() >= 2:
+                    ax.plot(es.prices[inside], usd[inside], color=INK2, linewidth=0.6, linestyle=(0, (2, 2)), alpha=0.8)
+                    i = int(np.flatnonzero(inside)[len(np.flatnonzero(inside)) // 2])
+                    ax.annotate(f"{t:,} tokens", (es.prices[i], usd[i]), fontsize=6.5, color=INK2, rotation=32,
+                                rotation_mode="anchor", xytext=(2, 2), textcoords="offset points")
+            own = price(m) * es.tokens / 1e6 * 1000  # the reranker's cost per 1,000 questions
+            if es.spends[0] <= own <= es.spends[-1]:
+                ax.axhline(own, color=INK, linewidth=0.8, linestyle=":")
+                ax.annotate(f"the reranker alone: ${own:.2g}", (es.prices[0], own), fontsize=6.5, color=INK,
+                            xytext=(3, 3), textcoords="offset points")
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:g}"))
+            ax.yaxis.set_minor_formatter(NullFormatter())
+            ax.set_facecolor(SURFACE)
+            ax.grid(False)
+            ax.set_title(f"{LABEL[m]} · L {L} on both sides ({what}; reranker {es.tokens:,.0f} tokens per question)",
+                         loc="left")
+            ax.set_xlabel("LLM input price ($/M)")
+            if col == 0:
+                ax.set_ylabel("budget, $ per 1,000 questions\n(reranker included)")
+    fig.colorbar(im, ax=[a for row in axes for a in row],
+                 label=f"coverage gained by reranking for the same money ({EVENT_TEXT[reading]})")
+    legend = [(Patch(color=MUTED), "no clear difference (the gain's 95% interval includes 0)")] if not few else []
+    if identical:
+        legend.append((Patch(facecolor=SAME, edgecolor=SAME_HATCH, hatch="///", linewidth=0),
+                       "identical on every question: both read all L seeds"))
+    legend.append((Patch(facecolor=SURFACE, edgecolor=GRID), "blank: below the reranker's own cost"))
+    if lines:
+        legend.insert(0, (_key(INK), "break-even: reranking clearly gets more for the money inside the line" if not few
+                          else "break-even (point estimate): reranking gets more inside the line"))
+    name = "cost_equal_usd" + ("" if fixed == (default_segment(), 0) else f"_{fixed[0]}_x{fixed[1]}")
+    _save(fig, out / _file(name, reading),
+          f"Coverage for the same money per question, in dollars, reranked vs not ({fixed[0]}, expand_context "
+          f"{fixed[1]}) — {head}",
+          [h for h, _ in legend], [lab for _, lab in legend], ncol=2,
+          note=[
+              "Does reranking get more evidence for the same total money, its own cost included? (cost_equal.png, "
+              "with the budget in dollars)",
+              "The reranker's cost: its DeepInfra list price per pair token ("
+              + "; ".join(f"{LABEL[m]} ${RERANKERS[m].price:g}/M" for m in r.models)
+              + "; checked 2026-11-05) x the mean reranker tokens per question at the panel's limit: the dotted line.",
+              "Without reranking the whole budget buys reader tokens (the dashed diagonals: budget / LLM price); with "
+              "reranking the reranker's cost comes out of it first, so the reader gets fewer, in reranked order.",
+              f"Color: extra coverage from reranking ({EVENT_TEXT[reading]}). Gray: no clear difference.",
+              ("Pipeline test: fewer than 20 questions, so no intervals and no gray." if few else ""),
+              "Details: report section 7."])
 
 
 def _head(r: Results) -> str:

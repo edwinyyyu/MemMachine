@@ -2,7 +2,9 @@
 
   qtokens    Qwen3 tokens of the query text
   length     short | medium | long: the dataset's own tertiles of qtokens (each label states
-             its range), so each holds about a third of the queries
+             its range), so each holds about a third of the queries; left out when the
+             lengths barely differ (the long third's lower bound under twice the short
+             third's upper bound: LongMemEval-M, 13 and 18 tokens)
   form       question | command | keyword | statement, from the query's last sentence:
                question   ends with "?" or opens with an interrogative or auxiliary word
                command    opens with an imperative verb or a request ("I need", "please")
@@ -84,4 +86,6 @@ def query_features(dataset: str, variant: str, indices: list[int]) -> dict[str, 
     }
     if len(set(out["form"])) == 1:  # one value for every query slices nothing
         del out["form"]
+    if t2 + 1 < 2 * t1:  # the thirds barely differ in length (13 vs 18 tokens is not a kind of query)
+        del out["length"]
     return out

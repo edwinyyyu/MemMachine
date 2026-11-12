@@ -334,6 +334,27 @@ def equal_spend(results: Results, model: str, rr_price: float, limit: int, event
     return EqualSpend(gain, same, lo, hi, R, np.asarray(prices), np.asarray(spends))
 
 
+USD_PER_1000 = np.geomspace(0.01, 100, 61)  # equal_spend_usd's budgets, $ per 1,000 questions
+
+
+def equal_spend_usd(results: Results, model: str, rr_price: float, limit: int, event: str = EVENT,
+                    fixed: tuple[str, int] | None = None, prices: np.ndarray = SPEND_PRICES,
+                    usd: np.ndarray = USD_PER_1000) -> EqualSpend | None:
+    """equal_spend on a money grid: at LLM price p and a budget of B dollars per 1,000 questions,
+    the first stage reads B / 1000 / (p / 1e6) reader tokens and the reranked side that less the
+    reranker's cost in tokens at p. Coverage is exact at any budget (each question's reading
+    costs), so every cell is measured, not extrapolated. The result's `spends` are the dollars."""
+    parts = []
+    for p in prices:
+        es = equal_spend(results, model, rr_price, limit, event, fixed, prices=np.asarray([p]), spends=usd * 1e3 / p)
+        if es is None:
+            return None
+        parts.append(es)
+    stack = lambda field: np.concatenate([getattr(e, field) for e in parts], 0)  # noqa: E731
+    return EqualSpend(stack("gain"), stack("same"), stack("lo"), stack("hi"), parts[0].tokens, np.asarray(prices),
+                      np.asarray(usd))
+
+
 def same_everywhere(es: EqualSpend, spend: float) -> bool:
     """Whether reranking changes nothing at this spend at any price: both sides read the whole
     pool (the spend covers it), so the gain is exactly 0."""
