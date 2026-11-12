@@ -154,3 +154,15 @@ def test_a_dated_query_is_headed_as_eventmemory_heads_a_segment(tmp_path, monkey
     assert list(r.work) == [f"[{date}] User: {json.dumps(q, ensure_ascii=False)}"]
     with pytest.raises(ValueError, match="dataset"):
         memory.CachedReranker("q4-mem-date-user", mode="record")
+
+
+def test_the_core_runs_both_rerankers_with_the_users_instruction_and_the_bare_query():
+    from rbench import grid
+
+    (run,) = grid.STAGES["lme-core"]
+    assert run.models == ("q4-mem", "q8-mem") and run.sample == "all" and run.embedder == "gemma300m-di-raw"
+    for m in run.models:
+        spec = rerankers.RERANKERS[m]
+        assert spec.template.instruction == rerankers.MEMORY_INSTRUCTION
+        assert spec.query_producer is None and not spec.query_date  # the bare query, as EventMemory sends it
+    assert rerankers.RERANKERS["q8-mem"].hf_model == "Qwen/Qwen3-Reranker-8B"

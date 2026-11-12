@@ -105,7 +105,11 @@ STAGES: dict[str, list[Run]] = {
     # (rerank, then read the seeds or their windows at every expand_context, free), no windows
     # scored. The pilot first: the same on 100 questions.
     "lme-pilot": [replace(lme(("seg500",), ("q4", "q8"), 0), sample="proto")],
-    "lme-core": [lme(("seg500",), ("q4", "q8"), 0)],
+    # The core (settings fixed 2026-11-12 after the pilot, the tuning and the format checks): both
+    # rerankers with the user's instruction and the bare query, over embeddinggemma with EventMemory's
+    # documents (date and speaker kept: the user's decision). The pilot's and the tuning questions'
+    # embeddings and scored pairs are reused.
+    "lme-core": [lme(("seg500",), ("q4-mem", "q8-mem"), 0)],
     # The 4B's instruction, tuned on questions 101-200 (held out from the pilot; part of the core,
     # so their embedding is the core's): the top 50 seeds scored with each candidate and the two
     # references (the user's request, 2026-11-11; the decision rule: METHODOLOGY section 8).

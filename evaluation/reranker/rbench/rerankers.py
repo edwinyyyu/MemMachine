@@ -130,6 +130,9 @@ RERANKERS = {
     # The user's date arm (2026-11-11): the query as a dated message, `[<date>] User: "<query>"`,
     # its date rendered as the documents' are (partitions.query_date); against "q4-mem-user"
     # (no date) and "q4-mem" (the bare query).
+    # The core's 8B (2026-11-12): the user's instruction, the bare query, like q4-mem.
+    "q8-mem": Reranker("q8-mem", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B, memory instruction",
+                       "#eb6834", template=QWEN3_CARD_MEMORY),
     "q4-mem-date-user": Reranker("q4-mem-date-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025,
                                  "Qwen3-Reranker-4B, memory instruction, dated User: query", "#1baf7a",
                                  template=QWEN3_CARD_MEMORY, query_producer="User", query_date=True),
