@@ -199,7 +199,9 @@ def segment_size(r: Results, chunking_name: str) -> tuple[float, float] | None:
 
 def unit_tokens(r: Results, chunking_name: str, expand: int = 0) -> float | None:
     """Measured mean segment-text tokens one retrieved seed's context holds at an expand_context
-    (the seed alone at 0)."""
+    (the seed alone at 0): per question over every seed the first stage retrieves, then over
+    questions. Segment text only (no headers or escaping); per-question means vary (LongMemEval-M at
+    seg500, expand_context 2: 155-219, mean 186)."""
     return _measured(r, chunking_name, "unit_tokens", expand)
 
 
@@ -209,7 +211,7 @@ def size_label(r: Results, chunking_name: str, expand: int = 0) -> str:
     the seeds retrieved, or the measured mean window when expanded."""
     if expand:
         tokens = unit_tokens(r, chunking_name, expand)
-        return "not measured" if tokens is None else f"window: {tokens:,.0f} tokens"
+        return "not measured" if tokens is None else f"mean window: {tokens:,.0f} segment-text tokens"
     size = segment_size(r, chunking_name)
     limit = f"≤{chunking_name[3:]} chars" if chunking_name.startswith("seg") else f"cut every {chunking_name[3:]} chars"
     if size is None:

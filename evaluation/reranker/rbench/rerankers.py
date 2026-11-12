@@ -115,26 +115,28 @@ RERANKERS = {
                               local_tok_per_s=2500),
     "q06": Reranker("q06", "Qwen/Qwen3-Reranker-0.6B", "deepinfra", 0.010, "Qwen3-Reranker-0.6B", "#eb6834",
                     local_tok_per_s=2500),
-    "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B", "#1baf7a"),
-    "q8": Reranker("q8", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B", "#eda100"),
+    # Colors (2026-11-12): the core's rerankers (q4-mem, q8-mem) keep the 4B's green and the 8B's amber
+    # the charts used for the 4B and 8B before; the card's instruction (q4, q8) moves to purple and orange.
+    "q4": Reranker("q4", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B", "#6250d6"),
+    "q8": Reranker("q8", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B", "#eb6834"),
     # The 4B's query-side 2 x 2 (the user, 2026-11-11): the card's instruction or the user's
     # ("-mem"), the bare query or the user's message (`User: "<query>"`, "-user"); "q4" is the card's
     # with the bare query. Colors: the 0.6B models' slots, which these comparisons do not include.
-    "q4-user": Reranker("q4-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B, User: query", "#6250d6",
+    "q4-user": Reranker("q4-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B, User: query", "#e87ba4",
                         query_producer="User"),
     "q4-mem": Reranker("q4-mem", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025, "Qwen3-Reranker-4B, memory instruction",
-                       "#e87ba4", template=QWEN3_CARD_MEMORY),
+                       "#1baf7a", template=QWEN3_CARD_MEMORY),
     "q4-mem-user": Reranker("q4-mem-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025,
-                            "Qwen3-Reranker-4B, memory instruction, User: query", "#eb6834", template=QWEN3_CARD_MEMORY,
+                            "Qwen3-Reranker-4B, memory instruction, User: query", "#eda100", template=QWEN3_CARD_MEMORY,
                             query_producer="User"),
     # The user's date arm (2026-11-11): the query as a dated message, `[<date>] User: "<query>"`,
     # its date rendered as the documents' are (partitions.query_date); against "q4-mem-user"
     # (no date) and "q4-mem" (the bare query).
     # The core's 8B (2026-11-12): the user's instruction, the bare query, like q4-mem.
     "q8-mem": Reranker("q8-mem", "Qwen/Qwen3-Reranker-8B", "deepinfra", 0.050, "Qwen3-Reranker-8B, memory instruction",
-                       "#eb6834", template=QWEN3_CARD_MEMORY),
+                       "#eda100", template=QWEN3_CARD_MEMORY),
     "q4-mem-date-user": Reranker("q4-mem-date-user", "Qwen/Qwen3-Reranker-4B", "deepinfra", 0.025,
-                                 "Qwen3-Reranker-4B, memory instruction, dated User: query", "#1baf7a",
+                                 "Qwen3-Reranker-4B, memory instruction, dated User: query", "#e87ba4",
                                  template=QWEN3_CARD_MEMORY, query_producer="User", query_date=True),
 }
 # Instruction candidates for the 4B, tuned on the held-out sample "tune" (questions 101-200) with

@@ -265,14 +265,23 @@ def worth_it(r: Results, event: str) -> list[str]:
 
     fixed = frontier.setting(r)
     spends = sorted({*config.EVAL.budgets, config.EVAL.token_top})
+    prices = "; ".join(f"{m} ${price(m):g}/M" for m in r.models)
     out = ["## 7. Worth the money: the same money per question\n",
-           _intro("Does reranking get more evidence for the same money per question?",
-                  "Same for both: the money per question, and the vector search limit (one block per limit).",
-                  "Without reranking all of it buys reader tokens; with reranking, part pays the reranker.",
-                  "Spend: the money as reader tokens at that price. Gain: coverage reranked minus without, with its 95% "
-                  "interval.",
-                  "Break-even: the lowest price from which reranking gets more for the money; 'clearly': its interval "
-                  "is above 0.",
+           _intro("Does reranking get more evidence for the same total money per question, the reranker's cost "
+                  "included?",
+                  f"The reranker's cost: its DeepInfra list price per pair token ({prices}; checked 2026-11-05; a local "
+                  "model is priced as its hosted stand-in) times the mean reranker tokens per question at that vector "
+                  "search limit.",
+                  "Budget: the money per question, shown as the reader tokens it buys at the LLM price. Without "
+                  "reranking the reader gets all of it; with reranking the reranker's cost comes out of it, so the "
+                  "reader gets fewer tokens (the budget minus the reranker's cost divided by the LLM price), in "
+                  "reranked order.",
+                  "At a fixed number of reader tokens the reranker is only an added cost: that view is section 3 "
+                  "(equal reader tokens); section 4 gives the reader tokens it saves for the same coverage.",
+                  "Same for both: the budget and the vector search limit (one block per limit). Gain: coverage reranked "
+                  "minus without, with its 95% interval.",
+                  "Break-even: the lowest LLM price from which reranking gets more for the money; 'clearly': its "
+                  "interval is above 0.",
                   "Chart: cost_equal.png.")]
 
     def fmt(x: float) -> str:
@@ -284,7 +293,7 @@ def worth_it(r: Results, event: str) -> list[str]:
             if es is None:
                 continue
             out += [f"**{m} at L {L} on both sides ({what}; {es.tokens:,.0f} reranker tokens per question)**\n",
-                    "| spend (reader tokens, " + READER_NAME + ") | break-even | clearly from | "
+                    "| budget (reader tokens at that price, " + READER_NAME + ") | break-even | clearly from | "
                     + " | ".join(f"gain at ${p:g}/M" for p in PRICES_SHOWN) + " |",
                     "|---|---|---|" + "---|" * len(PRICES_SHOWN)]
             for T in spends:
@@ -630,7 +639,9 @@ def best_settings(r: Results, event: str) -> list[str]:
                   "Best: the highest reranked coverage. Cheapest equivalent: the cheapest value within the best's 95% "
                   "interval where reranking does not lose.",
                   "Chosen once for all questions at a budget, on the same questions: the best leans optimistic.",
-                  "Chart: best_settings.png.")]
+                  "No chart: at a fixed reader budget, coverage against L, k or m is monotone or nearly so (the budget "
+                  "limits reading), so the best is mostly the largest value; what matters is the cheapest equivalent "
+                  "L, whose reranker cost rerank_cost.png shows. What the reader sees: expansion.png.")]
     for m in r.models:
         for b in config.EVAL.budgets:
             choices = {f: best.choose(r, f, v) for f, v in best.factors(r, m, event, b).items()}
