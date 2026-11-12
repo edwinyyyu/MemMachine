@@ -22,7 +22,7 @@ import re
 import numpy as np
 
 from rbench.datasets import DATASETS, info
-from rbench.features import context, form
+from rbench.features import form, sentences
 from rbench.paths import ROOT
 from rbench.schema import corpus, queries
 from rbench.text import count
@@ -76,7 +76,7 @@ def profile(name: str) -> dict:
         "table_lines": float(np.mean([x.count("|") >= 2 or x.count("\t") >= 2 for x in lines])),
         "test_queries": len(rows), "query_tokens": [_q(q_tokens, p) for p in (10, 50, 90)],
         "forms": {k: v / len(rows) for k, v in forms.most_common()},
-        "contextualized": float(np.mean([context(t) == "contextualized" for t in texts])),
+        "several_sentences": float(np.mean([sentences(t) == "several" for t in texts])),
         "multi_span": float(np.mean([min(len(a) for a in q["gold"]) >= 2 for q in rows])),
         "span_tokens": [_q(spans, 50), _q(spans, 90)],
         "longest_over": {n: float((longest > n).mean()) for n in (64, 256, 1024)},
@@ -125,7 +125,7 @@ def write() -> str:
            "in INACTIVE until they are re-added.\n",
            *(["## At a glance (test split, flat datasets)\n",
               "| dataset | docs | doc tokens p10 / median / p90 (max) | paragraph tokens | headings / lists | queries | query "
-              "tokens p10 / median / p90 | forms | contextualized | multi-span | gold span tokens median / p90 | longest gold "
+              "tokens p10 / median / p90 | forms | several sentences | multi-span | gold span tokens median / p90 | longest gold "
               "> 64 / 256 | query-gold word overlap | candidate tokens per query |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"] if flat else [])]
     for name, p in profiles.items():
@@ -133,7 +133,7 @@ def write() -> str:
         forms = ", ".join(f"{k} {_pct(v)}" for k, v in p["forms"].items() if v >= 0.01)
         out.append(f"| {name} | {p['docs']:,} | {d[0]:,.0f} / {d[1]:,.0f} / {d[2]:,.0f} ({d[3]:,}) | {p['paragraph_tokens_median']:.0f} "
                    f"| {_pct(p['heading_lines'])} / {_pct(p['list_lines'])} | {p['test_queries']:,} | {q[0]:.0f} / {q[1]:.0f} / {q[2]:.0f} "
-                   f"| {forms} | {_pct(p['contextualized'])} | {_pct(p['multi_span'])} | {p['span_tokens'][0]:.0f} / {p['span_tokens'][1]:.0f} "
+                   f"| {forms} | {_pct(p['several_sentences'])} | {_pct(p['multi_span'])} | {p['span_tokens'][0]:.0f} / {p['span_tokens'][1]:.0f} "
                    f"| {_pct(p['longest_over'][64])} / {_pct(p['longest_over'][256])} | {p['overlap']:.2f} "
                    f"| {p['candidate_tokens_median']:,.0f} |")
     out.append("")

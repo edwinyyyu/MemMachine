@@ -369,7 +369,7 @@ def query_types(r: Results, event: str) -> list[str]:
                 out += [f"**{m}, {c}, L {limit[1:]}: {what}**\n",
                         "| feature | value | n | " + " | ".join(f"@{b:,}" for b in budgets) + " |",
                         "|---|---|---|" + "---|" * len(budgets)]
-                for feature in ("question_type", "form", "length", "context", "parts"):
+                for feature in ("question_type", "form", "length", "sentences", "parts"):
                     if feature not in labels:
                         continue
                     for v in sorted(set(labels[feature])):

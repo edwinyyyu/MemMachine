@@ -68,7 +68,10 @@ from rbench.report.data import (  # noqa: E402
     unit_tokens,
 )
 from rbench.report.stats import interval  # noqa: E402
-from rbench.rerankers import RERANKERS  # noqa: E402
+from rbench.rerankers import INSTRUCTION, MEMORY_INSTRUCTION, RERANKERS  # noqa: E402
+
+# Every chart that names the memory instruction says what it is (its legend, titles or note).
+MEMORY_NOTE = (f'Memory instruction: "{MEMORY_INSTRUCTION}" (the model card\'s: "{INSTRUCTION}").')
 from rbench.text import READER_NAME  # noqa: E402
 
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
@@ -283,7 +286,11 @@ def _save(fig, path, title: str, handles=None, labels=None, ncol: int | None = N
     are (heading, handles, labels) shown as side-by-side columns, e.g. what the color means
     and what the line style means; or pass plain handles and labels."""
     chars = int(fig.get_figwidth() * 12.5)  # characters per line at this font size: text never widens the figure
-    lines = [note] if isinstance(note, str) else note  # a list: one short line per idea, most important first
+    lines = [note] if isinstance(note, str) else list(note)  # a list: one short line per idea, most important first
+    shown = [title, *lines, *(labels or []), *(x for h, _, ls in groups or [] for x in (h, *ls)),
+             *(ax.get_title(loc="left") for ax in fig.axes)]
+    if any("memory instruction" in str(x) for x in shown):
+        lines.append(MEMORY_NOTE)
     text = "\n".join([textwrap.fill(title, chars), *(textwrap.fill(x, chars) for x in lines if x)])
     fig.suptitle(text, x=0.01, ha="left", fontsize=10.5, color=INK, linespacing=1.5)
     legend_rows = (max(len(h) for _, h, _ in groups) + 1 if groups else
@@ -558,7 +565,9 @@ def coverage_counts(r: Results, out, head: str, reading: str) -> None:
             ax = axes[0][j]
             top = int(limit[1:]) * (1 + e)
             for key, name, color, ls in _series(r, c, limit, e):
-                _steps(ax, r.rows(c, name)[f"{reading}_k"].to_numpy(), 0, top, color=color, linestyle=ls)
+                counts = np.arange(1, top + 1)  # segments are read whole: coverage exists at each count only
+                _plot(ax, counts, rd.coverage(r.rows(c, name)[f"{reading}_k"].to_numpy(), counts), color=color,
+                      linestyle=ls, **({"marker": "o", "markersize": 3} if top <= 40 else {}))
                 keys.add(key)
             _k_x(ax, top)
             ax.set_xlabel("segments read (m = max_num_segments)\nexact at every count")
@@ -747,57 +756,68 @@ CHUNKER_POINT = {"seg": "o", "cut": "s"}  # marker on measured points, per chunk
 
 
 def rerank_cost(r: Results, out, head: str, reading: str) -> None:
-    """Coverage at each configured reader budget against reranker tokens, as the vector search
-    limit grows (one marker per limit), with the first stage at the same limits drawn at the
-    same x: what the same seeds give without a reranker. Color is the ranking (the model's
-    color reranked, blue the first stage), lightness the chunking, labelled at the line ends."""
+    """Coverage at each configured reader budget against the vector search limit L (one marker
+    per limit), reranked and the first stage over the same L seeds: what a deeper search buys
+    with and without a reranker. L is what both lines share; the reranker's cost follows from it
+    (nearly in proportion: each seed is one pair), so it is the top axis, in $ per 1,000
+    questions at DeepInfra list prices, when one chunking is drawn. Color is the ranking (the
+    model's color reranked, blue the first stage), lightness the chunking, labelled at the ends."""
     if not r.models:
         return
     chunkings = sorted([c for c in r.chunkings if c[:3] in CHUNKERS], key=lambda c: (unit_tokens(r, c) or 0, c))
     rank = {c: i for i, c in enumerate(chunkings)}  # lighter: smaller measured segments
     budgets = config.EVAL.budgets
-    dollars = len({price(m) for m in r.models}) > 1  # models priced differently: compare them in dollars
-    fig, axes = _figure(len(r.models), len(budgets), panel=(3.8, 3.2), sharey=True)
+    fig, axes = _figure(len(r.models), len(budgets), panel=(3.8, 3.4), sharey=True)
     for i, m in enumerate(r.models):
-        scale = price(m) / 1e6 * 1000 if dollars else 1.0  # $ per 1,000 questions, or tokens per question
+        scale = price(m) / 1e6 * 1000  # reranker tokens per question -> $ per 1,000 questions
         for j, b in enumerate(budgets):
             ax = axes[i][j]
-            ends = []
+            ends, per_seed, limits = [], [], set()
             for c in chunkings:
                 pts = []
                 for d in r.seed_depths(c, m):
                     rows, base = r.rows(c, f"rerank:{m}@{d}"), r.rows(c, f"first_stage@{d}")
                     if not rows.empty and not base.empty:
-                        pts.append((rows.rr_tokens.mean() * scale, rd.hit(rd.costs(rows, reading), b).mean(),
+                        pts.append((int(d[1:]), rows.rr_tokens.mean() * scale, rd.hit(rd.costs(rows, reading), b).mean(),
                                     rd.hit(rd.costs(base, reading), b).mean()))
                 if not pts:
                     continue
-                xs, ys, bs = zip(*sorted(pts), strict=True)
-                _plot(ax, xs, ys, color=_shades(SERIES[m], len(chunkings))[rank[c]], marker="o")
-                _plot(ax, xs, bs, color=_shades(SERIES["first_stage"], len(chunkings))[rank[c]], marker="o")
+                ls_, cs, ys, bs = zip(*sorted(pts), strict=True)
+                limits.update(ls_)
+                per_seed.append(float(np.mean(np.asarray(cs) / np.asarray(ls_))))
+                _plot(ax, ls_, ys, color=_shades(SERIES[m], len(chunkings))[rank[c]], marker="o")
+                _plot(ax, ls_, bs, color=_shades(SERIES["first_stage"], len(chunkings))[rank[c]], marker="o")
                 if len(chunkings) > 1:
                     ends += [(ys[-1], c), (bs[-1], c)]
             _end_labels(ax, ends)
-            _log_x(ax)
-            ax.xaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+            _log_x(ax, ticks=_round_ticks(sorted(limits)))
             _share_y(ax)
             ax.set_title(f"{LABEL[m]} · reader budget {b:,}", loc="left")
-            ax.set_xlabel("reranker $ per 1,000 questions (DeepInfra prices)" if dollars
-                          else "reranker tokens per query (API billing)")
+            ax.set_xlabel("vector search limit L (seeds retrieved; reranked: all of them scored)")
+            if len(per_seed) == 1:  # one chunking: the cost per seed maps L to dollars
+                k = per_seed[0]
+                top = ax.secondary_xaxis("top", functions=(lambda x, k=k: x * k, lambda y, k=k: y / k))
+                top.xaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+                top.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+                top.xaxis.set_minor_formatter(NullFormatter())
+                top.set_xlabel("reranker $ per 1,000 questions (DeepInfra list price)", fontsize=8, color=INK2)
             if j == 0:
                 ax.set_ylabel(_coverage(reading))
     handles = [_key(SERIES[m], marker="o") for m in r.models] + [_key(SERIES["first_stage"], marker="o")]
-    labels = [f"{LABEL[m]}, reranking the seeds" for m in r.models] + [
-        "first stage at the same vector search limits (no reranker tokens)"]
+    labels = [f"{LABEL[m]}, reranking the L seeds" for m in r.models] + [
+        "first stage over the same L seeds (no reranker)"]
     sizes = _size_line(r, chunkings)
-    _save(fig, out / _file("rerank_cost", reading), f"Coverage vs reranker tokens as the vector search limit grows — {head}",
+    _save(fig, out / _file("rerank_cost", reading), f"Coverage vs the vector search limit, and the reranker's cost — {head}",
           handles, labels, ncol=2,
           note=[
-              "What does a deeper vector search buy, against the reranker's cost?",
-              "One marker per vector search limit: 5, 10, 20 and so on up to the pool.",
-              "x: the reranker's " + ("cost" if dollars else "tokens") + " per question at that limit. The first "
-              "stage spends none; it is drawn at the same x for comparison.",
-              "Same for both: the reader budget (panel) and the seeds searched.",
+              "What does a deeper vector search buy, with and without reranking, and what does the reranker cost?",
+              "x: the vector search limit L, the same for both lines: the seeds retrieved (5, 10, 20 and so on up to "
+              "the pool). The first stage reads them in search order; the reranker scores all L and reads them in its "
+              "order.",
+              ("Top axis: the reranker's cost at that L, in $ per 1,000 questions at DeepInfra list prices "
+               "(nearly proportional to L: one pair per seed)." if len(chunkings) == 1 else
+               "Several chunkings: their reranker costs per seed differ, so no cost axis; report section 6."),
+              "Same for both: the reader budget (panel).",
               ("Lighter: smaller segments. " if len(chunkings) > 1 else "") + sizes,
               ])
 
@@ -871,6 +891,9 @@ def _few(r: Results) -> bool:
     return len(np.unique(frontier._clusters(r))) < MIN_CLUSTERS
 
 
+DOLLARS_PER_1000 = (0.01, 0.1, 1.0, 10.0, 100.0)  # cost_equal's lines of constant money
+
+
 def cost_equal(r: Results, out, head: str, reading: str) -> None:
     """The headline cost view: reranking against the first stage at the same money per question
     (frontier.equal_spend). One panel per vector search limit L on both sides (EventMemory's
@@ -923,6 +946,14 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
             ax.set_yscale("log")
             ax.set_xlim(es.prices[0], es.prices[-1])
             ax.set_ylim(es.spends[0], es.spends[-1])
+            for usd in DOLLARS_PER_1000:  # budget in money: reader tokens = (dollars per question) / (price per token)
+                tokens = usd / 1000 / (es.prices / 1e6)
+                inside = (tokens >= es.spends[0]) & (tokens <= es.spends[-1])
+                if inside.sum() >= 2:
+                    ax.plot(es.prices[inside], tokens[inside], color=INK2, linewidth=0.6, linestyle=(0, (2, 2)), alpha=0.8)
+                    i = int(np.flatnonzero(inside)[len(np.flatnonzero(inside)) // 2])
+                    ax.annotate(f"${usd:g} per 1,000 questions", (es.prices[i], tokens[i]), fontsize=6.5, color=INK2,
+                                rotation=-38, rotation_mode="anchor", xytext=(2, 2), textcoords="offset points")
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
             ax.set_yticks([500, 1000, 2000, 4000, 8000, 16000], ["500", "1,000", "2,000", "4,000", "8,000", "16,000"])
             ax.yaxis.set_minor_formatter(NullFormatter())
@@ -957,6 +988,7 @@ def cost_equal(r: Results, out, head: str, reading: str) -> None:
               "the reader gets the whole budget as tokens; with reranking the reranker's cost comes out of it, so the "
               "reader gets fewer tokens (the budget minus the reranker's cost / the LLM price), in reranked order.",
               "At a fixed number of reader tokens the reranker is only an added cost: see coverage_tokens_*.png.",
+              "Dashed: lines of constant money, in dollars per 1,000 questions (budget x LLM price).",
               f"Color: extra coverage from reranking ({EVENT_TEXT[reading]}). Gray: no clear difference.",
               "Line: where reranking clearly gets more for the money (inside it).",
               ("Pipeline test: fewer than 20 questions, so no intervals and no gray." if few else ""),
@@ -980,7 +1012,7 @@ def query_types(r: Results, out, head: str, reading: str) -> None:
         return
     limit = f"n{chosen}"
     base, labels = query_labels(r, c, f"first_stage@{limit}")
-    groups = [(f, v) for f in ("question_type", "form", "length", "context", "parts") if f in labels
+    groups = [(f, v) for f in ("question_type", "form", "length", "sentences", "parts") if f in labels
               for v in sorted(set(labels[f])) if (labels[f] == v).sum() >= 10]
     if not groups:
         return
@@ -1086,9 +1118,9 @@ class ExpansionPanel:
         return self.ratio is not None and abs(self.ratio - 1) <= config.EVAL.size_tolerance
 
     def sizes(self, flag: bool = True) -> str:
-        window = f"window {self.window:,.0f} tok" if self.window else "window not measured"
+        window = f"mean window {self.window:,.0f} text tok" if self.window else "window not measured"
         if self.plain is None:
-            return f"{window}; no unexpanded {self.seed[:3]} chunking to compare"
+            return f"{window}; plain chunks of this size not run (stages lme-sizes, lme-cut)"
         plain = f"plain {self.plain} {self.plain_size:,.0f} tok"
         return f"{window}; {plain}" + ("" if self.matched or not flag else f" — NOT size-matched ({self.ratio:.2f}×)")
 
@@ -1139,10 +1171,10 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
         for label, c, name in sorted(p.items, key=lambda item: ORDER_APPROACHES.index(item[0])):
             _steps(ax, rd.costs(r.rows(c, name), reading), 0, config.EVAL.token_top, color=_approach_color(label, p.model))
             present.add(label)
-        _token_x(ax)
+        _token_log_x(ax)
         _share_y(ax)
         ax.set_title(f"{LABEL[p.model]} · expand_context {p.expand}\n{p.sizes()}", loc="left")
-        ax.set_xlabel(f"reader tokens ({READER_NAME}): exact steps, one per question")
+        ax.set_xlabel(f"reader tokens ({READER_NAME}; log scale): exact steps, one per question")
         if j == 0:
             ax.set_ylabel(_coverage(reading))
     for i, e in enumerate(expands):  # panels without a comparison stay empty
@@ -1151,10 +1183,12 @@ def expansion(r: Results, out, head: str, reading: str) -> None:
                 axes[i][j].set_visible(False)
     keys = [k for k, _ in EXPANSION_APPROACHES if k in present]
     unmatched = any(not p.matched for p in panels if p.plain is not None)
-    one = models[0] if len(models) == 1 else None  # several models: model-colored keys in ink, each panel in its model's color
+    # one key per approach and model (each panel is drawn in its model's shades), the first stage once
+    entries = [(k, m) for k in keys for m in (models if not k.startswith("seeds,") else models[:1])]
     _save(fig, out / _file("expansion", reading), f"Embedded vs reranked vs read unit — {head}",
-          [_key(_approach_color(k, one or models[0]) if one or k.startswith("seeds,") else INK2) for k in keys], keys,
-          ncol=2,
+          [_key(_approach_color(k, m)) for k, m in entries],
+          [k if k.startswith("seeds,") else f"{LABEL[m]}: {k}" for k, m in entries],
+          ncol=min(len(entries), 3),
           note=[
               "Read the seeds' windows, or plain chunks of the same size?",
               "Same for all: reader tokens (x).",
