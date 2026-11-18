@@ -63,18 +63,31 @@ LEXICAL = "#8f8e89"  # BM25 and RRF without a cross-encoder: gray, no model
 INPUTS_VERSION = 1
 
 
+# What a cross-encoder is fused with: every subset of MemMachine's other two components. RRF of
+# one component orders as that component alone (ties aside), so the single ones are no reranker
+# (identity), BM25 alone and the cross-encoder alone, each measured as itself.
+RRF_WITH = (("identity", "bm25"), ("identity",), ("bm25",))
+PART_NAMES = {"identity": "identity", "bm25": "BM25"}
+
+
+def rrf_name(parts: tuple[str, ...]) -> str:
+    return "rrf:" + "+".join(parts)
+
+
 def label(ranker: str) -> str:
     if ranker in NAMES:
         return NAMES[ranker]
-    if ranker.startswith("rrf:identity+bm25+"):
-        return f"RRF [identity, BM25, {ranker.removeprefix('rrf:identity+bm25+')}]"
+    if ranker.startswith("rrf:"):
+        return "RRF [" + ", ".join(PART_NAMES.get(x, x) for x in ranker.removeprefix("rrf:").split("+")) + "]"
     return f"{ranker} alone"
 
 
 def rankers_for(models: list[str]) -> list[str]:
     """The configurations compared: no reranker, BM25, RRF of identity and BM25, and for each
-    cross-encoder model: it alone and RRF of identity, BM25 and it (the two rrf-hybrid configs)."""
-    return ["first_stage", "bm25", "rrf:identity+bm25", *(x for m in models for x in (m, f"rrf:identity+bm25+{m}"))]
+    cross-encoder model: it alone and RRF of it with each subset of identity and BM25 (the user's
+    two rrf-hybrid configs, [identity, bm25] and [identity, bm25, ce], and the other two)."""
+    return ["first_stage", "bm25", "rrf:identity+bm25",
+            *(x for m in models for x in (m, *(rrf_name((*c, m)) for c in RRF_WITH)))]
 
 
 def limit_of(pool: str, k: int) -> int:
@@ -138,10 +151,13 @@ async def _memmachine_rerankers(models: list[str]) -> dict:
     bm25._tokenize = functools.lru_cache(maxsize=None)(bm25._tokenize)
     out = {"bm25": bm25, "rrf:identity+bm25": rrf2}
     k = RRFHybridRerankerConf.model_fields["k"].default
-    for m in models:  # rrf-hybrid [id, bm, ce], built as RerankerManager._build_rrf_hybrid_reranker does
+    parts = {"identity": ident, "bm25": bm25}
+    for m in models:  # rrf-hybrid [..., ce], built as RerankerManager._build_rrf_hybrid_reranker does
         ce = CachedReranker(m, mode="replay")
         out[m] = ce
-        out[f"rrf:identity+bm25+{m}"] = RRFHybridReranker(RRFHybridRerankerParams(rerankers=[ident, bm25, ce], k=k))
+        for c in RRF_WITH:
+            out[rrf_name((*c, m))] = RRFHybridReranker(
+                RRFHybridRerankerParams(rerankers=[*(parts[x] for x in c), ce], k=k))
     return out
 
 
@@ -414,7 +430,7 @@ def figures(d: pd.DataFrame, models: list[str], out, head: str) -> list[str]:
             k_axis(ax, False)
             ax.set_title("against the cross-encoder alone", loc="left")
             ax.set_ylabel("recall minus the cross-encoder alone")
-        path = out / f"runtime_rrf_{unit}.png"
+        path = out / f"runtime_rrf_{unit}.png"  # the user's two configurations (subsets: runtime_rrf_subsets_*)
         fg._save(fig, path, f"RRF hybrid with and without the cross-encoder, MemMachine's runtime pool (4 × k), "
                  f"{unit} — {head}",
                  [key(first), key(lexical[1]), key(lexical[0], "--"), key(fg.INK), key(fg.INK, "--")],
@@ -429,6 +445,56 @@ def figures(d: pd.DataFrame, models: list[str], out, head: str) -> list[str]:
                        "Blue: no reranker. Gray: BM25 alone (solid) and RRF [identity, BM25] (dashed). The model's "
                        "color, one row per model: the cross-encoder alone (solid) and RRF [identity, BM25, "
                        "cross-encoder] (dashed)."])
+        written.append(str(path))
+    for unit in UNITS:  # every RRF including the cross-encoder, against it alone and no reranker
+        fig, axes = fg._figure(len(models), 3, panel=(4.4, 3.2))
+        for i, m in enumerate(models):
+            # the darker four of five steps (the lightest fades on white); the cross-encoder alone
+            # on the step nearest the model's own color
+            shades = palette.family(fg.SERIES[m], 5)
+            series = [(m, shades[2], "-"), (rrf_name(("identity", m)), shades[1], ":"),
+                      (rrf_name(("bm25", m)), shades[3], "-."), (rrf_name(("identity", "bm25", m)), shades[0], "--")]
+            base = _by_question(d, unit, "4k", "first_stage", "recall")
+            ce = _by_question(d, unit, "4k", m, "recall")
+            ax = axes[i][0]
+            line(ax, _curve(base)[0], first)
+            for r, color, ls in series:
+                line(ax, _curve(_by_question(d, unit, "4k", r, "recall"))[0], color, ls)
+            k_axis(ax, True)
+            ax.set_title(f"{_named(m)}: recall at k", loc="left")
+            ax.set_ylabel("recall")
+            ax = axes[i][1]
+            for r, color, ls in series:
+                mean, low, high = _curve(_by_question(d, unit, "4k", r, "recall"), base)
+                line(ax, mean, color, ls, band=(low, high))
+            k_axis(ax, False)
+            ax.set_title("against no reranker", loc="left")
+            ax.set_ylabel("recall minus no reranker")
+            ax = axes[i][2]
+            for r, color, ls in series[1:]:
+                mean, low, high = _curve(_by_question(d, unit, "4k", r, "recall"), ce)
+                line(ax, mean, color, ls, band=(low, high))
+            k_axis(ax, False)
+            ax.set_title("against the cross-encoder alone", loc="left")
+            ax.set_ylabel("recall minus the cross-encoder alone")
+        path = out / f"runtime_rrf_subsets_{unit}.png"
+        fg._save(fig, path, f"The cross-encoder in each RRF hybrid, MemMachine's runtime pool (4 × k), {unit} — {head}",
+                 [key(first), key(fg.INK), key(fg.INK, ":"), key(fg.INK, "-."), key(fg.INK, "--")],
+                 ["no reranker", "the cross-encoder alone", "RRF [identity, cross-encoder]", "RRF [BM25, cross-encoder]",
+                  "RRF [identity, BM25, cross-encoder]"], ncol=3,
+                 note=["MemMachine's rrf-hybrid reranker with the cross-encoder and each subset of its other components "
+                       "(identity: the vector search order; BM25), on the pool MemMachine's runtime reranks: 4 × k "
+                       "candidates. RRF's k = 60; BM25 with MemMachine's default tokenizer.",
+                       "An RRF of one component orders as that component alone: RRF [identity] is no reranker, RRF "
+                       "[cross-encoder] the cross-encoder alone. RRF [identity, BM25] and BM25 alone: "
+                       f"runtime_rrf_{unit}.png.",
+                       unit_line[unit],
+                       "Left: recall, the share of a question's evidence turns counted, averaged over questions. "
+                       "Middle: the difference from no reranker. Right: the difference from the cross-encoder alone "
+                       "(below 0: worse than it). Shaded: 95% intervals, paired bootstrap over questions.",
+                       "Blue: no reranker. The model's color, one row per model, darker to lighter: RRF [identity, "
+                       "BM25, cross-encoder] (dashed), RRF [identity, cross-encoder] (dotted), the cross-encoder alone "
+                       "(solid), RRF [BM25, cross-encoder] (dash-dot)."])
         written.append(str(path))
     return written
 

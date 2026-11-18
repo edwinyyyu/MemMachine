@@ -20,8 +20,11 @@ def test_the_overfetch_is_memmachines_and_the_configurations_cover_both_rrf_hybr
     assert runtime.OVERFETCH == long_term_memory._EVENT_BACKEND_DEDUP_OVERFETCH == 4
     assert runtime.OVERFETCH * max(runtime.KS) <= runtime.POOL
     r = runtime.rankers_for(["q4-mem"])
-    assert r == ["first_stage", "bm25", "rrf:identity+bm25", "q4-mem", "rrf:identity+bm25+q4-mem"]
+    assert r == ["first_stage", "bm25", "rrf:identity+bm25", "q4-mem", "rrf:identity+bm25+q4-mem",
+                 "rrf:identity+q4-mem", "rrf:bm25+q4-mem"]  # every subset of {identity, bm25} with the cross-encoder
     assert runtime.label("rrf:identity+bm25+q4-mem") == "RRF [identity, BM25, q4-mem]"
+    assert runtime.label("rrf:bm25+q4-mem") == "RRF [BM25, q4-mem]"
+    assert runtime.label("rrf:identity+bm25") == "RRF [identity, BM25]"
 
 
 def test_k_segments_counts_a_turn_only_when_all_its_segments_are_kept():
