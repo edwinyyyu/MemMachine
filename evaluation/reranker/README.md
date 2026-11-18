@@ -56,6 +56,7 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no s
 .venv/bin/python -m rbench run lme-pilot
 .venv/bin/python -m rbench run lme-core
 .venv/bin/python -m rbench runtime-topk                 # free: recall at top-k as MemMachine retrieves at runtime (4 x k, RRF hybrids)
+.venv/bin/python -m rbench runtime-core                 # free: the core's measurements at the runtime pool (4 x k), a flat 200 beside it
 ```
 
 Prompt templates (every one, exact) and a vLLM score template applying the memory instruction: `templates/`.

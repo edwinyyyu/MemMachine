@@ -270,14 +270,15 @@ def _report(d: pd.DataFrame, models: list[str], dataset: str, chunking: str) -> 
     n = d.qid.nunique()
     lines = [f"# Recall at top-k as MemMachine retrieves at runtime — {dataset} · {chunking} · {n} questions\n",
              "- **Pool:** for k results, EventMemory retrieves 4 x k segments (LongTermMemory's "
-             f"`_EVENT_BACKEND_DEDUP_OVERFETCH` = {OVERFETCH}), and the reranker scores those 4 x k. Sections 5 and 6 "
-             "compare a fixed pool of 20 (EventMemory's default limit) and 200 (the earlier reports' pool).",
+             f"`_EVENT_BACKEND_DEDUP_OVERFETCH` = {OVERFETCH}), and the reranker scores those 4 x k (sections 1 to 4). "
+             "Sections 5 to 8 repeat them with a flat pool of 200 reranked and k kept (the earlier reports' pool), and "
+             "sections 9 and 10 compare 4 x k with a fixed 20 (EventMemory's default limit) and 200.",
              "- **Results, counted two ways:**",
-             "  - **k segments** (sections 1, 2 and 5): the first k segments after EventMemory's sort by score, the "
+             "  - **k segments** (sections 1, 2, 5, 6 and 9): the first k segments after EventMemory's sort by score, the "
              "same measure as the earlier reports' recall at top-k (an evidence turn counts when all its segments "
-             "are among them). Only the pool differs: 4 x k instead of a fixed 20 or 200. Section 5's fixed pools "
+             "are among them). Only the pool differs: 4 x k instead of a fixed 20 or 200. Section 9's fixed pools "
              "are the earlier reports' own cells.",
-             "  - **k episodes** (sections 3, 4 and 6), what LongTermMemory returns: walking the sorted segments, it "
+             "  - **k episodes** (sections 3, 4, 7, 8 and 10), what LongTermMemory returns: walking the sorted segments, it "
              "keeps the first k distinct episodes (turns), each returned whole. The 4 x k overfetch exists for "
              "this step. An evidence turn counts when its episode is among the k.",
              "- **Recall:** the share of a question's evidence turns counted. **All evidence:** 1 if every one is. "
@@ -291,23 +292,27 @@ def _report(d: pd.DataFrame, models: list[str], dataset: str, chunking: str) -> 
                 ("segments", "every", "All evidence read in full within k segments"),
                 ("episodes", "recall", "Recall at k episodes (evidence turns among the k episodes)"),
                 ("episodes", "every", "All evidence among the k episodes"))
-    for number, (unit, measure, title) in enumerate(sections, 1):
-        base = _by_question(d, unit, "4k", "first_stage", measure)
-        lines += [f"## {number}. {title}, pool 4 x k\n",
-                  "| k (pool 4k) | " + " | ".join(label(r) for r in rankers) + " |", "|---|" + "---|" * len(rankers)]
-        for k in KS:
-            cells = []
-            for r in rankers:
-                x = _by_question(d, unit, "4k", r, measure)
-                if k not in x.columns:
-                    cells.append("–")
-                    continue
-                x = x[k].dropna()
-                cells.append(f"{x.mean():.3f}" if r == "first_stage" else
-                             f"{x.mean():.3f} ({delta((x - base[k].loc[x.index]).to_numpy(), x.index.to_numpy())})")
-            lines.append(f"| {k} ({OVERFETCH * k}) | " + " | ".join(cells) + " |")
-        lines.append("")
-    for number, unit in ((5, "segments"), (6, "episodes")):
+    number = 0
+    for pool in ("4k", "200"):
+        heading = "pool 4 x k (MemMachine's runtime)" if pool == "4k" else "a flat pool of 200, k kept (for comparison)"
+        for unit, measure, title in sections:
+            number += 1
+            base = _by_question(d, unit, pool, "first_stage", measure)
+            lines += [f"## {number}. {title}, {heading}\n",
+                      "| k (pool) | " + " | ".join(label(r) for r in rankers) + " |", "|---|" + "---|" * len(rankers)]
+            for k in KS:
+                cells = []
+                for r in rankers:
+                    x = _by_question(d, unit, pool, r, measure)
+                    if k not in x.columns:
+                        cells.append("–")
+                        continue
+                    x = x[k].dropna()
+                    cells.append(f"{x.mean():.3f}" if r == "first_stage" else
+                                 f"{x.mean():.3f} ({delta((x - base[k].loc[x.index]).to_numpy(), x.index.to_numpy())})")
+                lines.append(f"| {k} ({limit_of(pool, k)}) | " + " | ".join(cells) + " |")
+            lines.append("")
+    for number, unit in ((9, "segments"), (10, "episodes")):
         lines += [f"## {number}. The pool: 4 x k against a fixed 20 or 200, recall at {UNITS[unit]}\n",
                   "| k | no reranker | " + " | ".join(f"{m}, pool {p}" for m in models for p in ("4k", "20", "200"))
                   + " |", "|---|---|" + "---|" * (3 * len(models))]
@@ -401,101 +406,106 @@ def figures(d: pd.DataFrame, models: list[str], out, head: str) -> list[str]:
                        "At k = 5 the 4 × k pool is 20 and at k = 50 it is 200, so the lines meet there."])
         written.append(str(path))
     lexical = palette.family(LEXICAL, 2)
-    for unit in UNITS:
-        fig, axes = fg._figure(len(models), 3, panel=(4.4, 3.2))
-        for i, m in enumerate(models):
-            model = palette.family(fg.SERIES[m], 4)[1:3]  # the middle two: visible on white, apart from blue
-            series = [("bm25", lexical[1], "-"), ("rrf:identity+bm25", lexical[0], "--"),
-                      (m, model[0], "-"), (f"rrf:identity+bm25+{m}", model[1], "--")]
-            base = _by_question(d, unit, "4k", "first_stage", "recall")
-            ce = _by_question(d, unit, "4k", m, "recall")
-            ax = axes[i][0]
-            line(ax, _curve(base)[0], first)
-            for r, color, ls in series:
-                line(ax, _curve(_by_question(d, unit, "4k", r, "recall"))[0], color, ls)
-            k_axis(ax, True)
-            ax.set_title(f"{_named(m)}: recall at k", loc="left")
-            ax.set_ylabel("recall")
-            ax = axes[i][1]
-            for r, color, ls in series:
-                mean, low, high = _curve(_by_question(d, unit, "4k", r, "recall"), base)
-                line(ax, mean, color, ls, band=(low, high))
-            k_axis(ax, False)
-            ax.set_title("against no reranker", loc="left")
-            ax.set_ylabel("recall minus no reranker")
-            ax = axes[i][2]
-            for r, color, ls in (series[1], series[3]):
-                mean, low, high = _curve(_by_question(d, unit, "4k", r, "recall"), ce)
-                line(ax, mean, color, ls, band=(low, high))
-            k_axis(ax, False)
-            ax.set_title("against the cross-encoder alone", loc="left")
-            ax.set_ylabel("recall minus the cross-encoder alone")
-        path = out / f"runtime_rrf_{unit}.png"  # the user's two configurations (subsets: runtime_rrf_subsets_*)
-        fg._save(fig, path, f"RRF hybrid with and without the cross-encoder, MemMachine's runtime pool (4 × k), "
-                 f"{unit} — {head}",
-                 [key(first), key(lexical[1]), key(lexical[0], "--"), key(fg.INK), key(fg.INK, "--")],
-                 ["no reranker", "BM25 alone", "RRF [identity, BM25]", "the cross-encoder alone (its color)",
-                  "RRF [identity, BM25, cross-encoder] (its color)"], ncol=3,
-                 note=["MemMachine's rrf-hybrid reranker (RRF's k = 60; BM25 with MemMachine's default tokenizer), "
-                       "with and without the cross-encoder, on the pool MemMachine's runtime reranks: 4 × k candidates.",
-                       unit_line[unit],
-                       "Left: recall, the share of a question's evidence turns counted, averaged over questions. "
-                       "Middle: the difference from no reranker. Right: the difference from the cross-encoder alone "
-                       "(below 0: worse than it). Shaded: 95% intervals, paired bootstrap over questions.",
-                       "Blue: no reranker. Gray: BM25 alone (solid) and RRF [identity, BM25] (dashed). The model's "
-                       "color, one row per model: the cross-encoder alone (solid) and RRF [identity, BM25, "
-                       "cross-encoder] (dashed)."])
-        written.append(str(path))
-    for unit in UNITS:  # every RRF including the cross-encoder, against it alone and no reranker
-        fig, axes = fg._figure(len(models), 3, panel=(4.4, 3.2))
-        for i, m in enumerate(models):
-            # the darker four of five steps (the lightest fades on white); the cross-encoder alone
-            # on the step nearest the model's own color
-            shades = palette.family(fg.SERIES[m], 5)
-            series = [(m, shades[2], "-"), (rrf_name(("identity", m)), shades[1], ":"),
-                      (rrf_name(("bm25", m)), shades[3], "-."), (rrf_name(("identity", "bm25", m)), shades[0], "--")]
-            base = _by_question(d, unit, "4k", "first_stage", "recall")
-            ce = _by_question(d, unit, "4k", m, "recall")
-            ax = axes[i][0]
-            line(ax, _curve(base)[0], first)
-            for r, color, ls in series:
-                line(ax, _curve(_by_question(d, unit, "4k", r, "recall"))[0], color, ls)
-            k_axis(ax, True)
-            ax.set_title(f"{_named(m)}: recall at k", loc="left")
-            ax.set_ylabel("recall")
-            ax = axes[i][1]
-            for r, color, ls in series:
-                mean, low, high = _curve(_by_question(d, unit, "4k", r, "recall"), base)
-                line(ax, mean, color, ls, band=(low, high))
-            k_axis(ax, False)
-            ax.set_title("against no reranker", loc="left")
-            ax.set_ylabel("recall minus no reranker")
-            ax = axes[i][2]
-            for r, color, ls in series[1:]:
-                mean, low, high = _curve(_by_question(d, unit, "4k", r, "recall"), ce)
-                line(ax, mean, color, ls, band=(low, high))
-            k_axis(ax, False)
-            ax.set_title("against the cross-encoder alone", loc="left")
-            ax.set_ylabel("recall minus the cross-encoder alone")
-        path = out / f"runtime_rrf_subsets_{unit}.png"
-        fg._save(fig, path, f"The cross-encoder in each RRF hybrid, MemMachine's runtime pool (4 × k), {unit} — {head}",
-                 [key(first), key(fg.INK), key(fg.INK, ":"), key(fg.INK, "-."), key(fg.INK, "--")],
-                 ["no reranker", "the cross-encoder alone", "RRF [identity, cross-encoder]", "RRF [BM25, cross-encoder]",
-                  "RRF [identity, BM25, cross-encoder]"], ncol=3,
-                 note=["MemMachine's rrf-hybrid reranker with the cross-encoder and each subset of its other components "
-                       "(identity: the vector search order; BM25), on the pool MemMachine's runtime reranks: 4 × k "
-                       "candidates. RRF's k = 60; BM25 with MemMachine's default tokenizer.",
-                       "An RRF of one component orders as that component alone: RRF [identity] is no reranker, RRF "
-                       "[cross-encoder] the cross-encoder alone. RRF [identity, BM25] and BM25 alone: "
-                       f"runtime_rrf_{unit}.png.",
-                       unit_line[unit],
-                       "Left: recall, the share of a question's evidence turns counted, averaged over questions. "
-                       "Middle: the difference from no reranker. Right: the difference from the cross-encoder alone "
-                       "(below 0: worse than it). Shaded: 95% intervals, paired bootstrap over questions.",
-                       "Blue: no reranker. The model's color, one row per model, darker to lighter: RRF [identity, "
-                       "BM25, cross-encoder] (dashed), RRF [identity, cross-encoder] (dotted), the cross-encoder alone "
-                       "(solid), RRF [BM25, cross-encoder] (dash-dot)."])
-        written.append(str(path))
+    for pool in ("4k", "200"):
+        suffix = "" if pool == "4k" else "_pool200"
+        pool_title = "MemMachine's runtime pool (4 × k)" if pool == "4k" else "a flat pool of 200 (k kept)"
+        pool_note = ("on the pool MemMachine's runtime reranks: 4 × k candidates." if pool == "4k" else
+                     "on a flat pool of 200 candidates, k kept: the comparison for the runtime pool's chart.")
+        for unit in UNITS:
+            fig, axes = fg._figure(len(models), 3, panel=(4.4, 3.2))
+            for i, m in enumerate(models):
+                model = palette.family(fg.SERIES[m], 4)[1:3]  # the middle two: visible on white, apart from blue
+                series = [("bm25", lexical[1], "-"), ("rrf:identity+bm25", lexical[0], "--"),
+                          (m, model[0], "-"), (f"rrf:identity+bm25+{m}", model[1], "--")]
+                base = _by_question(d, unit, pool, "first_stage", "recall")
+                ce = _by_question(d, unit, pool, m, "recall")
+                ax = axes[i][0]
+                line(ax, _curve(base)[0], first)
+                for r, color, ls in series:
+                    line(ax, _curve(_by_question(d, unit, pool, r, "recall"))[0], color, ls)
+                k_axis(ax, True)
+                ax.set_title(f"{_named(m)}: recall at k", loc="left")
+                ax.set_ylabel("recall")
+                ax = axes[i][1]
+                for r, color, ls in series:
+                    mean, low, high = _curve(_by_question(d, unit, pool, r, "recall"), base)
+                    line(ax, mean, color, ls, band=(low, high))
+                k_axis(ax, False)
+                ax.set_title("against no reranker", loc="left")
+                ax.set_ylabel("recall minus no reranker")
+                ax = axes[i][2]
+                for r, color, ls in (series[1], series[3]):
+                    mean, low, high = _curve(_by_question(d, unit, pool, r, "recall"), ce)
+                    line(ax, mean, color, ls, band=(low, high))
+                k_axis(ax, False)
+                ax.set_title("against the cross-encoder alone", loc="left")
+                ax.set_ylabel("recall minus the cross-encoder alone")
+            path = out / f"runtime_rrf_{unit}{suffix}.png"  # the user's two configurations (subsets: runtime_rrf_subsets_*)
+            fg._save(fig, path, f"RRF hybrid with and without the cross-encoder, {pool_title}, "
+                     f"{unit} — {head}",
+                     [key(first), key(lexical[1]), key(lexical[0], "--"), key(fg.INK), key(fg.INK, "--")],
+                     ["no reranker", "BM25 alone", "RRF [identity, BM25]", "the cross-encoder alone (its color)",
+                      "RRF [identity, BM25, cross-encoder] (its color)"], ncol=3,
+                     note=["MemMachine's rrf-hybrid reranker (RRF's k = 60; BM25 with MemMachine's default tokenizer), "
+                           f"with and without the cross-encoder, {pool_note}",
+                           unit_line[unit],
+                           "Left: recall, the share of a question's evidence turns counted, averaged over questions. "
+                           "Middle: the difference from no reranker. Right: the difference from the cross-encoder alone "
+                           "(below 0: worse than it). Shaded: 95% intervals, paired bootstrap over questions.",
+                           "Blue: no reranker. Gray: BM25 alone (solid) and RRF [identity, BM25] (dashed). The model's "
+                           "color, one row per model: the cross-encoder alone (solid) and RRF [identity, BM25, "
+                           "cross-encoder] (dashed)."])
+            written.append(str(path))
+        for unit in UNITS:  # every RRF including the cross-encoder, against it alone and no reranker
+            fig, axes = fg._figure(len(models), 3, panel=(4.4, 3.2))
+            for i, m in enumerate(models):
+                # the darker four of five steps (the lightest fades on white); the cross-encoder alone
+                # on the step nearest the model's own color
+                shades = palette.family(fg.SERIES[m], 5)
+                series = [(m, shades[2], "-"), (rrf_name(("identity", m)), shades[1], ":"),
+                          (rrf_name(("bm25", m)), shades[3], "-."), (rrf_name(("identity", "bm25", m)), shades[0], "--")]
+                base = _by_question(d, unit, pool, "first_stage", "recall")
+                ce = _by_question(d, unit, pool, m, "recall")
+                ax = axes[i][0]
+                line(ax, _curve(base)[0], first)
+                for r, color, ls in series:
+                    line(ax, _curve(_by_question(d, unit, pool, r, "recall"))[0], color, ls)
+                k_axis(ax, True)
+                ax.set_title(f"{_named(m)}: recall at k", loc="left")
+                ax.set_ylabel("recall")
+                ax = axes[i][1]
+                for r, color, ls in series:
+                    mean, low, high = _curve(_by_question(d, unit, pool, r, "recall"), base)
+                    line(ax, mean, color, ls, band=(low, high))
+                k_axis(ax, False)
+                ax.set_title("against no reranker", loc="left")
+                ax.set_ylabel("recall minus no reranker")
+                ax = axes[i][2]
+                for r, color, ls in series[1:]:
+                    mean, low, high = _curve(_by_question(d, unit, pool, r, "recall"), ce)
+                    line(ax, mean, color, ls, band=(low, high))
+                k_axis(ax, False)
+                ax.set_title("against the cross-encoder alone", loc="left")
+                ax.set_ylabel("recall minus the cross-encoder alone")
+            path = out / f"runtime_rrf_subsets_{unit}{suffix}.png"
+            fg._save(fig, path, f"The cross-encoder in each RRF hybrid, {pool_title}, {unit} — {head}",
+                     [key(first), key(fg.INK), key(fg.INK, ":"), key(fg.INK, "-."), key(fg.INK, "--")],
+                     ["no reranker", "the cross-encoder alone", "RRF [identity, cross-encoder]", "RRF [BM25, cross-encoder]",
+                      "RRF [identity, BM25, cross-encoder]"], ncol=3,
+                     note=["MemMachine's rrf-hybrid reranker with the cross-encoder and each subset of its other components "
+                           f"(identity: the vector search order; BM25), {pool_note} RRF's k = 60; BM25 with MemMachine's "
+                           "default tokenizer.",
+                           "An RRF of one component orders as that component alone: RRF [identity] is no reranker, RRF "
+                           "[cross-encoder] the cross-encoder alone. RRF [identity, BM25] and BM25 alone: "
+                           f"runtime_rrf_{unit}{suffix}.png.",
+                           unit_line[unit],
+                           "Left: recall, the share of a question's evidence turns counted, averaged over questions. "
+                           "Middle: the difference from no reranker. Right: the difference from the cross-encoder alone "
+                           "(below 0: worse than it). Shaded: 95% intervals, paired bootstrap over questions.",
+                           "Blue: no reranker. The model's color, one row per model, darker to lighter: RRF [identity, "
+                           "BM25, cross-encoder] (dashed), RRF [identity, cross-encoder] (dotted), the cross-encoder alone "
+                           "(solid), RRF [BM25, cross-encoder] (dash-dot)."])
+            written.append(str(path))
     return written
 
 

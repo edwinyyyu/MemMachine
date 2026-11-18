@@ -26,6 +26,8 @@
   compare-embedders [--server S | --embedders a,b,c] [--questions N]
                                      first stage under each embedding prompt setup, or across embedders (no reranker)
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
+  runtime-core [--models m,n]                               the core's measurements under the runtime pool (rerank 4 x k,
+                                                             keep k; and a flat 200, keep k): a results set of its own; free
   runtime-topk [--sample S] [--models m,n] [--redraw]       recall at top-k as MemMachine retrieves at runtime (4 x k
                                                              candidates, first k episodes; BM25 and RRF hybrids); free
   embed-checks [--embedder E]                                preflight for a hosted embedder (Qwen3-Embedding-8B):
@@ -140,6 +142,10 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("run", "adhoc", "estimate", "explain", "depth"):
         sub.choices[name].add_argument("--embedder", choices=EMBEDDERS,
                                        help=f"the first stage (default: the stage's own, else {EMBEDDER})")
+    p = sub.add_parser("runtime-core")
+    p.add_argument("--models", default="q4-mem,q8-mem", help="cross-encoders with cached scores for the core's pool")
+    p.add_argument("--embedder", default=None, help="the first stage (default: embedding.PAID)")
+    p.add_argument("--redraw", action="store_true", help="the report and charts from the saved results set")
     p = sub.add_parser("runtime-topk")
     p.add_argument("--sample", default="all")
     p.add_argument("--models", default="q4-mem,q8-mem", help="cross-encoders with cached scores for the sample's pool")
@@ -316,6 +322,14 @@ def main(argv: list[str] | None = None) -> None:
             print(compare_embedders.write(args.server, args.dataset, args.size, args.questions))
     elif args.command == "embed-fidelity":
         print(json.dumps(preflight.embed_fidelity(args.dataset, args.chunking), indent=1))
+    elif args.command == "runtime-core":
+        from rbench import runtime_report, runtime_sim
+        from rbench.embedding import PAID
+
+        embedder, models = args.embedder or PAID, tuple(args.models.split(","))
+        if not args.redraw:
+            print(runtime_sim.run(embedder, models=models))
+        print("\n".join(runtime_report.write(embedder, models=models)))
     elif args.command == "runtime-topk":
         from rbench import runtime
         from rbench.embedding import PAID
