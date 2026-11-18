@@ -22,3 +22,24 @@ def test_the_overfetch_is_memmachines_and_the_configurations_cover_both_rrf_hybr
     r = runtime.rankers_for(["q4-mem"])
     assert r == ["first_stage", "bm25", "rrf:identity+bm25", "q4-mem", "rrf:identity+bm25+q4-mem"]
     assert runtime.label("rrf:identity+bm25+q4-mem") == "RRF [identity, BM25, q4-mem]"
+
+
+def test_k_segments_counts_a_turn_only_when_all_its_segments_are_kept():
+    seeds = [10, 11, 12, 13]  # candidate i is segment seeds[i]
+    spans = [(11,), (12, 13)]  # turn A is one segment; turn B is split into two
+    assert runtime.turns_in_full([1, 2, 0, 3], seeds, spans, 2) == [True, False]  # 13 not kept: B not in full
+    assert runtime.turns_in_full([1, 2, 0, 3], seeds, spans, 4) == [True, True]
+
+
+def test_the_pools_and_the_input_cache_key(tmp_path):
+    from types import SimpleNamespace
+
+    assert [runtime.limit_of(p, 5) for p in runtime.POOLS] == [20, 20, 200]  # k = 5: 4 x k is EventMemory's 20
+    (tmp_path / "done").mkdir()
+    (tmp_path / "done" / "h1").write_text("stamp-1")
+    m = SimpleNamespace(root=tmp_path, embedder="e", width=None, done=lambda key: tmp_path / "done" / key)
+    a = runtime._inputs_path(m, "h1", "q1", "When?", "fmt")
+    assert a == runtime._inputs_path(m, "h1", "q1", "When?", "fmt") and a.parent == tmp_path / "runtime_inputs" / "h1"
+    assert a != runtime._inputs_path(m, "h1", "q2", "When?", "fmt")
+    (tmp_path / "done" / "h1").write_text("stamp-2")  # the partition re-encoded: the cache no longer applies
+    assert a != runtime._inputs_path(m, "h1", "q1", "When?", "fmt")

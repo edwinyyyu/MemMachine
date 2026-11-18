@@ -1,12 +1,40 @@
 # Recall at top-k as MemMachine retrieves at runtime — longmemeval_m · seg500 · 470 questions
 
-- **Pool:** for k results, EventMemory retrieves 4 x k segments (LongTermMemory's `_EVENT_BACKEND_DEDUP_OVERFETCH` = 4), and the reranker scores those 4 x k.
-- **Results:** after EventMemory's sort by score, LongTermMemory keeps the first k distinct episodes (turns), returned whole.
-- **Recall:** the share of a question's evidence turns among its k episodes. **All evidence:** 1 if every evidence turn is among them. Each is averaged over questions, every question counting equally.
-- **Rerankers:** MemMachine's own IdentityReranker, BM25Reranker (default tokenizer) and RRFHybridReranker (k = 60), built through its RerankerManager; the Qwen3 cross-encoders' scores come from the score cache. BM25 and RRF are recomputed for each 4 x k candidate set.
-- **Δ:** minus no reranker, paired by question, with its 95% bootstrap interval. k stops at 50 because 4 x 50 = 200, the deepest pool scored.
+- **Pool:** for k results, EventMemory retrieves 4 x k segments (LongTermMemory's `_EVENT_BACKEND_DEDUP_OVERFETCH` = 4), and the reranker scores those 4 x k. Sections 5 and 6 compare a fixed pool of 20 (EventMemory's default limit) and 200 (the earlier reports' pool).
+- **Results, counted two ways:**
+  - **k segments** (sections 1, 2 and 5): the first k segments after EventMemory's sort by score, the same measure as the earlier reports' recall at top-k (an evidence turn counts when all its segments are among them). Only the pool differs: 4 x k instead of a fixed 20 or 200. Section 5's fixed pools are the earlier reports' own cells.
+  - **k episodes** (sections 3, 4 and 6), what LongTermMemory returns: walking the sorted segments, it keeps the first k distinct episodes (turns), each returned whole. The 4 x k overfetch exists for this step. An evidence turn counts when its episode is among the k.
+- **Recall:** the share of a question's evidence turns counted. **All evidence:** 1 if every one is. Each is averaged over questions, every question counting equally.
+- **Rerankers:** MemMachine's own IdentityReranker, BM25Reranker (default tokenizer) and RRFHybridReranker (k = 60), built through its RerankerManager; the Qwen3 cross-encoders' scores come from the score cache. BM25 and RRF are recomputed for each candidate set.
+- **Δ:** minus no reranker (same pool, same k), paired by question, with its 95% bootstrap interval. k stops at 50 because 4 x 50 = 200, the deepest pool scored.
 
-## Recall at k (evidence turns among the k episodes)
+## 1. Recall at k segments (evidence turns read in full), pool 4 x k
+
+| k (pool 4k) | no reranker (vector search order) | BM25 alone | RRF [identity, BM25] | q4-mem alone | RRF [identity, BM25, q4-mem] | q8-mem alone | RRF [identity, BM25, q8-mem] |
+|---|---|---|---|---|---|---|---|
+| 1 (4) | 0.216 | 0.194 (-0.021 [-0.054, +0.005]) | 0.224 (+0.008 [-0.003, +0.020]) | 0.259 (+0.043 [+0.017, +0.068]) | 0.254 (+0.038 [+0.021, +0.057]) | 0.252 (+0.037 [+0.012, +0.064]) | 0.255 (+0.039 [+0.023, +0.058]) |
+| 2 (8) | 0.312 | 0.300 (-0.012 [-0.046, +0.018]) | 0.337 (+0.025 [+0.003, +0.046]) | 0.400 (+0.087 [+0.060, +0.117]) | 0.366 (+0.054 [+0.030, +0.077]) | 0.407 (+0.095 [+0.069, +0.124]) | 0.378 (+0.066 [+0.043, +0.089]) |
+| 3 (12) | 0.381 | 0.375 (-0.007 [-0.040, +0.028]) | 0.399 (+0.018 [-0.005, +0.043]) | 0.490 (+0.108 [+0.080, +0.136]) | 0.453 (+0.072 [+0.048, +0.099]) | 0.487 (+0.106 [+0.080, +0.133]) | 0.444 (+0.063 [+0.038, +0.090]) |
+| 5 (20) | 0.461 | 0.483 (+0.021 [-0.014, +0.055]) | 0.508 (+0.046 [+0.019, +0.073]) | 0.602 (+0.140 [+0.110, +0.171]) | 0.570 (+0.108 [+0.083, +0.136]) | 0.595 (+0.134 [+0.106, +0.164]) | 0.576 (+0.115 [+0.088, +0.142]) |
+| 10 (40) | 0.615 | 0.585 (-0.030 [-0.061, +0.003]) | 0.636 (+0.020 [-0.002, +0.045]) | 0.699 (+0.084 [+0.055, +0.113]) | 0.699 (+0.083 [+0.059, +0.110]) | 0.705 (+0.090 [+0.062, +0.121]) | 0.696 (+0.081 [+0.058, +0.108]) |
+| 20 (80) | 0.733 | 0.681 (-0.052 [-0.082, -0.024]) | 0.740 (+0.007 [-0.014, +0.026]) | 0.789 (+0.056 [+0.030, +0.081]) | 0.788 (+0.054 [+0.036, +0.074]) | 0.781 (+0.048 [+0.022, +0.073]) | 0.775 (+0.042 [+0.021, +0.063]) |
+| 30 (120) | 0.769 | 0.724 (-0.046 [-0.074, -0.018]) | 0.787 (+0.018 [+0.000, +0.034]) | 0.830 (+0.061 [+0.037, +0.085]) | 0.826 (+0.056 [+0.038, +0.076]) | 0.823 (+0.054 [+0.030, +0.079]) | 0.821 (+0.052 [+0.034, +0.072]) |
+| 50 (200) | 0.817 | 0.778 (-0.039 [-0.068, -0.012]) | 0.827 (+0.010 [-0.009, +0.027]) | 0.878 (+0.060 [+0.038, +0.084]) | 0.871 (+0.054 [+0.035, +0.075]) | 0.868 (+0.051 [+0.028, +0.074]) | 0.874 (+0.057 [+0.038, +0.078]) |
+
+## 2. All evidence read in full within k segments, pool 4 x k
+
+| k (pool 4k) | no reranker (vector search order) | BM25 alone | RRF [identity, BM25] | q4-mem alone | RRF [identity, BM25, q4-mem] | q8-mem alone | RRF [identity, BM25, q8-mem] |
+|---|---|---|---|---|---|---|---|
+| 1 (4) | 0.104 | 0.074 (-0.030 [-0.053, -0.009]) | 0.100 (-0.004 [-0.013, +0.004]) | 0.126 (+0.021 [+0.000, +0.040]) | 0.113 (+0.009 [-0.004, +0.021]) | 0.123 (+0.019 [-0.002, +0.038]) | 0.115 (+0.011 [-0.002, +0.023]) |
+| 2 (8) | 0.168 | 0.160 (-0.009 [-0.040, +0.023]) | 0.189 (+0.021 [+0.000, +0.045]) | 0.238 (+0.070 [+0.040, +0.100]) | 0.215 (+0.047 [+0.021, +0.072]) | 0.243 (+0.074 [+0.049, +0.104]) | 0.230 (+0.062 [+0.038, +0.089]) |
+| 3 (12) | 0.240 | 0.234 (-0.006 [-0.045, +0.032]) | 0.249 (+0.009 [-0.019, +0.036]) | 0.321 (+0.081 [+0.045, +0.115]) | 0.302 (+0.062 [+0.032, +0.094]) | 0.313 (+0.072 [+0.038, +0.109]) | 0.298 (+0.057 [+0.028, +0.087]) |
+| 5 (20) | 0.321 | 0.343 (+0.021 [-0.019, +0.062]) | 0.370 (+0.049 [+0.017, +0.083]) | 0.468 (+0.147 [+0.109, +0.189]) | 0.434 (+0.113 [+0.083, +0.149]) | 0.449 (+0.128 [+0.089, +0.170]) | 0.428 (+0.106 [+0.074, +0.143]) |
+| 10 (40) | 0.489 | 0.460 (-0.030 [-0.070, +0.013]) | 0.513 (+0.023 [-0.009, +0.055]) | 0.591 (+0.102 [+0.066, +0.143]) | 0.589 (+0.100 [+0.068, +0.136]) | 0.594 (+0.104 [+0.066, +0.143]) | 0.587 (+0.098 [+0.068, +0.134]) |
+| 20 (80) | 0.623 | 0.577 (-0.047 [-0.085, -0.013]) | 0.640 (+0.017 [-0.013, +0.043]) | 0.691 (+0.068 [+0.034, +0.100]) | 0.687 (+0.064 [+0.038, +0.094]) | 0.679 (+0.055 [+0.019, +0.091]) | 0.674 (+0.051 [+0.023, +0.077]) |
+| 30 (120) | 0.672 | 0.621 (-0.051 [-0.087, -0.017]) | 0.700 (+0.028 [+0.004, +0.049]) | 0.740 (+0.068 [+0.036, +0.100]) | 0.736 (+0.064 [+0.038, +0.089]) | 0.723 (+0.051 [+0.019, +0.085]) | 0.730 (+0.057 [+0.032, +0.083]) |
+| 50 (200) | 0.736 | 0.677 (-0.060 [-0.098, -0.028]) | 0.745 (+0.009 [-0.015, +0.032]) | 0.796 (+0.060 [+0.030, +0.091]) | 0.789 (+0.053 [+0.030, +0.079]) | 0.785 (+0.049 [+0.017, +0.081]) | 0.791 (+0.055 [+0.032, +0.081]) |
+
+## 3. Recall at k episodes (evidence turns among the k episodes), pool 4 x k
 
 | k (pool 4k) | no reranker (vector search order) | BM25 alone | RRF [identity, BM25] | q4-mem alone | RRF [identity, BM25, q4-mem] | q8-mem alone | RRF [identity, BM25, q8-mem] |
 |---|---|---|---|---|---|---|---|
@@ -19,7 +47,7 @@
 | 30 (120) | 0.848 | 0.829 (-0.019 [-0.041, +0.002]) | 0.868 (+0.020 [+0.007, +0.033]) | 0.896 (+0.048 [+0.031, +0.067]) | 0.892 (+0.044 [+0.029, +0.059]) | 0.896 (+0.048 [+0.030, +0.067]) | 0.890 (+0.042 [+0.029, +0.057]) |
 | 50 (200) | 0.886 | 0.872 (-0.014 [-0.037, +0.009]) | 0.904 (+0.018 [+0.003, +0.034]) | 0.930 (+0.045 [+0.027, +0.063]) | 0.929 (+0.044 [+0.028, +0.060]) | 0.930 (+0.045 [+0.027, +0.063]) | 0.933 (+0.048 [+0.032, +0.065]) |
 
-## All evidence among the k episodes
+## 4. All evidence among the k episodes, pool 4 x k
 
 | k (pool 4k) | no reranker (vector search order) | BM25 alone | RRF [identity, BM25] | q4-mem alone | RRF [identity, BM25, q4-mem] | q8-mem alone | RRF [identity, BM25, q8-mem] |
 |---|---|---|---|---|---|---|---|
@@ -31,4 +59,30 @@
 | 20 (80) | 0.732 | 0.696 (-0.036 [-0.070, -0.004]) | 0.762 (+0.030 [+0.006, +0.051]) | 0.794 (+0.062 [+0.030, +0.089]) | 0.785 (+0.053 [+0.028, +0.074]) | 0.785 (+0.053 [+0.021, +0.083]) | 0.772 (+0.040 [+0.015, +0.064]) |
 | 30 (120) | 0.766 | 0.740 (-0.026 [-0.055, +0.002]) | 0.794 (+0.028 [+0.006, +0.047]) | 0.832 (+0.066 [+0.040, +0.094]) | 0.823 (+0.057 [+0.036, +0.081]) | 0.834 (+0.068 [+0.038, +0.096]) | 0.821 (+0.055 [+0.034, +0.077]) |
 | 50 (200) | 0.828 | 0.798 (-0.030 [-0.062, +0.000]) | 0.836 (+0.009 [-0.013, +0.032]) | 0.877 (+0.049 [+0.023, +0.077]) | 0.881 (+0.053 [+0.030, +0.077]) | 0.874 (+0.047 [+0.021, +0.074]) | 0.887 (+0.060 [+0.036, +0.083]) |
+
+## 5. The pool: 4 x k against a fixed 20 or 200, recall at k segments (the earlier measure: a turn counts when all its segments are among the first k)
+
+| k | no reranker | q4-mem, pool 4k | q4-mem, pool 20 | q4-mem, pool 200 | q8-mem, pool 4k | q8-mem, pool 20 | q8-mem, pool 200 |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.216 | 0.259 | 0.296 | 0.297 | 0.252 | 0.284 | 0.291 |
+| 2 | 0.312 | 0.400 | 0.429 | 0.442 | 0.407 | 0.435 | 0.438 |
+| 3 | 0.381 | 0.490 | 0.509 | 0.524 | 0.487 | 0.518 | 0.518 |
+| 5 | 0.461 | 0.602 | 0.602 | 0.610 | 0.595 | 0.595 | 0.601 |
+| 10 | 0.615 | 0.699 | 0.677 | 0.718 | 0.705 | 0.681 | 0.711 |
+| 20 | 0.733 | 0.789 | 0.733 | 0.809 | 0.781 | 0.733 | 0.795 |
+| 30 | 0.769 | 0.830 | – | 0.845 | 0.823 | – | 0.824 |
+| 50 | 0.817 | 0.878 | – | 0.878 | 0.868 | – | 0.868 |
+
+## 6. The pool: 4 x k against a fixed 20 or 200, recall at k episodes (what MemMachine returns: the first k distinct turns, each whole)
+
+| k | no reranker | q4-mem, pool 4k | q4-mem, pool 20 | q4-mem, pool 200 | q8-mem, pool 4k | q8-mem, pool 20 | q8-mem, pool 200 |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.271 | 0.331 | 0.376 | 0.385 | 0.331 | 0.370 | 0.382 |
+| 2 | 0.401 | 0.505 | 0.539 | 0.558 | 0.506 | 0.541 | 0.554 |
+| 3 | 0.485 | 0.594 | 0.620 | 0.643 | 0.594 | 0.624 | 0.631 |
+| 5 | 0.583 | 0.713 | 0.713 | 0.737 | 0.708 | 0.708 | 0.722 |
+| 10 | 0.741 | 0.807 | 0.780 | 0.831 | 0.803 | 0.779 | 0.823 |
+| 20 | 0.822 | 0.867 | 0.799 | 0.883 | 0.864 | 0.799 | 0.879 |
+| 30 | 0.848 | 0.896 | – | 0.913 | 0.896 | – | 0.907 |
+| 50 | 0.886 | 0.930 | – | 0.930 | 0.930 | – | 0.930 |
 

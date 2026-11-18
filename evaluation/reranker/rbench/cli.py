@@ -26,7 +26,7 @@
   compare-embedders [--server S | --embedders a,b,c] [--questions N]
                                      first stage under each embedding prompt setup, or across embedders (no reranker)
   embed-fidelity [--dataset D] [--chunking C]                preflight: local vs DeepInfra embeddinggemma
-  runtime-topk [--sample S] [--models m,n]                  recall at top-k as MemMachine retrieves at runtime (4 x k
+  runtime-topk [--sample S] [--models m,n] [--redraw]       recall at top-k as MemMachine retrieves at runtime (4 x k
                                                              candidates, first k episodes; BM25 and RRF hybrids); free
   embed-checks [--embedder E]                                preflight for a hosted embedder (Qwen3-Embedding-8B):
                                      card scores, batch invariance, dimensions, billed tokens, MemMachine's path,
@@ -144,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--sample", default="all")
     p.add_argument("--models", default="q4-mem,q8-mem", help="cross-encoders with cached scores for the sample's pool")
     p.add_argument("--embedder", default=None, help="the first stage (default: embedding.PAID)")
+    p.add_argument("--redraw", action="store_true", help="the report and charts from the last replay's rows")
     p = sub.add_parser("embed-checks")
     p.add_argument("--embedder", default="qwen3-8b-di")
     p = sub.add_parser("smoke")
@@ -319,7 +320,8 @@ def main(argv: list[str] | None = None) -> None:
         from rbench import runtime
         from rbench.embedding import PAID
 
-        print(runtime.write(args.embedder or PAID, sample_name=args.sample, models=tuple(args.models.split(","))))
+        print("\n".join(runtime.write(args.embedder or PAID, sample_name=args.sample,
+                                      models=tuple(args.models.split(",")), redraw=args.redraw)))
     elif args.command == "embed-checks":
         print(json.dumps(preflight.embed_checks(args.embedder), indent=1))
     elif args.command == "smoke":
