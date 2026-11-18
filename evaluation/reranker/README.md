@@ -55,7 +55,10 @@ Paid runs on DeepInfra need a key in `.secrets/deepinfra_api_key`. There is no s
 .venv/bin/python -m rbench compare-embedders --questions 200 --embedders qwen3-8b-di,qwen3-8b-di-mem-user,...
 .venv/bin/python -m rbench run lme-pilot
 .venv/bin/python -m rbench run lme-core
+.venv/bin/python -m rbench runtime-topk                 # free: recall at top-k as MemMachine retrieves at runtime (4 x k, RRF hybrids)
 ```
+
+Prompt templates (every one, exact) and a vLLM score template applying the memory instruction: `templates/`.
 
 ### On EC2 (Amazon Linux 2023)
 
