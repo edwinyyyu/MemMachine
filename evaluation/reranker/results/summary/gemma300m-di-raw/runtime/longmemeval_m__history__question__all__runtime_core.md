@@ -26,26 +26,26 @@ With a token budget, a larger k only adds candidates: the reader stops at the bu
 | comparison: a flat 200, keep the best k (leans optimistic) | 0.483 (k 10) | 0.626 (k 20) | 0.728 (k 50) | 0.789 (k 50) |
 | the 2026-11-12 report: a flat 200, read until the budget (L 200 on both sides) | 0.483 vs 0.336: +0.147 [+0.104, +0.189] | 0.626 vs 0.496: +0.130 [+0.089, +0.174] | 0.728 vs 0.636: +0.091 [+0.053, +0.130] | 0.794 vs 0.723: +0.070 [+0.040, +0.102] |
 
-**The same money per question** (q4-mem at $0.025/M pair tokens): the LLM input price from which reranking gets more evidence for money worth these reader tokens, the reranker's cost included.
+**The same money per question** (q4-mem at $0.025/M pair tokens): the LLM input price from which reranking gets more evidence for money worth these reader tokens, the reranker's cost included. The side without a reranker spends all the money too, reading as many results as it buys (no limit k).
 
 | limit k | pool | reranker $ per 1,000 questions | money worth 1,000 tokens | money worth 4,000 tokens |
 |---|---|---|---|---|
-| 1 | 4 | $0.0185 | at every price shown (from $0.05/M); never clearly | at every price shown (from $0.05/M); never clearly |
-| 1 | 200 | $0.898 | from $1.12/M; clearly from $1.12/M | from $0.25/M; clearly from $0.25/M |
-| 2 | 8 | $0.0371 | at every price shown (from $0.05/M); clearly at every price shown (from $0.05/M) | at every price shown (from $0.05/M); clearly at every price shown (from $0.05/M) |
-| 2 | 200 | $0.898 | from $1.12/M; clearly from $1.12/M | from $0.25/M; clearly from $0.25/M |
-| 3 | 12 | $0.0556 | from $0.08/M; clearly from $0.08/M | at every price shown (from $0.05/M); clearly at every price shown (from $0.05/M) |
-| 3 | 200 | $0.898 | from $1.12/M; clearly from $1.26/M | from $0.25/M; clearly from $0.25/M |
-| 5 | 20 | $0.0925 | from $0.14/M; clearly from $0.14/M | at every price shown (from $0.05/M); clearly at every price shown (from $0.05/M) |
-| 5 | 200 | $0.898 | from $1.26/M; clearly from $1.41/M | from $0.25/M; clearly from $0.25/M |
-| 10 | 40 | $0.184 | from $0.40/M; clearly from $0.50/M | from $0.06/M; clearly from $0.06/M |
-| 10 | 200 | $0.898 | from $1.99/M; clearly from $2.51/M | from $0.28/M; clearly from $0.28/M |
-| 20 | 80 | $0.364 | from $0.89/M; clearly from $1.12/M | from $0.13/M; clearly from $0.14/M |
-| 20 | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | from $0.32/M; clearly from $0.35/M |
-| 30 | 120 | $0.543 | from $1.41/M; clearly from $1.58/M | from $0.22/M; clearly from $0.28/M |
-| 30 | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | from $0.35/M; clearly from $0.45/M |
+| 1 | 4 | $0.0185 | never in range | never in range |
+| 1 | 200 | $0.898 | never in range | never in range |
+| 2 | 8 | $0.0371 | never in range | never in range |
+| 2 | 200 | $0.898 | never in range | never in range |
+| 3 | 12 | $0.0556 | never in range | never in range |
+| 3 | 200 | $0.898 | never in range | never in range |
+| 5 | 20 | $0.0925 | never in range | never in range |
+| 5 | 200 | $0.898 | never in range | never in range |
+| 10 | 40 | $0.184 | from $0.40/M; clearly from $0.50/M | never in range |
+| 10 | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | never in range |
+| 20 | 80 | $0.364 | from $0.89/M; clearly from $1.12/M | never in range |
+| 20 | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | never in range |
+| 30 | 120 | $0.543 | from $1.41/M; clearly from $1.58/M | from $0.32/M; never clearly |
+| 30 | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | from $0.45/M; never clearly |
 | 50 | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | from $0.45/M; clearly from $0.79/M |
-| 2026-11-12 report: L 200, read until the budget | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | from $0.45/M; clearly from $0.79/M |
+| 2026-11-12 report: L 200, read until the budget (the same baseline) | 200 | $0.898 | from $1.99/M; clearly from $2.81/M | from $0.45/M; clearly from $0.79/M |
 
 **q8-mem**
 
@@ -58,26 +58,26 @@ With a token budget, a larger k only adds candidates: the reader stops at the bu
 | comparison: a flat 200, keep the best k (leans optimistic) | 0.460 (k 10) | 0.606 (k 20) | 0.706 (k 30) | 0.777 (k 50) |
 | the 2026-11-12 report: a flat 200, read until the budget (L 200 on both sides) | 0.460 vs 0.336: +0.123 [+0.077, +0.172] | 0.606 vs 0.496: +0.111 [+0.064, +0.153] | 0.706 vs 0.636: +0.070 [+0.032, +0.109] | 0.779 vs 0.723: +0.055 [+0.021, +0.087] |
 
-**The same money per question** (q8-mem at $0.05/M pair tokens): the LLM input price from which reranking gets more evidence for money worth these reader tokens, the reranker's cost included.
+**The same money per question** (q8-mem at $0.05/M pair tokens): the LLM input price from which reranking gets more evidence for money worth these reader tokens, the reranker's cost included. The side without a reranker spends all the money too, reading as many results as it buys (no limit k).
 
 | limit k | pool | reranker $ per 1,000 questions | money worth 1,000 tokens | money worth 4,000 tokens |
 |---|---|---|---|---|
-| 1 | 4 | $0.037 | at every price shown (from $0.05/M); never clearly | at every price shown (from $0.05/M); never clearly |
-| 1 | 200 | $1.8 | from $2.23/M; clearly from $2.23/M | from $0.50/M; clearly from $0.50/M |
-| 2 | 8 | $0.0742 | from $0.10/M; clearly from $0.10/M | at every price shown (from $0.05/M); clearly at every price shown (from $0.05/M) |
-| 2 | 200 | $1.8 | from $2.23/M; clearly from $2.23/M | from $0.50/M; clearly from $0.50/M |
-| 3 | 12 | $0.111 | from $0.16/M; clearly from $0.16/M | at every price shown (from $0.05/M); clearly at every price shown (from $0.05/M) |
-| 3 | 200 | $1.8 | from $2.23/M; clearly from $2.51/M | from $0.50/M; clearly from $0.50/M |
-| 5 | 20 | $0.185 | from $0.28/M; clearly from $0.28/M | at every price shown (from $0.05/M); clearly from $0.06/M |
-| 5 | 200 | $1.8 | from $2.51/M; clearly from $2.81/M | from $0.50/M; clearly from $0.50/M |
-| 10 | 40 | $0.367 | from $0.89/M; clearly from $1.26/M | from $0.11/M; clearly from $0.11/M |
-| 10 | 200 | $1.8 | from $4.46/M; clearly from $5.61/M | from $0.56/M; clearly from $0.56/M |
-| 20 | 80 | $0.728 | from $1.99/M; clearly from $2.51/M | from $0.28/M; clearly from $0.32/M |
-| 20 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $0.63/M; clearly from $0.79/M |
-| 30 | 120 | $1.09 | from $2.81/M; clearly from $3.97/M | from $0.50/M; clearly from $0.79/M |
-| 30 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $0.79/M; clearly from $1.00/M |
-| 50 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $1.26/M; clearly from $3.54/M |
-| 2026-11-12 report: L 200, read until the budget | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $1.41/M; clearly from $3.97/M |
+| 1 | 4 | $0.037 | never in range | never in range |
+| 1 | 200 | $1.8 | never in range | never in range |
+| 2 | 8 | $0.0742 | never in range | never in range |
+| 2 | 200 | $1.8 | never in range | never in range |
+| 3 | 12 | $0.111 | never in range | never in range |
+| 3 | 200 | $1.8 | never in range | never in range |
+| 5 | 20 | $0.185 | never in range | never in range |
+| 5 | 200 | $1.8 | never in range | never in range |
+| 10 | 40 | $0.367 | from $1.00/M; clearly from $1.26/M | never in range |
+| 10 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | never in range |
+| 20 | 80 | $0.728 | from $1.99/M; clearly from $2.51/M | never in range |
+| 20 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | never in range |
+| 30 | 120 | $1.09 | from $2.81/M; clearly from $3.97/M | never in range |
+| 30 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $1.41/M; never clearly |
+| 50 | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $1.41/M; clearly from $3.97/M |
+| 2026-11-12 report: L 200, read until the budget (the same baseline) | 200 | $1.8 | from $4.46/M; clearly from $6.29/M | from $1.41/M; clearly from $3.97/M |
 
 ## 1. The pool's ceiling (all evidence)
 

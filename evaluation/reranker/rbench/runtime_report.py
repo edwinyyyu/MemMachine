@@ -90,6 +90,22 @@ def best_k(r: Results, name_of, reading: str, budgets=None) -> int:
     return max(scores, key=scores.get)
 
 
+def uncapped(r: Results, limits=KS) -> Results:
+    """The same results with the first stage at each limit replaced by the first stage reading as
+    far as its budget goes (no limit; its whole search, 400 seeds): the baseline for the same
+    money, so the side without a reranker may spend all of it, on more results instead of a
+    reranker (the user's rule, 2026-11-18: same cost means same cost). frontier.equal_spend
+    compares rerank:<m>@n<k> with first_stage@n<k>, so the rows are renamed to those."""
+    df = r.df
+    expansions = sorted({int(e) for e in df.expand.unique()})
+    names = {fid(k, e) for k in limits for e in expansions}
+    out = [df[~df.ranker.isin(names)]]
+    for e in expansions:
+        src = df[df.ranker == f"first_stage{tail(e)}"]
+        out += [src.assign(ranker=fid(k, e), depth=f"n{k}") for k in limits]
+    return Results(r.embedder, r.dataset, r.scope, r.variant, r.sample, pd.concat(out, ignore_index=True))
+
+
 def usd_per_1000(r: Results, m: str, k: int, pool: str) -> float:
     return float(rows(r, rid(m, k, pool)).rr_tokens.mean()) * price(m) / 1e6 * 1000
 
@@ -182,20 +198,22 @@ def _break_even(es, spend: float) -> str:
 
 def _break_even_lines(r: Results, r0: Results | None, m: str, reading: str) -> list[str]:
     spends = (1000, 4000)
+    ru = uncapped(r)
     lines = [f"**The same money per question** ({m} at ${price(m):g}/M pair tokens): the LLM input price from which "
-             "reranking gets more evidence for money worth these reader tokens, the reranker's cost included.\n",
+             "reranking gets more evidence for money worth these reader tokens, the reranker's cost included. The side "
+             "without a reranker spends all the money too, reading as many results as it buys (no limit k).\n",
              "| limit k | pool | reranker $ per 1,000 questions | " + " | ".join(f"money worth {s:,} tokens" for s in spends)
              + " |", "|---|---|---|" + "---|" * len(spends)]
     for k in KS:
         for pool in POOLS:
             if pool == "200" and OVERFETCH * k == POOL:
                 continue  # the runtime pool at this k is the flat 200 itself
-            es = frontier.equal_spend(r, m + (FLAT if pool == "200" else ""), price(m), k, reading, (CHUNKING, 0))
+            es = frontier.equal_spend(ru, m + (FLAT if pool == "200" else ""), price(m), k, reading, (CHUNKING, 0))
             lines.append(f"| {k} | {OVERFETCH * k if pool == '4k' else POOL} | ${usd_per_1000(r, m, k, pool):.3g} | "
                          + " | ".join(_break_even(es, s) for s in spends) + " |")
     if r0 is not None and not r0.rows(CHUNKING, f"rerank:{m}@n200").empty:
-        es = frontier.equal_spend(r0, m, price(m), 200, reading, (CHUNKING, 0))
-        lines.append("| 2026-11-12 report: L 200, read until the budget | 200 | "
+        es = frontier.equal_spend(uncapped(r0, (200,)), m, price(m), 200, reading, (CHUNKING, 0))
+        lines.append("| 2026-11-12 report: L 200, read until the budget (the same baseline) | 200 | "
                      f"${float(rows(r0, f'rerank:{m}@n200').rr_tokens.mean()) * price(m) / 1e6 * 1000:.3g} | "
                      + " | ".join(_break_even(es, s) for s in spends) + " |")
     return [*lines, ""]
@@ -495,6 +513,7 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
     from rbench.rerankers import RERANKERS
 
     few = fg._few(r)
+    ru = uncapped(r)
     panels = []
     for m in models:
         best = best_k(r, lambda k, m=m: rid(m, k, pool), reading)
@@ -503,7 +522,7 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
             if any(p[1] == k and p[0] == m for p in panels):
                 continue
             name = m + (FLAT if pool == "200" else "")
-            es = (frontier.equal_spend_usd if usd else frontier.equal_spend)(r, name, price(m), k, reading, (CHUNKING, 0))
+            es = (frontier.equal_spend_usd if usd else frontier.equal_spend)(ru, name, price(m), k, reading, (CHUNKING, 0))
             panels.append((m, k, what, es))
     columns = max(sum(p[0] == m for p in panels) for m in models)
     low = min(-0.05, float(np.nanmin([np.nanmin(p[3].gain) for p in panels])))
@@ -554,7 +573,7 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
             ax.set_facecolor(fg.SURFACE)
             ax.grid(False)
             scored = OVERFETCH * k if pool == "4k" else POOL
-            ax.set_title(f"{fg.LABEL[m]} · k {k} on both sides ({what}): the reranker scores {scored} seeds, "
+            ax.set_title(f"{fg.LABEL[m]} · reranked, k {k} kept ({what}): the reranker scores {scored} seeds, "
                          f"{es.tokens:,.0f} tokens per question", loc="left")
             ax.set_xlabel(_money("LLM input price ($/M)"))
             if col == 0:
@@ -566,7 +585,7 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
     legend = [(Patch(color=fg.MUTED), "no clear difference (the gain's 95% interval includes 0)")] if not few else []
     if identical:
         legend.append((Patch(facecolor=fg.SAME, edgecolor=fg.SAME_HATCH, hatch="///", linewidth=0),
-                       "identical on every question: both read the same k results"))
+                       "identical on every question: both sides read the same evidence"))
     legend.append((Patch(facecolor=fg.SURFACE, edgecolor=fg.GRID),
                    "blank: below the reranker's own cost (the dotted line)" if usd
                    else "blank: the budget cannot even pay for the reranker"))
@@ -583,10 +602,13 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                       + ("_usd" if usd else "") + ".png.)"),
                    "How to read a cell: an LLM input price (x) and a budget per question (y, "
                    + ("in $ per 1,000 questions)." if usd else "shown as the reader tokens it buys at that price).")
-                   + " Without reranking, the reader gets the whole budget for the first stage's k results. With "
-                   "reranking, the reranker is paid first and the reader gets the rest, for the k results it kept.",
-                   "Each panel: one limit k on both sides (the results returned; MemMachine's default is 20); its title "
-                   "gives the seeds the reranker scores and their tokens per question.",
+                   + " Without reranking, the reader spends the whole budget on the first stage's results, as many as "
+                   "it buys (no limit k; up to its whole search): the same money buys more results instead of a "
+                   "reranker. With reranking, the reranker is paid first and the reader gets the rest, for the k results "
+                   "it kept.",
+                   "Each panel: one limit k on the reranked side (the results it returns; MemMachine's default is 20); "
+                   "its title gives the seeds the reranker scores and their tokens per question. Where the reranked side "
+                   "has read all k results, more money helps only the side without a reranker.",
                    f"Color: how much more of the evidence the reranked side reads ({fg.EVENT_TEXT[reading]}). Gray: no "
                    "clear difference (the 95% interval includes 0). Black line: break-even; inside it reranking clearly "
                    "gets more for the money.",
