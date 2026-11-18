@@ -23,4 +23,6 @@ results/summary/*
 !results/summary/widths__longmemeval_m__seg500__100q__qwen3-8b-di.md
 !results/summary/gemma300m-di-raw/
 results/summary/gemma300m-di-raw/*
-!results/summary/gemma300m-di-raw/longmemeval_m__history__question__all__runtime_topk.md
+!results/summary/gemma300m-di-raw/runtime/
+results/summary/gemma300m-di-raw/runtime/*
+!results/summary/gemma300m-di-raw/runtime/longmemeval_m__history__question__all__runtime_topk.md

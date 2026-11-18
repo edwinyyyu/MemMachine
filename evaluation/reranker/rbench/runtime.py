@@ -433,11 +433,23 @@ def figures(d: pd.DataFrame, models: list[str], out, head: str) -> list[str]:
     return written
 
 
+def summary_dir(embedder: str):
+    """The runtime replay's reports and rows: a folder of their own, so the core pipeline's
+    clean-up of a run's summaries (tables.clear: <run>__*.md beside it) never removes them."""
+    return SUMMARY / embedder / "runtime"
+
+
+def figures_dir(embedder: str, dataset: str, sample_name: str):
+    """The runtime replay's charts: a folder of their own, so the core pipeline's redraw (which
+    clears its run's chart folder first: figures.write) never removes them."""
+    return FIGURES / embedder / "runtime" / f"{dataset}__history__question__{sample_name}"
+
+
 def write(embedder: str, dataset: str = "longmemeval_m", chunking: str = "seg500", sample_name: str = "all",
           models: tuple[str, ...] = ("q4-mem", "q8-mem"), redraw: bool = False) -> list[str]:
     """Replay every question (or, with redraw, reuse the last replay's rows) and write the report
-    (results/summary/<embedder>/...__runtime_topk.md) and its charts (results/figures/...)."""
-    out = SUMMARY / embedder
+    (summary_dir: ...__runtime_topk.md, and its rows, .parquet) and its charts (figures_dir)."""
+    out = summary_dir(embedder)
     out.mkdir(parents=True, exist_ok=True)
     stem = f"{dataset}__history__question__{sample_name}__runtime_topk"
     if redraw:
@@ -448,5 +460,5 @@ def write(embedder: str, dataset: str = "longmemeval_m", chunking: str = "seg500
     path = out / f"{stem}.md"
     path.write_text("\n".join(_report(d, list(models), dataset, chunking)) + "\n")
     head = f"{dataset} · {chunking} · {d.qid.nunique()} questions"
-    charts = figures(d, list(models), FIGURES / embedder / f"{dataset}__history__question__{sample_name}", head)
+    charts = figures(d, list(models), figures_dir(embedder, dataset, sample_name), head)
     return [str(path), *charts]

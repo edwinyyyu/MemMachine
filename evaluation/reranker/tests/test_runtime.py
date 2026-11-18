@@ -43,3 +43,14 @@ def test_the_pools_and_the_input_cache_key(tmp_path):
     assert a != runtime._inputs_path(m, "h1", "q2", "When?", "fmt")
     (tmp_path / "done" / "h1").write_text("stamp-2")  # the partition re-encoded: the cache no longer applies
     assert a != runtime._inputs_path(m, "h1", "q1", "When?", "fmt")
+
+
+def test_the_outputs_stay_clear_of_the_core_pipelines_clean_ups():
+    """tables.clear removes <run>__*.md in summary/<embedder>/, and figures.write empties
+    figures/<embedder>/<run>/ before drawing: the replay's outputs live in folders of their own."""
+    from rbench.paths import FIGURES, SUMMARY
+
+    run = "longmemeval_m__history__question__all"
+    assert runtime.summary_dir("e") != SUMMARY / "e"
+    assert not (runtime.summary_dir("e") / f"{run}__runtime_topk.md").match(str(SUMMARY / "e" / f"{run}__*.md"))
+    assert runtime.figures_dir("e", "longmemeval_m", "all") != FIGURES / "e" / run
