@@ -27,8 +27,29 @@ from rbench.runtime_fit import EVENTS
 
 BUDGETS = np.unique(np.round(np.geomspace(250, 16000, 241)))  # the token axis: exact at every point drawn
 POLICY_TEXT = {"first": "no reranker: the most first-stage results that fit",
-               "4k": "the runtime pool: the most results that fit, the best of 4 × that many",
+               "4k": "the runtime pool: the most results that fit, the best of 4 × that many (at most 50 results: "
+                     "only 200 seeds per question were scored)",
                "200": "a flat 200: the most of its best results that fit"}
+CAP_NOTE = ("Why the orange line goes flat: only each question's first 200 seeds were scored, so the runtime pool "
+            "(4 × k) stops at k = 50 results. Shaded: past the mean tokens of those 50 results, where it cannot grow; "
+            "its line is flat there by construction (scoring deeper seeds would extend it), not because reranking "
+            "stops helping.")
+
+
+def cap_tokens(fit: Fit, m: str, e: int) -> float:
+    """Mean reader tokens of the runtime pool's 50 results: past them it cannot grow."""
+    return float(np.nanmean(fit.arrays("4k", m, e, "T")[:, -1]))
+
+
+def shade_cap(ax, start: float, end: float) -> None:
+    """The region past the runtime pool's 50 results, shaded and labelled where it is."""
+    from rbench.report import figures as fg
+
+    if start >= end:
+        return
+    ax.axvspan(start, end, color=fg.GRID, alpha=0.45, linewidth=0, zorder=0)
+    ax.annotate("runtime pool\nat its 50 results", xy=(start, 0.03), xycoords=("data", "axes fraction"),
+                xytext=(3, 0), textcoords="offset points", fontsize=6.5, color=fg.INK2, va="bottom")
 
 
 class Fit:
@@ -148,8 +169,10 @@ def section(fit: Fit, models: list[str], number) -> list[str]:
     budgets = config.EVAL.budgets
     lines = [f"## {number}. Budget first, exactly: the most results that fit\n",
              "As the 2026-11-12 report's matched-token measures: every question gets the same reader budget and reads "
-             "the most results that fit in it, whole. The runtime pool takes them from a pool of 4 × that many (at most "
-             "50 results, 200 seeds); the flat 200 from its best 200; the first stage from its own order. The largest "
+             "the most results that fit in it, whole. The runtime pool takes them from a pool of 4 × that many: at most "
+             "50 results, because only each question's first 200 seeds were scored, so past the tokens of 50 results "
+             "(about 4,100 without windows) its numbers stop growing by construction. The flat 200 takes them from its "
+             "best 200; the first stage from its own order. The largest "
              "fitting k is found per question over every k, so every cell is exact. Δ: minus the first stage, paired by "
              "question, with its 95% interval.\n"]
     for reading in config.READINGS:
@@ -198,6 +221,7 @@ def coverage_tokens(fit: Fit, models: list[str], out, head: str, reading: str, s
                                  (at_budgets(fit, "200", m, e, reading, BUDGETS).mean(0), POOL_COLOR["200"])])
             fg._token_log_x(ax)
             fg._share_y(ax)
+            shade_cap(ax, cap_tokens(fit, m, e), BUDGETS[-1])
             ax.set_title(f"{fg.LABEL[m]} · expand_context {e}" if j == 0 else f"expand_context {e}", loc="left")
             if i == len(models) - 1:
                 ax.set_xlabel(f"reader tokens ({fg.READER_NAME}; log scale)\nexact at every budget drawn")
@@ -214,8 +238,7 @@ def coverage_tokens(fit: Fit, models: list[str], out, head: str, reading: str, s
           "exact.",
           "Blue: no reranker, the first stage's own order. Orange: the runtime pool, the best k of the first 4 × k seeds. "
           "Aqua: the best k of a flat 200 (the 2026-11-12 pool).",
-          "The runtime pool stops growing at 50 results (4 × 50 = 200 seeds, the pool scored): past their tokens its "
-          "line is flat.",
+          CAP_NOTE,
           f"y: {fg.EVENT_TEXT[reading]}. Rows: the two rerankers; columns: expand_context (neighbouring segments read with "
           "each result). The reranker's own cost: runtime_cost_equal*.png."])
     return str(path)
@@ -245,6 +268,8 @@ def rpf(fit: Fit, models: list[str], out, head: str, save) -> list[str]:
                     ax = axes[i][j]
                     _lines(ax, xs, [(c[i], color) for c, color in curves])
                     fg._token_log_x(ax) if axis == "tokens" else fg._log_x(ax, 10, list(KS))
+                    if axis == "tokens":
+                        shade_cap(ax, cap_tokens(fit, m, e), BUDGETS[-1])
                     if j == 0:
                         ax.set_ylabel(name)
                 axes[0][j].set_title(f"{fg.LABEL[m]} · expand_context {e}" if j == 0 else f"expand_context {e}",
@@ -267,7 +292,10 @@ def rpf(fit: Fit, models: list[str], out, head: str, save) -> list[str]:
                    "that fit, whole, exact at every budget drawn." if axis == "tokens" else
                    "x: the limit k, the results returned and read in full (each with its window), exact at every k from 1 "
                    "to 50; the runtime pool reranks 4 × k seeds for each k."),
-                  "Blue: no reranker. Orange: the runtime pool. Aqua: a flat 200. Columns: expand_context."])
+                  "Blue: no reranker. Orange: the runtime pool. Aqua: a flat 200. Columns: expand_context.",
+                  CAP_NOTE if axis == "tokens" else
+                  "x stops at k = 50: only each question's first 200 seeds were scored, so the runtime pool (4 × k) "
+                  "goes no further."])
             written.append(str(path))
     return written
 
@@ -343,13 +371,17 @@ def expansion_compare(fit: Fit, models: list[str], out, head: str, save) -> str:
     labels = ([f"no reranker, expand_context {e}" for e in expansions] + [f"runtime pool, expand_context {e}"
                                                                           for e in expansions]
               + [f"flat 200, expand_context {e}" for e in expansions])
+    labels = [x + (" (at most 50 results)" if x.startswith("runtime pool") else "") for x in labels]
     path = out / "runtime_expansion_compare.png"
     save(fig, path, f"Expand_context compared, budget first, at MemMachine's runtime pool — {head}", handles, labels, 3,
          ["Does reading each result with its neighbouring segments pay for its extra text, with and without reranking?",
           "Budget first: every question reads the most results that fit in the budget (x), whole, each with its window "
           "(rerank the seeds, then expand; windows were not scored).",
           "Blues: no reranker. Oranges: the runtime pool (left). Aquas: a flat 200 (right). Within each, darker is less "
-          "expansion."])
+          "expansion.",
+          "Why the oranges go flat: only each question's first 200 seeds were scored, so the runtime pool (4 × k) stops "
+          "at 50 results; past their tokens (more with wider windows) its lines are flat by construction, not because "
+          "reranking stops helping."])
     return str(path)
 
 
@@ -384,7 +416,9 @@ def query_types(fit: Fit, models: list[str], out, head: str, save) -> str:
          ["Where does reranking help, by LongMemEval's question types, at the runtime pool?",
           "Budget first: at each budget every question reads the most results that fit, whole; the runtime pool takes "
           "them from 4 × that many. Each point: the gain at one budget (darker: smaller), with its 95% interval (paired "
-          "bootstrap over questions); the number of questions of each type in brackets."])
+          "bootstrap over questions); the number of questions of each type in brackets.",
+          "At 4,000 tokens some questions reach the runtime pool's cap of 50 results (only 200 seeds per question were "
+          "scored)."])
     return str(path)
 
 

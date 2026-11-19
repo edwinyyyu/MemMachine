@@ -498,7 +498,7 @@ expand_context e: each of the k results read with e neighbouring segments either
 
 ## 8. Budget first, exactly: the most results that fit
 
-As the 2026-11-12 report's matched-token measures: every question gets the same reader budget and reads the most results that fit in it, whole. The runtime pool takes them from a pool of 4 × that many (at most 50 results, 200 seeds); the flat 200 from its best 200; the first stage from its own order. The largest fitting k is found per question over every k, so every cell is exact. Δ: minus the first stage, paired by question, with its 95% interval.
+As the 2026-11-12 report's matched-token measures: every question gets the same reader budget and reads the most results that fit in it, whole. The runtime pool takes them from a pool of 4 × that many: at most 50 results, because only each question's first 200 seeds were scored, so past the tokens of 50 results (about 4,100 without windows) its numbers stop growing by construction. The flat 200 takes them from its best 200; the first stage from its own order. The largest fitting k is found per question over every k, so every cell is exact. Δ: minus the first stage, paired by question, with its 95% interval.
 
 **first**
 

@@ -482,6 +482,21 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                 continue
             _, k, what, es = mine[col]
             im, same_here, line_here = _spend_map(ax, es, few, norm, _diverging(pool))
+            if k == "fitted" and fit is not None:  # the money that buys the scored pool's last result
+                cap_k = POOL // OVERFETCH if pool == "4k" else POOL
+                t_cap = float(np.nanmean(fit.arrays(pool, m, 0, "T")[:, cap_k - 1]))
+                r_cap = float(np.nanmean(fit.arrays(pool, m, 0, "R")[:, cap_k - 1]))
+                y = ((t_cap * es.prices + price(m) * r_cap) / 1e6 * 1000 if usd
+                     else t_cap + price(m) / es.prices * r_cap)
+                inside = (y >= es.spends[0]) & (y <= es.spends[-1])
+                if inside.sum() >= 2:
+                    ax.plot(es.prices[inside], y[inside], color=fg.INK, linewidth=0.9, linestyle=(0, (4, 2)))
+                    i = int(np.flatnonzero(inside)[len(np.flatnonzero(inside)) // 5])
+                    ax.annotate(f"above the dashed line: the reranked side has all {cap_k}\nresults (only 200 seeds "
+                                "scored); more money buys it nothing", (es.prices[i], y[i]), xytext=(0, 6),
+                                textcoords="offset points", fontsize=6.5, color=fg.INK, ha="left", va="bottom",
+                                bbox={"facecolor": fg.SURFACE, "edgecolor": "none", "alpha": 0.9, "pad": 1.5},
+                                zorder=5)
             identical, lines = identical or same_here, lines or line_here
             if usd:
                 for t in fg.READER_TOKENS_SHOWN:
@@ -571,7 +586,11 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                    + ") times its tokens per question.",
                    "Right column: as many results as the money buys, each side: with reranking, the largest k whose "
                    + ("4 × k pairs" if pool == "4k" else "200 pairs") + " and k results the budget pays for; without, "
-                   "the most results its money buys (budget first, as the 2026-11-12 charts; exact for every question)."])
+                   "the most results its money buys (budget first, as the 2026-11-12 charts; exact for every question).",
+                   "Dashed line, right column: the money that buys the reranked side all "
+                   + ("50 results (4 × 50 = 200 seeds)" if pool == "4k" else "200 results") + ". Only each question's "
+                   "first 200 seeds were scored, so above the line it can buy nothing more while the side without a "
+                   "reranker keeps reading: the colors there show that limit, not what deeper pools would do."])
     return str(path)
 
 
