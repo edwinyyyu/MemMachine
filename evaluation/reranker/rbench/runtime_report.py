@@ -31,8 +31,9 @@ from rbench import partitions as pt
 from rbench.report import frontier
 from rbench.report import readings as rd
 from rbench.report.data import Results, load, price
-from rbench.report.stats import delta, interval
+from rbench.report.stats import delta
 from rbench.runtime import KS, OVERFETCH, POOL
+from rbench import runtime_fit_report as rfr
 from rbench.runtime_sim import FLAT, SAMPLE
 
 DATASET, CHUNKING, SCOPE, VARIANT = "longmemeval_m", "seg500", "history", "question"
@@ -136,7 +137,7 @@ def ceilings(embedder: str) -> pd.DataFrame:
 # ---------------------------------------------------------------- the report
 
 
-def _summary(r: Results, r0: Results | None, models: list[str], reading: str) -> list[str]:
+def _summary(r: Results, r0: Results | None, models: list[str], reading: str, fit=None) -> list[str]:
     budgets = config.EVAL.budgets
     lines = ["## Summary\n",
              f"Coverage ({reading}: {_reading_text(reading)}) at {', '.join(f'{b:,}' for b in budgets)} reader tokens. "
@@ -165,6 +166,8 @@ def _summary(r: Results, r0: Results | None, models: list[str], reading: str) ->
                      + " | ".join(cell(r, rid(m, DEFAULT_K), rid(m, DEFAULT_K, "200"), reading, b) for b in budgets) + " |")
         lines.append("| comparison: a flat 200, keep the best k (leans optimistic) | "
                      + " | ".join(f"{value(r, rid(m, b2[b], '200'), reading, b):.3f} (k {b2[b]})" for b in budgets) + " |")
+        if fit is not None:
+            lines += rfr.summary_rows(fit, m, reading)
         if r0 is not None and not r0.rows(CHUNKING, f"rerank:{m}@n200").empty:
             lines.append("| the 2026-11-12 report: a flat 200, read until the budget (L 200 on both sides) | "
                          + " | ".join(f"{value(r0, f'rerank:{m}@n200', reading, b):.3f} vs "
@@ -172,7 +175,7 @@ def _summary(r: Results, r0: Results | None, models: list[str], reading: str) ->
                                       f"{cell(r0, f'rerank:{m}@n200', 'first_stage@n200', reading, b)}"
                                       for b in budgets) + " |")
         lines.append("")
-        lines += _break_even_lines(r, r0, m, reading)
+        lines += _break_even_lines(r, r0, m, reading, fit)
     return lines
 
 
@@ -196,7 +199,7 @@ def _break_even(es, spend: float) -> str:
     return price_text(point) + (f"; clearly {price_text(clear)}" if np.isfinite(clear) else "; never clearly")
 
 
-def _break_even_lines(r: Results, r0: Results | None, m: str, reading: str) -> list[str]:
+def _break_even_lines(r: Results, r0: Results | None, m: str, reading: str, fit=None) -> list[str]:
     spends = (1000, 4000)
     ru = uncapped(r)
     lines = [f"**The same money per question** ({m} at ${price(m):g}/M pair tokens): the LLM input price from which "
@@ -210,6 +213,12 @@ def _break_even_lines(r: Results, r0: Results | None, m: str, reading: str) -> l
                 continue  # the runtime pool at this k is the flat 200 itself
             es = frontier.equal_spend(ru, m + (FLAT if pool == "200" else ""), price(m), k, reading, (CHUNKING, 0))
             lines.append(f"| {k} | {OVERFETCH * k if pool == '4k' else POOL} | ${usd_per_1000(r, m, k, pool):.3g} | "
+                         + " | ".join(_break_even(es, s) for s in spends) + " |")
+    if fit is not None:  # each side buys as many results as the money does (budget first, for money)
+        for pool in POOLS:
+            es = rfr.fitted_spend(fit, m, pool, reading, frontier.SPEND_PRICES, lambda p: frontier.SPENDS)
+            lines.append(f"| as many as the money buys | {'4 × that k' if pool == '4k' else POOL} | "
+                         f"{'grows with k' if pool == '4k' else '$' + format(usd_per_1000(r, m, 50, '200'), '.3g')} | "
                          + " | ".join(_break_even(es, s) for s in spends) + " |")
     if r0 is not None and not r0.rows(CHUNKING, f"rerank:{m}@n200").empty:
         es = frontier.equal_spend(uncapped(r0, (200,)), m, price(m), 200, reading, (CHUNKING, 0))
@@ -340,7 +349,8 @@ def _held_out_section(r: Results, models: list[str], reading: str, number: int) 
     return [*lines, ""]
 
 
-def report(r: Results, r0: Results | None, models: list[str], c: pd.DataFrame, reading: str = "every") -> list[str]:
+def report(r: Results, r0: Results | None, models: list[str], c: pd.DataFrame, reading: str = "every",
+           fit=None) -> list[str]:
     n = r.df.qid.nunique()
     lines = [f"# The core's measurements at MemMachine's runtime pool — {DATASET} · {CHUNKING} · {n} questions\n",
              "**How to read the numbers** (definitions: METHODOLOGY sections 2 and 8.10)\n",
@@ -355,7 +365,7 @@ def report(r: Results, r0: Results | None, models: list[str], c: pd.DataFrame, r
              "- The 2026-11-12 report's flat 200 (L 200) differs in one more way: it read all 200 reranked seeds until "
              "the budget, with no limit k. It is shown where it is the comparison.",
              f"- Recall at top-k (the k results, no budget): `{RUN}__runtime_topk.md`.\n"]
-    lines += _summary(r, r0, models, reading)
+    lines += _summary(r, r0, models, reading, fit)
     lines += _ceiling_section(c, 1)
     lines += _grid(r, models, reading, 2)
     for i, other in enumerate(x for x in rd.available(r.df, config.READINGS) if x != reading):
@@ -365,24 +375,20 @@ def report(r: Results, r0: Results | None, models: list[str], c: pd.DataFrame, r
     lines += _expansion_section(r, models, reading, 5)
     lines += _models_section(r, models, reading, 6)
     lines += _held_out_section(r, models, reading, 7)
+    if fit is not None:
+        lines += rfr.section(fit, models, 8)
     return lines
 
 
 # ---------------------------------------------------------------- the charts
 
 
-def charts(r: Results, models: list[str], out, head: str) -> list[str]:
+def charts(r: Results, models: list[str], out, head: str, fit) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
-    written = []
-    for reading in rd.available(r.df, config.READINGS):
-        written.append(_coverage_tokens(r, models, out, head, reading))
-    written += _rpf(r, models, out, head)
+    written = rfr.charts(fit, models, out, head, _save)
     for pool in POOLS:
         for usd in (False, True):
-            written.append(_cost_map(r, models, out, head, "every", pool, usd))
-    written.append(_rerank_cost(r, models, out, head, "every"))
-    written.append(_expansion_compare(r, models, out, head, "every"))
-    written.append(_query_types(r, models, out, head, "every"))
+            written.append(_cost_map(r, models, out, head, "every", pool, usd, fit))
     return written
 
 
@@ -398,113 +404,7 @@ def _save(fig, path, title: str, handles, labels, ncol: int, note: list[str]) ->
     fg._save(fig, path, _money(title), handles, [_money(x) for x in labels], ncol=ncol, note=[_money(x) for x in note])
 
 
-def _styles(models: list[str]) -> list[tuple[str, str, str, str]]:
-    """(legend key, ranker template, color, line style): blue the first stage; the model's color
-    the runtime pool (solid) and the flat 200 (dashed)."""
-    from rbench.report.figures import LABEL, SERIES
-
-    out = [("no reranker: the first stage's first k", "first", SERIES["first_stage"], "-")]
-    for m in models:
-        out += [(f"{LABEL[m]}, {POOL_TEXT['4k']}", f"{m}|4k", SERIES[m], "-"),
-                (f"{LABEL[m]}, {POOL_TEXT['200']}", f"{m}|200", SERIES[m], "--")]
-    return out
-
-
-def _name(template: str, k: int, e: int = 0) -> str:
-    if template == "first":
-        return fid(k, e)
-    m, pool = template.split("|")
-    return rid(m, k, pool, e)
-
-
-def _coverage_tokens(r: Results, models: list[str], out, head: str, reading: str) -> str:
-    from rbench.report import figures as fg
-
-    expansions = (0, *sorted(config.EVAL.expansions))
-    styles = _styles(models)
-    fig, axes = fg._figure(len(expansions), len(GRID), panel=(4.0, 3.0), sharex=True, sharey=True)
-    for i, e in enumerate(expansions):
-        for j, k in enumerate(GRID):
-            ax = axes[i][j]
-            for _, template, color, ls in styles:
-                fg._steps(ax, rd.costs(rows(r, _name(template, k, e)), reading), 0, config.EVAL.token_top, color=color,
-                          linestyle=ls)
-            fg._token_log_x(ax)
-            fg._share_y(ax)
-            ax.set_title(f"limit k {k} (pool {OVERFETCH * k} or 200) · expand_context {e}", loc="left")
-            if i == len(expansions) - 1:
-                ax.set_xlabel(f"reader tokens ({fg.READER_NAME}, rendered context; log scale)\nexact at every budget")
-            if j == 0:
-                ax.set_ylabel(("mean over questions: " if rd.is_share(reading) else "share of questions: ")
-                              + fg.EVENT_TEXT[reading])
-    path = out / f"runtime_coverage_tokens_{reading}.png"
-    _save(fig, path, f"Coverage ({fg.EVENT_TEXT[reading]}) vs reader tokens at MemMachine's runtime pool — {head}",
-             [fg._key(c, ls) for _, _, c, ls in styles], [lab for lab, _, _, _ in styles], ncol=2,
-             note=["Does reranking read more of the evidence within the same reader tokens, at the pool MemMachine's "
-                   "runtime reranks?",
-                   "Each panel: one limit k, the results returned (MemMachine's `limit`; its default is 20), and one "
-                   "expand_context (the neighbouring segments read with each result). x: the reader's token budget (log "
-                   "scale); the reader reads the k results in order until it.",
-                   f"y: the share of questions with {fg.EVENT_TEXT[reading]} within that budget. Lines flatten once all "
-                   "k results are read.",
-                   "Blue: no reranker, the first stage's first k seeds. The model's color, solid: the runtime pool, the "
-                   "first 4 × k seeds reranked and the best k kept. Dashed: a flat pool of 200 reranked, k kept, for "
-                   "comparison (the 2026-11-12 report's pool).",
-                   "The reranker's own cost is not on this chart: runtime_cost_equal*.png weigh it."])
-    return str(path)
-
-
-def _rpf(r: Results, models: list[str], out, head: str) -> list[str]:
-    from rbench.metrics import CURVE_BUDGETS, CURVE_KS
-    from rbench.report import figures as fg
-
-    styles = _styles(models)
-    written = []
-    for e in (0, *sorted(config.EVAL.expansions)):
-        for axis, fmt, grid, xlabel in (("tokens", "t{}", CURVE_BUDGETS, f"reader tokens ({fg.READER_NAME}, rendered "
-                                                                         "context)"),
-                                        ("k", "k{}", CURVE_KS, "segments read (window neighbours counted)")):
-            xs = [v for v in grid if f"recall_{fmt.format(v)}" in r.df]
-            fig, axes = fg._figure(3, len(GRID), panel=(4.0, 2.6), sharex=True)
-            for j, k in enumerate(GRID):
-                end = k * (1 + e) if axis == "k" else None  # the k results' segments: nothing more is read
-                shown = [v for v in xs if end is None or v <= end]
-                for _, template, color, ls in styles:
-                    x = rows(r, _name(template, k, e))
-                    rec = np.stack([x[f"recall_{fmt.format(v)}"].to_numpy() for v in shown], 1)
-                    pre = np.stack([x[f"precision_{fmt.format(v)}"].to_numpy() for v in shown], 1)
-                    f1 = np.where(rec + pre > 0, 2 * rec * pre / np.maximum(rec + pre, 1e-12), 0.0)
-                    for i, values in enumerate((rec, pre, f1)):
-                        fg._plot(axes[i][j], shown, values.mean(0), color=color, linestyle=ls)
-                axes[0][j].set_title(f"limit k {k} (pool {OVERFETCH * k} or 200) · expand_context {e}", loc="left")
-                for i, label in enumerate(("recall (gold characters)", "precision", "F1")):
-                    fg._token_log_x(axes[i][j]) if axis == "tokens" else fg._k_x(axes[i][j], max(CURVE_KS))
-                    if j == 0:
-                        axes[i][j].set_ylabel(label)
-                axes[2][j].set_xlabel(f"{xlabel}\n" + (f"log scale; measured every {CURVE_BUDGETS[0]:,} tokens"
-                                                       if axis == "tokens" else "measured at every count"))
-            for row in axes:
-                tops = [np.nanmax(line.get_ydata()) for ax in row for line in ax.get_lines()]
-                for ax in row:
-                    fg._share_y(ax, min(1.0, max(tops, default=1.0)))
-            path = out / (f"runtime_rpf_{axis}" + (f"_x{e}" if e else "") + ".png")
-            _save(fig, path, f"Gold-character recall, precision and F1 vs {xlabel}, at MemMachine's runtime pool — "
-                     f"{head}", [fg._key(c, ls) for _, _, c, ls in styles], [lab for lab, _, _, _ in styles], ncol=2,
-                     note=["Recall, precision and F1 of the evidence's characters read, with and without reranking, at "
-                           "the pool MemMachine's runtime reranks.",
-                           "Recall: the share of the evidence's characters read. Precision: the share of the characters "
-                           "read that are evidence.",
-                           "Each panel: one limit k (the results returned) and one expand_context. "
-                           + ("x: the segments read; each line ends where the k results' segments run out (k x (1 + "
-                              "expand_context))." if axis == "k" else
-                              "x: the reader's token budget (log scale); lines flatten once the k results are read."),
-                           "Blue: no reranker, the first stage's first k seeds. The model's color, solid: the runtime "
-                           "pool (4 × k reranked, k kept). Dashed: a flat 200 reranked, k kept, for comparison."])
-            written.append(str(path))
-    return written
-
-
-def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool: str, usd: bool) -> str:
+def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool: str, usd: bool, fit=None) -> str:
     from matplotlib.colors import TwoSlopeNorm
     from matplotlib.patches import Patch
     from matplotlib.ticker import FuncFormatter, NullFormatter
@@ -515,15 +415,15 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
     few = fg._few(r)
     ru = uncapped(r)
     panels = []
+    spends_of = (lambda p: frontier.USD_PER_1000 * 1e3 / p) if usd else (lambda p: frontier.SPENDS)
     for m in models:
-        best = best_k(r, lambda k, m=m: rid(m, k, pool), reading)
-        for k, what in dict.fromkeys([(5, "a small limit"), (DEFAULT_K, "MemMachine's default"),
-                                      (best, "the best k overall")]):
-            if any(p[1] == k and p[0] == m for p in panels):
-                continue
+        for k, what in ((5, "a small limit"), (DEFAULT_K, "MemMachine's default")):
             name = m + (FLAT if pool == "200" else "")
             es = (frontier.equal_spend_usd if usd else frontier.equal_spend)(ru, name, price(m), k, reading, (CHUNKING, 0))
             panels.append((m, k, what, es))
+        if fit is not None:
+            panels.append((m, "fitted", "as many results as the money buys",
+                           rfr.fitted_spend(fit, m, pool, reading, frontier.SPEND_PRICES, spends_of, usd)))
     columns = max(sum(p[0] == m for p in panels) for m in models)
     low = min(-0.05, float(np.nanmin([np.nanmin(p[3].gain) for p in panels])))
     high = max(0.05, float(np.nanmax([np.nanmax(p[3].gain) for p in panels])))
@@ -572,9 +472,13 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
             ax.yaxis.set_minor_formatter(NullFormatter())
             ax.set_facecolor(fg.SURFACE)
             ax.grid(False)
-            scored = OVERFETCH * k if pool == "4k" else POOL
-            ax.set_title(f"{fg.LABEL[m]} · reranked, k {k} kept ({what}): the reranker scores {scored} seeds, "
-                         f"{es.tokens:,.0f} tokens per question", loc="left")
+            if k == "fitted":
+                ax.set_title(f"{fg.LABEL[m]} · reranked, {what}: the reranker scores "
+                             + ("4 × that many seeds" if pool == "4k" else f"{POOL} seeds"), loc="left")
+            else:
+                scored = OVERFETCH * k if pool == "4k" else POOL
+                ax.set_title(f"{fg.LABEL[m]} · reranked, k {k} kept ({what}): the reranker scores {scored} seeds, "
+                             f"{es.tokens:,.0f} tokens per question", loc="left")
             ax.set_xlabel(_money("LLM input price ($/M)"))
             if col == 0:
                 ax.set_ylabel(_money("budget, $ per 1,000 questions\n(reranker included)") if usd else
@@ -618,129 +522,10 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                    "The reranker's cost: DeepInfra's list price ("
                    + "; ".join(f"{fg.LABEL[m]} ${RERANKERS[m].price:g}/M pair tokens" for m in models)
                    + ") times its tokens per question.",
-                   "Best k: chosen once for all questions, on the same questions (leans optimistic)."])
+                   "Right column: as many results as the money buys, each side: with reranking, the largest k whose "
+                   + ("4 × k pairs" if pool == "4k" else "200 pairs") + " and k results the budget pays for; without, "
+                   "the most results its money buys (budget first, as the 2026-11-12 charts; exact for every question)."])
     return str(path)
-
-
-def _rerank_cost(r: Results, models: list[str], out, head: str, reading: str) -> str:
-    from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
-
-    from rbench.report import figures as fg
-
-    budgets = config.EVAL.budgets
-    first = fg.SERIES["first_stage"]
-    fig, axes = fg._figure(len(models), len(budgets), panel=(3.8, 3.4), sharey=True)
-    for i, m in enumerate(models):
-        per_k = float(np.mean([usd_per_1000(r, m, k, "4k") / k for k in KS]))  # $ per 1,000 questions per result
-        for j, b in enumerate(budgets):
-            ax = axes[i][j]
-            fg._plot(ax, KS, [value(r, fid(k), reading, b) for k in KS], color=first, marker="o")
-            fg._plot(ax, KS, [value(r, rid(m, k), reading, b) for k in KS], color=fg.SERIES[m], marker="o")
-            fg._plot(ax, KS, [value(r, rid(m, k, "200"), reading, b) for k in KS], color=fg.SERIES[m], linestyle="--",
-                     marker="o")
-            fg._log_x(ax, 10, list(KS))
-            fg._share_y(ax)
-            ax.set_title(f"{fg.LABEL[m]} · reader budget {b:,}", loc="left")
-            ax.set_xlabel("limit k (results returned; the runtime pool scores 4 × k)")
-            top = ax.secondary_xaxis("top", functions=(lambda x, s=per_k: x * s, lambda y, s=per_k: y / s))
-            top.xaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
-            top.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
-            top.xaxis.set_minor_formatter(NullFormatter())
-            top.set_xlabel(_money("runtime pool: reranker $ per 1,000 questions"), fontsize=8, color=fg.INK2)
-            if j == 0:
-                ax.set_ylabel(fg._coverage(reading))
-    handles = [fg._key(first, marker="o")] + [fg._key(fg.INK, ls, marker="o") for ls in ("-", "--")]
-    labels = ["no reranker: the first stage's first k", "the model's color, solid: the runtime pool (4 × k reranked, k "
-              "kept)", "dashed: a flat 200 reranked, k kept"]
-    path = out / "runtime_rerank_cost.png"
-    _save(fig, path, f"Coverage vs the limit k at MemMachine's runtime pool, and the reranker's cost — {head}",
-             handles, labels, ncol=3,
-             note=["What does a larger limit buy, with and without reranking, and what does the reranker cost at the "
-                   "runtime pool?",
-                   "Each panel: one reader token budget. x: the limit k, the results returned (the same on both sides); "
-                   "the runtime pool reranks the first 4 × k seeds.",
-                   "Top axis: the runtime pool's reranker cost at that k, in $ per 1,000 questions at DeepInfra's list "
-                   "price (nearly proportional to k: 4 pairs per result). A flat 200 costs the same at every k: "
-                   + "; ".join(f"{fg.LABEL[m]} ${usd_per_1000(r, m, DEFAULT_K, '200'):.2g}" for m in models)
-                   + " per 1,000 questions.",
-                   "Blue: no reranker. The model's color: reranked, solid the runtime pool and dashed a flat 200."])
-    return str(path)
-
-
-def _expansion_compare(r: Results, models: list[str], out, head: str, reading: str) -> str:
-    from rbench.report import figures as fg
-    from rbench.report import palette
-
-    expansions = (0, *sorted(config.EVAL.expansions))
-    blues = palette.family(fg.SERIES["first_stage"], len(expansions))
-    ks = (5, DEFAULT_K, 50)
-    fig, axes = fg._figure(len(models), len(ks), panel=(4.2, 3.2), sharex=True, sharey=True)
-    for i, m in enumerate(models):
-        shades = palette.family(fg.SERIES[m], len(expansions))
-        for j, k in enumerate(ks):
-            ax = axes[i][j]
-            for e, blue, shade in zip(expansions, blues, shades, strict=True):
-                fg._steps(ax, rd.costs(rows(r, fid(k, e)), reading), 0, config.EVAL.token_top, color=blue, linestyle="--")
-                fg._steps(ax, rd.costs(rows(r, rid(m, k, "4k", e)), reading), 0, config.EVAL.token_top, color=shade)
-            fg._token_log_x(ax)
-            fg._share_y(ax)
-            ax.set_title(f"{fg.LABEL[m]} · limit k {k} (pool {OVERFETCH * k})", loc="left")
-            if i == len(models) - 1:
-                ax.set_xlabel(f"reader tokens ({fg.READER_NAME}, rendered context; log scale)")
-            if j == 0:
-                ax.set_ylabel(fg._coverage(reading))
-    handles = [fg._key(c, "--") for c in blues] + [fg._key(c) for c in palette.family(fg.SERIES[models[0]], len(expansions))]
-    labels = [f"first stage, expand_context {e}" for e in expansions] + [f"reranked, expand_context {e}" for e in expansions]
-    path = out / "runtime_expansion_compare.png"
-    _save(fig, path, f"Expand_context compared at MemMachine's runtime pool ({fg.EVENT_TEXT[reading]}) — {head}",
-             handles, labels, ncol=2,
-             note=["Does reading each result with its neighbouring segments pay for its extra text, with and without "
-                   "reranking, at the runtime pool?",
-                   "Each panel: one model and one limit k; the reranked side reranks the first 4 × k seeds, keeps k, and "
-                   "reads each with expand_context neighbours either side (rerank, then expand; windows were not scored).",
-                   "x: reader tokens, so a window's extra text is paid for. Dashed blues: the first stage's first k, "
-                   "darker for less expansion. Solid, the model's color: reranked, darker for less expansion."])
-    return str(path)
-
-
-def _query_types(r: Results, models: list[str], out, head: str, reading: str) -> str:
-    from rbench.report import figures as fg
-    from rbench.report import palette
-
-    budgets = config.EVAL.budgets
-    base = rows(r, fid(DEFAULT_K))
-    types = base.question_type.fillna("other").to_numpy()
-    names = sorted(set(types))
-    fig, axes = fg._figure(1, len(models), panel=(5.0, 0.5 * len(names) + 1.6), sharey=True)
-    for j, m in enumerate(models):
-        ax = axes[0][j]
-        shades = palette.family(fg.SERIES[m], len(budgets))
-        for s, (b, shade) in enumerate(zip(budgets, shades, strict=True)):
-            for y, t in enumerate(names):
-                keep = types == t
-                d = gain(r, rid(m, DEFAULT_K), fid(DEFAULT_K), reading, b, keep)
-                lo, hi = interval(d, base.cluster.to_numpy()[keep])
-                yy = y + (s - (len(budgets) - 1) / 2) * 0.16
-                ax.plot([lo, hi], [yy, yy], color=shade, linewidth=1.2, alpha=fg.ALPHA)
-                ax.plot([d.mean()], [yy], marker="o", markersize=5, color=shade, markerfacecolor=fg.SURFACE, zorder=3)
-        ax.axvline(0, color=fg.INK2, linewidth=0.6)
-        ax.set_yticks(range(len(names)), [f"{t} ({int((types == t).sum())})" for t in names])
-        ax.invert_yaxis()
-        ax.set_title(f"{fg.LABEL[m]} · limit k {DEFAULT_K} (pool {OVERFETCH * DEFAULT_K})", loc="left")
-        ax.set_xlabel(f"reranker gain ({fg.EVENT_TEXT[reading]}), reranked minus the first stage")
-    shades = palette.family(fg.SERIES[models[0]], len(budgets))
-    path = out / "runtime_query_types.png"
-    _save(fig, path, f"Reranker gain by question type at MemMachine's runtime pool — {head}",
-             [fg._key(c, marker="o") for c in shades], [f"reader budget {b:,}" for b in budgets], ncol=4,
-             note=["Where does reranking help, by LongMemEval's question types, at MemMachine's default limit (k 20, a "
-                   "pool of 80)?",
-                   "Each point: the gain at one reader budget (darker: smaller), with its 95% interval (paired bootstrap "
-                   "over questions); the number of questions of each type in brackets.",
-                   "The flat 200 and other limits: the report's query-type section."])
-    return str(path)
-
-
-# ---------------------------------------------------------------- entry point
 
 
 def write(embedder: str, models: tuple[str, ...] = ("q4-mem", "q8-mem")) -> list[str]:
@@ -754,10 +539,16 @@ def write(embedder: str, models: tuple[str, ...] = ("q4-mem", "q8-mem")) -> list
     except FileNotFoundError:
         r0 = None
     models = [m for m in models if m in r.models]
+    from rbench import runtime_fit
+
+    target = runtime_fit.path(embedder)
+    if not target.exists():
+        runtime_fit.run(embedder, models=tuple(models))
+    fit = rfr.Fit(pd.read_parquet(target))
     c = ceilings(embedder)
     out = runtime.summary_dir(embedder)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{RUN}__runtime_core.md"
-    path.write_text("\n".join(report(r, r0, models, c)) + "\n")
+    path.write_text("\n".join(report(r, r0, models, c, fit=fit)) + "\n")
     head = f"{DATASET} · {CHUNKING} · {r.df.qid.nunique()} questions"
-    return [str(path), *charts(r, models, runtime.figures_dir(embedder, DATASET, "all"), head)]
+    return [str(path), *charts(r, models, runtime.figures_dir(embedder, DATASET, "all"), head, fit)]
