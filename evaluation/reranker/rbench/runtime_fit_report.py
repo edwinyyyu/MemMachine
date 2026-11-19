@@ -30,26 +30,45 @@ POLICY_TEXT = {"first": "no reranker: the most first-stage results that fit",
                "4k": "the runtime pool: the most results that fit, the best of 4 × that many (at most 50 results: "
                      "only 200 seeds per question were scored)",
                "200": "a flat 200: the most of its best results that fit"}
-CAP_NOTE = ("Why the orange line goes flat: only each question's first 200 seeds were scored, so the runtime pool "
-            "(4 × k) stops at k = 50 results. Shaded: past the mean tokens of those 50 results, where it cannot grow; "
-            "its line is flat there by construction (scoring deeper seeds would extend it), not because reranking "
-            "stops helping.")
+CAP_NOTE = ("Why the orange line flattens: only each question's first 200 seeds were scored, so the runtime pool "
+            "(4 × k) stops at k = 50 results, and a question that has read all 50 can use no more of its budget. Light "
+            "shade: from the budget where the first questions have read all 50, so the line flattens gradually; "
+            "darker: past the budget where every question has, so it is entirely flat. Flat by construction (deeper "
+            "scoring would extend it), not because reranking stops helping.")
 
 
-def cap_tokens(fit: Fit, m: str, e: int) -> float:
-    """Mean reader tokens of the runtime pool's 50 results: past them it cannot grow."""
-    return float(np.nanmean(fit.arrays("4k", m, e, "T")[:, -1]))
+def cap_tokens(fit: Fit, m: str, e: int) -> tuple[float, float]:
+    """The reader tokens of the runtime pool's 50 results for the first question to reach them and
+    for the last: from the first the orange line starts to flatten, past the last no question can
+    read more and it is entirely flat."""
+    tokens = fit.arrays("4k", m, e, "T")[:, -1]
+    return float(np.nanmin(tokens)), float(np.nanmax(tokens))
 
 
-def shade_cap(ax, start: float, end: float) -> None:
-    """The region past the runtime pool's 50 results, shaded and labelled where it is."""
+def cap_shares(fit: Fit, m: str, budgets=(3000, 4000, 6000)) -> str:
+    """How many questions have read all 50 of the runtime pool's results by each budget, without
+    windows: how much of the light region is flat."""
+    tokens = fit.arrays("4k", m, 0, "T")[:, -1]
+    from rbench.report.figures import LABEL
+
+    return (f"Without windows ({LABEL[m]}), the share of questions at all 50 results: "
+            + ", ".join(f"{np.mean(tokens <= b):.0%} at {b:,} tokens" for b in budgets) + ".")
+
+
+def shade_cap(ax, caps: tuple[float, float], end: float) -> None:
+    """The budgets where the runtime pool's 50 results run out, in two steps, labelled: light from
+    the first question to reach them, darker past the last."""
     from rbench.report import figures as fg
 
-    if start >= end:
-        return
-    ax.axvspan(start, end, color=fg.GRID, alpha=0.45, linewidth=0, zorder=0)
-    ax.annotate("runtime pool\nat its 50 results", xy=(start, 0.03), xycoords=("data", "axes fraction"),
-                xytext=(3, 0), textcoords="offset points", fontsize=6.5, color=fg.INK2, va="bottom")
+    first, last = caps
+    if first < end:
+        ax.axvspan(first, min(last, end), color=fg.GRID, alpha=0.3, linewidth=0, zorder=0)
+        ax.annotate("first questions\nat all 50 results", xy=(first, 0.97), xycoords=("data", "axes fraction"),
+                    xytext=(3, 0), textcoords="offset points", fontsize=6.5, color=fg.INK2, va="top")
+    if last < end:
+        ax.axvspan(last, end, color=fg.GRID, alpha=0.65, linewidth=0, zorder=0)
+        ax.annotate("every question\nat all 50 results", xy=(last, 0.03), xycoords=("data", "axes fraction"),
+                    xytext=(3, 0), textcoords="offset points", fontsize=6.5, color=fg.INK2, va="bottom")
 
 
 class Fit:
@@ -238,7 +257,7 @@ def coverage_tokens(fit: Fit, models: list[str], out, head: str, reading: str, s
           "exact.",
           "Blue: no reranker, the first stage's own order. Orange: the runtime pool, the best k of the first 4 × k seeds. "
           "Aqua: the best k of a flat 200 (the 2026-11-12 pool).",
-          CAP_NOTE,
+          CAP_NOTE + " " + cap_shares(fit, models[0]),
           f"y: {fg.EVENT_TEXT[reading]}. Rows: the two rerankers; columns: expand_context (neighbouring segments read with "
           "each result). The reranker's own cost: runtime_cost_equal*.png."])
     return str(path)
@@ -293,7 +312,7 @@ def rpf(fit: Fit, models: list[str], out, head: str, save) -> list[str]:
                    "x: the limit k, the results returned and read in full (each with its window), exact at every k from 1 "
                    "to 50; the runtime pool reranks 4 × k seeds for each k."),
                   "Blue: no reranker. Orange: the runtime pool. Aqua: a flat 200. Columns: expand_context.",
-                  CAP_NOTE if axis == "tokens" else
+                  CAP_NOTE + " " + cap_shares(fit, m) if axis == "tokens" else
                   "x stops at k = 50: only each question's first 200 seeds were scored, so the runtime pool (4 × k) "
                   "goes no further."])
             written.append(str(path))
