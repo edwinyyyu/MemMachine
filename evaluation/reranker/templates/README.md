@@ -63,31 +63,52 @@ A seed's window (expand_context above 0) renders several such lines, one per seg
 
 `qwen3_reranker_memory.jinja`, in this folder, is vLLM's own `qwen3_reranker.jinja`
 (vllm-project/vllm, `examples/pooling/score/template/`, last changed in commit 70c00163ffa8,
-2026-05-14) with **one change**: its default instruction is the memory instruction instead of
-the card's. `tests/test_templates.py` renders it with Jinja and checks two things:
-- **By default**, it produces exactly the text above with the memory instruction.
+2026-05-14, unchanged as of 2026-11-19) with **two changes**:
+1. **Its default instruction** is the memory instruction instead of the card's.
+2. **It ends with one more newline.** vLLM renders a scoring template through Hugging Face's
+   `tokenizer.apply_chat_template`, whose Jinja setup drops a template's final newline. Rendered
+   that way, vLLM's stock file ends the prompt with `</think>\n`, one newline short of the model
+   card's `</think>\n\n`. That final token is the one whose yes/no logits are the score. The extra
+   newline makes vLLM render the card's prompt exactly.
+
+`tests/test_templates.py` renders this file the way vLLM does, with Hugging Face's renderer, and
+checks two things:
+- **By default**, it produces exactly the text above, with the memory instruction.
 - **With a request's `instruction` field**, that instruction overrides the default, as in vLLM's
   stock template.
 
-Serve the original Qwen3 Reranker with it. The `--hf_overrides` value is vLLM's documented one
-for this model:
+**Why the empty think block:** Qwen3 is a reasoning model that normally thinks inside
+`<think>…</think>` before answering. The prompt writes that block itself, empty, which is
+Qwen3's non-thinking mode, the one the reranker was trained in. The model's very next token is
+then its answer. No text is generated: the score is the model's probability of "yes" against
+"no" at that last position, one forward pass per (query, document) pair.
+
+Serve the original Qwen3 Reranker with it, using the flags in vLLM's own example for this model.
+`--chat-template` is required: without it, vLLM serves the model with no template and only logs
+a warning suggesting `qwen3_reranker.jinja`.
 
 ```sh
-vllm serve Qwen/Qwen3-Reranker-4B \
+vllm serve Qwen/Qwen3-Reranker-4B --runner pooling \
   --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}' \
   --chat-template qwen3_reranker_memory.jinja
 ```
 
-MemMachine's `cohere` reranker provider can point at a Cohere-compatible rerank API through
-its `base_url`, and vLLM serves one. That provider sends only the query and the documents, with
-no instruction field. Behind it, vLLM's stock template therefore scores with the model card's
-instruction, and this file's default makes it score with the memory instruction instead.
-(Clients that can send the field can instead keep vLLM's stock template and pass
-`"instruction": "..."` in each `/score` or `/rerank` request, per vLLM's scoring docs.)
+**Why the default instruction matters for MemMachine:**
+- MemMachine's `cohere` reranker provider can point at a Cohere-compatible rerank API through
+  its `base_url`, and vLLM serves one.
+- That provider sends only the query and the documents, with no instruction field.
+- So behind it, vLLM's stock template scores with the model card's instruction, and this file's
+  default makes it score with the memory instruction instead.
 
-We have not run vLLM ourselves. The template text is verified to be identical to what
-DeepInfra received from us. That vLLM's sequence-classification conversion gives the same
-scores as DeepInfra's is expected (it reads the same yes/no logits), but not verified.
+Clients that can send the field can keep vLLM's stock template and pass `"instruction": "..."`
+in each `/score` or `/rerank` request, per vLLM's scoring docs. That still leaves the stock
+file's missing newline.
+
+**What is and isn't verified:**
+- **Verified:** the prompt this file produces on vLLM's renderer is identical to the text
+  DeepInfra scored for us.
+- **Expected but not verified:** that vLLM's sequence-classification conversion gives the same
+  scores as DeepInfra. It reads the same yes/no logits, but we have not run vLLM ourselves.
 
 ## The embedders
 
