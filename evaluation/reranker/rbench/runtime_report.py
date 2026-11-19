@@ -404,49 +404,6 @@ def _save(fig, path, title: str, handles, labels, ncol: int, note: list[str]) ->
     fg._save(fig, path, _money(title), handles, [_money(x) for x in labels], ncol=ncol, note=[_money(x) for x in note])
 
 
-def _diverging(pool: str):
-    """The cost maps' scale, one meaning per color as in every other chart: blue where no reranker
-    gets more for the money, the pool's color (orange: the runtime pool; aqua: a flat 200) where
-    reranking does, a neutral gray between (the dataviz rule: two hues and a neutral midpoint)."""
-    from matplotlib.colors import LinearSegmentedColormap
-
-    # dark, base, light of each role's hue, held to the hue (a lightness family drifts: blue to lavender,
-    # orange to red): the blue ramp is the dataviz palette's (the 2026-11-12 maps' blues)
-    ramps = {"none": ("#104281", "#2a78d6", "#9ec5f4"), "4k": ("#9c3d0c", "#eb6834", "#f8b892"),
-             "200": ("#0d6e4b", "#1baf7a", "#9fe3c6")}
-    blue, other = ramps["none"], ramps[pool]
-    return LinearSegmentedColormap.from_list(f"none_gray_{pool}", [blue[0], blue[1], blue[2], "#f0efec", other[2],
-                                                                    other[1], other[0]])
-
-
-def _spend_map(ax, es, few: bool, norm, cmap):
-    """figures._spend_map with the scale as a parameter (_diverging): the gain where clear, gray where
-    its interval includes 0, a hatch where both sides read the same, the break-even line."""
-    import matplotlib
-    from matplotlib.colors import LinearSegmentedColormap
-
-    from rbench.report import figures as fg
-
-    clear = (np.isfinite(es.gain) if few else (es.lo > 0) | (es.hi < 0)) & ~es.same
-    im = ax.pcolormesh(es.prices, es.spends, np.where(clear, es.gain, np.nan).T, cmap=cmap, norm=norm, shading="nearest")
-    ax.pcolormesh(es.prices, es.spends, np.where(np.isfinite(es.gain) & ~clear & ~es.same, 1.0, np.nan).T,
-                  shading="nearest", cmap=LinearSegmentedColormap.from_list("muted", [fg.MUTED, fg.MUTED]))
-    ax.pcolormesh(es.prices, es.spends, np.where(es.same, 1.0, np.nan).T, shading="nearest",
-                  cmap=LinearSegmentedColormap.from_list("same", [fg.SAME, fg.SAME]))
-    if es.same.any():
-        with matplotlib.rc_context({"hatch.color": fg.SAME_HATCH, "hatch.linewidth": 0.6}):
-            ax.contourf(es.prices, es.spends, es.same.T.astype(float), levels=[0.5, 1.5], colors="none", hatches=["///"])
-    edge = np.nan_to_num(es.gain if few else es.lo, nan=-1.0).T
-    line = bool((edge > 0).any() and (edge <= 0).any())
-    if line:
-        ax.contour(es.prices, es.spends, edge, levels=[0.0], colors=[fg.INK], linewidths=fg.LINE)
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlim(es.prices[0], es.prices[-1])
-    ax.set_ylim(es.spends[0], es.spends[-1])
-    return im, bool(es.same.any()), line
-
-
 def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool: str, usd: bool, fit=None) -> str:
     from matplotlib.colors import TwoSlopeNorm
     from matplotlib.patches import Patch
@@ -481,7 +438,7 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                 ax.set_visible(False)
                 continue
             _, k, what, es = mine[col]
-            im, same_here, line_here = _spend_map(ax, es, few, norm, _diverging(pool))
+            im, same_here, line_here = fg._spend_map(ax, es, few, norm)
             if k == "fitted" and fit is not None:  # the money that buys the scored pool's last result
                 cap_k = POOL // OVERFETCH if pool == "4k" else POOL
                 t_cap = float(np.nanmean(fit.arrays(pool, m, 0, "T")[:, cap_k - 1]))
@@ -542,10 +499,9 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                 ax.set_ylabel(_money("budget, $ per 1,000 questions\n(reranker included)") if usd else
                               f"budget per question, as reader tokens ({fg.READER_NAME})\n(money / LLM price; the "
                               "reranked side reads fewer)")
-    pole = "orange" if pool == "4k" else "aqua"
     fig.colorbar(im, ax=[a for row in axes for a in row],
-                 label=f"reranking minus no reranker, for the same money ({fg.EVENT_TEXT[reading]}): {pole}, reranking "
-                       "gets more; blue, no reranker does")
+                 label=f"coverage gained by reranking for the same money ({fg.EVENT_TEXT[reading]}): blue, reranking "
+                       "gets more; red, it gets less")
     legend = [(Patch(color=fg.MUTED), "no clear difference (the gain's 95% interval includes 0)")] if not few else []
     if identical:
         legend.append((Patch(facecolor=fg.SAME, edgecolor=fg.SAME_HATCH, hatch="///", linewidth=0),
@@ -573,11 +529,9 @@ def _cost_map(r: Results, models: list[str], out, head: str, reading: str, pool:
                    "Each panel: one limit k on the reranked side (the results it returns; MemMachine's default is 20); "
                    "its title gives the seeds the reranker scores and their tokens per question. Where the reranked side "
                    "has read all k results, more money helps only the side without a reranker.",
-                   f"Color: {pole}, the side with the reranker reads more of the evidence ({fg.EVENT_TEXT[reading]}) "
-                   "for that money; blue, the side without one does (the same colors as every other chart: blue no "
-                   f"reranker, {pole} the cross-encoder on {'the runtime pool' if pool == '4k' else 'a flat 200'}). "
-                   "Gray: no clear difference (the 95% interval includes 0). Black line: break-even; inside it "
-                   "reranking clearly gets more for the money.",
+                   f"Color: blue, the side with the reranker reads more of the evidence ({fg.EVENT_TEXT[reading]}) "
+                   "for that money; red, it reads less (the 2026-11-12 maps' scale). Gray: no clear difference (the 95% "
+                   "interval includes 0). Black line: break-even; inside it reranking clearly gets more for the money.",
                    ("Dashed diagonals: the reader tokens the budget buys without a reranker. Dotted line: the reranker's "
                     "own cost per 1,000 questions." if usd else
                     "Dashed lines: constant money, in $ per 1,000 questions (reader tokens x LLM price)."),
