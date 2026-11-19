@@ -54,9 +54,10 @@ from memmachine_server.episodic_memory.long_term_memory.long_term_memory import 
 
 KS = (1, 2, 3, 5, 10, 20, 30, 50)  # 4 x 50 = 200, the deepest pool scored
 KS_ALL = tuple(range(1, 51))  # every k the pool reaches: the charts' curves (the tables show KS)
-# Colors by role, the categorical order's first three slots (every pair clears the dataviz floors, also under
-# color-vision deficiency): no reranker blue; the cross-encoder alone, or its runtime pool, orange; the
-# configuration a panel is about, or the flat 200, aqua. The same in every row, panel and file.
+# One meaning per color, in every chart (the categorical order's first three slots; every pair clears the
+# dataviz floors, also under color-vision deficiency): blue no reranker; orange the cross-encoder on the runtime
+# pool (4 x k); aqua the cross-encoder on a flat 200. A difference line takes the color of what it is measured
+# against. Models are rows or files, never colors.
 ROLE = {"none": "#2a78d6", "ce": "#eb6834", "other": "#1baf7a"}
 POOL_COLOR = {"4k": ROLE["ce"], "200": ROLE["other"]}
 POOL = 200
@@ -414,49 +415,41 @@ def figures(d: pd.DataFrame, models: list[str], out, head: str) -> list[str]:
                 (rrf_name(("identity", m)), "RRF [identity, cross-encoder]"),
                 (rrf_name(("bm25", m)), "RRF [BM25, cross-encoder]")]
 
+    count_text = {"segments": "counting k segments (the 2026-11-12 measure)",
+                  "episodes": "counting k whole turns (what MemMachine returns)"}
     for pool in ("4k", "200"):
         suffix = "" if pool == "4k" else "_pool200"
-        pool_text = ("MemMachine's runtime pool (4 × k candidates)" if pool == "4k" else
-                     "a flat pool of 200 candidates, k kept (the comparison for the runtime pool)")
+        pool_text = ("a pool of 4 × k candidates (MemMachine's runtime)" if pool == "4k" else
+                     "a flat pool of 200 candidates, k kept")
         for unit in UNITS:
-            fig, axes = fg._figure(2 * len(models), 5, panel=(3.5, 2.5), sharey="row")
+            fig, axes = fg._figure(len(models), 5, panel=(3.5, 2.7), sharey=True)
             for i, m in enumerate(models):
                 base = _by_question(d, unit, pool, "first_stage", "recall")
                 ce = _by_question(d, unit, pool, m, "recall")
                 for j, (r, text) in enumerate(configs(m)):
                     x = _by_question(d, unit, pool, r, "recall")
-                    ax = axes[2 * i][j]
-                    line(ax, _curve(base)[0], ROLE["none"])
-                    line(ax, _curve(ce)[0], ROLE["ce"])
-                    line(ax, _curve(x)[0], ROLE["other"])
-                    k_axis(ax, True)
-                    ax.set_title(f"{_named(m)}: {text}" if j == 0 else text, loc="left")
-                    if j == 0:
-                        ax.set_ylabel("recall")
-                    ax = axes[2 * i + 1][j]
-                    for ref, color in ((base, ROLE["none"]), (ce, ROLE["ce"])):
+                    ax = axes[i][j]
+                    for ref, color in ((base, ROLE["none"]), (ce, POOL_COLOR[pool])):  # the color of the reference
                         mean, low, high = _curve(x, ref)
                         line(ax, mean, color, band=(low, high))
                     k_axis(ax, False)
-                    ax.set_title(f"{text}: its difference", loc="left")
+                    ax.set_title(text, loc="left")
                     if j == 0:
-                        ax.set_ylabel("recall difference")
+                        ax.set_ylabel(f"{_named(m)}\nrecall difference")
             path = out / f"runtime_rrf_{unit}{suffix}.png"
-            fg._save(fig, path, f"RRF hybrid with and without the cross-encoder, {pool_text}, {unit} — {head}",
-                     [fg._key(ROLE["none"]), fg._key(ROLE["ce"]), fg._key(ROLE["other"])],
-                     ["no reranker (upper rows); the column's configuration minus no reranker (lower rows)",
-                      "the cross-encoder alone (upper); the configuration minus the cross-encoder alone (lower)",
-                      "the column's configuration (upper rows)"], ncol=1,
-                     note=["MemMachine's rrf-hybrid reranker in every configuration, with and without the cross-encoder, "
-                           f"on {pool_text}. RRF's k = 60; BM25 with MemMachine's default tokenizer. An RRF of one "
-                           "component orders as that component alone. Measured at every k from 1 to 50.",
-                           unit_line[unit],
-                           "Each column: one configuration (aqua). Upper row per model: recall, the share of a question's "
-                           "evidence turns counted, averaged over questions, beside no reranker (blue) and the "
-                           "cross-encoder alone (orange).",
-                           "Lower row: the configuration minus no reranker (blue) and minus the cross-encoder alone "
-                           "(orange); below 0, worse than it. Shaded: 95% intervals, paired bootstrap over questions.",
-                           "Colors are roles, the same in every row and file; the model is in each row's first title."])
+            fg._save(fig, path, f"Does RRF beat the cross-encoder alone? Each rrf-hybrid configuration's recall at k, "
+                     f"{pool_text}, {count_text[unit]} — {head}",
+                     [fg._key(POOL_COLOR[pool]), fg._key(ROLE["none"])],
+                     [f"the configuration minus the cross-encoder alone on {'the runtime pool' if pool == '4k' else 'a flat 200'}: "
+                      "above 0, RRF helps the cross-encoder",
+                      "the configuration minus no reranker: above 0, better than not reranking"], ncol=1,
+                     note=["Each panel: one configuration of MemMachine's rrf-hybrid reranker, named above it (RRF's "
+                           "k = 60; BM25 with MemMachine's default tokenizer), at every k from 1 to 50. Rows: the "
+                           "cross-encoder inside it and compared against.",
+                           f"{'Orange' if pool == '4k' else 'Aqua'}: its recall minus the cross-encoder alone's (the "
+                           "color of that cross-encoder in every chart). Blue: its recall minus no reranker's. "
+                           "Above 0 it is better, below 0 worse; shaded: 95% intervals, paired bootstrap over questions.",
+                           unit_line[unit] + " Recall itself: runtime_pool_<model>.png and the report's tables."])
             written.append(str(path))
     return written
 
